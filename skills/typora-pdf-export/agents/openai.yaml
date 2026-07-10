@@ -1,0 +1,4 @@
+interface:
+  display_name: "Typora PDF Export"
+  short_description: "Portable Typora Markdown-to-PDF export configuration."
+  default_prompt: "Use $typora-pdf-export to install and validate a portable Typora PDF export configuration."

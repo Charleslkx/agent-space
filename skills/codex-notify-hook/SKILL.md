@@ -37,9 +37,9 @@ Codex 有两套通知机制：
 
 > **注意**：`PermissionRequest` 只在真正需要审批时触发，不含 Claude Code 的"等待输入空闲催促"。Codex 无此事件，无需过滤。
 >
-> 按 OpenAI 官方文档，`Approve for me` 的正式配置是交互式 `approval_policy` 配合 `approvals_reviewer = "auto_review"`，它是 reviewer agent 替代人工审批，不是 `permission_mode` 的别名。本 skill 运行时会读取项目级 `.codex/config.toml` 和用户级 `~/.codex/config.toml` 判断是否启用 `auto_review`。
+> `PermissionRequest` 在原生自动审查或人工审批界面之前执行。当前 hook 载荷不含当前任务最终生效的 `approvals_reviewer`，也不含自动审查结果；项目级或用户级 `config.toml` 不能代表桌面端每个任务的实际模式。因此脚本不能可靠实现“开启时通知一次，之后只在自动审查拒绝时通知”。
 >
-> 若已启用 `auto_review`，脚本不再发送"需要授权"提醒；改为在当前 `session_id` 第一次遇到 `PermissionRequest` 时发送一次"已开启 Auto-review，权限申请将由 reviewer 自动处理"。
+> 为避免漏掉被拒绝后需要人工处理的请求，本 skill 不猜测自动审批状态，所有 `PermissionRequest` 都按普通授权请求通知。只有 Codex 将有效审批器和审查结果加入稳定 hook 载荷后，才应增加自动审批过滤。
 
 ## 安装步骤
 
@@ -285,13 +285,12 @@ config 改动通常下一轮即生效。若 hook 需要信任，先用 `/hooks` 
 
 - **不用 `set -e/-u/pipefail`**：通知 hook 首要目标是"绝不因自身报错而中断会话"。所有外部命令前用 `command -v` 探测、用 `|| true` 兜底、结尾恒 `exit 0`。
 - **stdin 只读一次**存入 `INPUT` 变量，事件识别与消息解析复用，避免二次读取读空。
-- **Auto-review 检测走 config，不猜 payload**：用 `python3` 标准库 `tomllib` 读取项目级/用户级 `config.toml`，判断 `approvals_reviewer = "auto_review"`；不把 `permission_mode` 当成 reviewer 状态。
+- **不猜 Auto-review 状态**：`PermissionRequest` 早于原生审查执行，且载荷没有当前任务的有效审批器和审查结果。读取 `config.toml` 会错过桌面端的任务级设置，可能漏报需要人工处理的拒绝。
 - **同步试投检测崩溃**：`terminal-notifier` 在 macOS 26 (Tahoe) 上已不维护会 `Abort trap: 6` 崩溃，必须同步试投（非后台）才能检测到非零退出并降级到 osascript。正常系统上约 2s 返回可接受；崩溃系统上瞬时失败立即降级。
 - **焦点识别用 `lsappinfo` 不用 System Events**：前者查 CoreServices DB 无需自动化授权弹窗，后者会弹权限框。
 - **焦点是应用级非窗口级**：在 VSCode 但看的是代码而非集成终端、或开了多个同 app 窗口时，会误判为"在焦点"而静默。需窗口级要用 Accessibility 脚本逐 app 取窗口标题，代价大且对 VSCode 集成终端不可靠，一般不做。
 - **远程/SSH 会话**：`__CFBundleIdentifier` 为空时自动跳过焦点检查，通知照常弹出。
 - **授权消息构造**：优先 `tool_input.description`（人类可读理由），其次 `tool_input.command`（截断 120 字符），再次 `tool_name`，最后默认文案。
-- **Auto-review 只提示一次**：按 `session_id` 在临时目录打一个轻量标记，避免每次边界请求都重复提示"已开启 Auto-review"。
 - **通知内容保持简单**：本地通知 title 是 `Codex`，subtitle 是项目根目录名称，body 是通知内容；飞书同样只发 agent、project、content。
 
 ## 自定义
@@ -304,11 +303,13 @@ config 改动通常下一轮即生效。若 hook 需要信任，先用 `/hooks` 
 
 ```bash
 SH=~/.codex/hooks/notify.sh
+# 最小回归检查 → 应输出 ok
+bash <skill-dir>/scripts/test_notify.sh
 # 飞书 Agent 应用创建 dry-run → 应打印权限/事件/回调 JSON
 python3 <skill-dir>/scripts/create_feishu_agent_app.py
 # 授权类（带描述）→ 应弹出"需要授权: Bash — Run brew install node"
 echo '{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"description":"Run brew install node","command":"brew install node"}}' | NOTIFY_DEBUG=1 NOTIFY_FORCE=1 $SH permission-request
-# Auto-review 已开启 → 不弹"需要授权"，仅首次提示"已开启 Auto-review，权限申请将由 reviewer 自动处理"
+# 即使 config.toml 写了 auto_review，也按普通授权请求通知；hook 无法取得任务级有效模式和审查结果
 mkdir -p /tmp/codex-notify-test/.codex
 cat >/tmp/codex-notify-test/.codex/config.toml <<'EOF'
 approvals_reviewer = "auto_review"

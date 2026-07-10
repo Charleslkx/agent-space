@@ -21,8 +21,7 @@ EVENT="${1:-notification}"
 SOUND="Glass"
 TITLE="ClaudeCode"
 DEFAULT_MSG="需要你的关注"
-FEISHU_APPROVAL_SEND="${FEISHU_APPROVAL_SEND:-/Users/charles/.codex/hooks/feishu_send_approval.py}"
-FEISHU_APPROVAL_PYTHON="${FEISHU_APPROVAL_PYTHON:-/Users/charles/Nutstore/agent-space/.venv/bin/python}"
+FEISHU_ENV="${FEISHU_ENV:-$HOME/.claude/feishu-agent.env}"
 
 dbg() { [ "${NOTIFY_DEBUG:-0}" = "1" ] && echo "[notify] $*" >&2; return 0; }
 
@@ -38,51 +37,118 @@ project_name() {
   basename "$dir"
 }
 
+# 飞书卡片 webhook 兜底：仅在 IM API 失败或显式配置 LARK_WEBHOOK_URL 时使用。
+# 自定义 bot webhook 收不到按钮回调，且本设计只做通知不做交互，故恒为「仅展示」卡片。
 lark_notify() {
   [ -n "${LARK_WEBHOOK_URL:-}" ] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
-  python3 - "$1" "$2" "$3" <<'PY' >/dev/null 2>&1 || true
-import base64
-import hashlib
-import hmac
-import json
-import os
-import sys
-import time
-import urllib.request
-
-agent, project, content = sys.argv[1:4]
-payload = {
-    "msg_type": "text",
-    "content": {"text": f"Agent: {agent}\nProject: {project}\nContent: {content}"},
+  local agent="$1" project="$2" content="$3" kind="${4:-done}"
+  python3 - "$agent" "$project" "$content" "$kind" <<'PY' >/dev/null 2>&1 || true
+import base64, hashlib, hmac, json, os, sys, time, urllib.request
+agent, project, content, kind = sys.argv[1:5]
+if kind == "approval":
+    title, template = f"⚠️ {agent} · 需要授权", "orange"
+else:
+    title, template = f"🤖 {agent} · 任务完成", "green"
+ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+card = {
+    "config": {"wide_screen_mode": True},
+    "header": {"title": {"tag": "plain_text", "content": title}, "template": template},
+    "elements": [
+        {"tag": "div", "fields": [
+            {"is_short": True, "text": {"tag": "lark_md", "content": f"**Agent**\n{agent}"}},
+            {"is_short": True, "text": {"tag": "lark_md", "content": f"**Project**\n{project}"}},
+        ]},
+        {"tag": "hr"},
+        {"tag": "div", "text": {"tag": "lark_md", "content": content}},
+        {"tag": "note", "elements": [{"tag": "plain_text", "content": f"🕒 {ts}"}]},
+    ],
 }
+payload = {"msg_type": "interactive", "card": card}
 secret = os.environ.get("LARK_WEBHOOK_SECRET", "").strip()
 if secret:
-    ts = str(int(time.time()))
-    payload["timestamp"] = ts
+    t = str(int(time.time()))
+    payload["timestamp"] = t
     payload["sign"] = base64.b64encode(
-        hmac.new(f"{ts}\n{secret}".encode(), digestmod=hashlib.sha256).digest()
+        hmac.new(f"{t}\n{secret}".encode(), digestmod=hashlib.sha256).digest()
     ).decode()
-data = json.dumps(payload).encode()
+data = json.dumps(payload, ensure_ascii=False).encode()
 req = urllib.request.Request(
-    os.environ["LARK_WEBHOOK_URL"],
-    data=data,
-    headers={"Content-Type": "application/json"},
-    method="POST",
+    os.environ["LARK_WEBHOOK_URL"], data=data,
+    headers={"Content-Type": "application/json"}, method="POST",
 )
 urllib.request.urlopen(req, timeout=5).read()
 PY
 }
 
-approval_id() {
-  printf 'claude-%s-%s' "$(date +%s 2>/dev/null || printf 0)" "$$"
-}
+# 飞书卡片主通道：自带 IM API 发送（无 codex 依赖），发纯通知卡片（无按钮）。
+# 读取 $FEISHU_ENV 里的 FEISHU_APP_ID/SECRET/HOME_CHANNEL，取 tenant token 后投递。
+# kind=done 绿色「任务完成」；kind=approval 橙色「需要授权」。
+send_feishu_card() {
+  local kind="$1" project="$2" content="$3"
+  [ -f "$FEISHU_ENV" ] || { dbg "飞书 env 不存在: $FEISHU_ENV"; return 1; }
+  command -v python3 >/dev/null 2>&1 || { dbg "无 python3，跳过 IM API"; return 1; }
+  python3 - "$FEISHU_ENV" "$TITLE" "$project" "$content" "$kind" <<'PY' 2>/dev/null
+import json, sys, time, urllib.request
 
-send_feishu_approval() {
-  [ -f "$FEISHU_APPROVAL_SEND" ] || { dbg "飞书审批发送脚本不存在: $FEISHU_APPROVAL_SEND"; return 1; }
-  [ -x "$FEISHU_APPROVAL_PYTHON" ] || { dbg "Python 不存在: $FEISHU_APPROVAL_PYTHON"; return 1; }
-  local id="$1" project="$2" content="$3"
-  "$FEISHU_APPROVAL_PYTHON" "$FEISHU_APPROVAL_SEND" --agent "$TITLE" --approval-id "$id" --project "$project" --content "$content" >/dev/null 2>&1
+env_path, agent, project, content, kind = sys.argv[1:6]
+env = {}
+try:
+    for line in open(env_path):
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            env[k] = v
+except OSError:
+    sys.exit(1)
+
+app_id, app_secret = env.get("FEISHU_APP_ID"), env.get("FEISHU_APP_SECRET")
+receive_id = env.get("FEISHU_HOME_CHANNEL") or env.get("FEISHU_APPROVAL_RECEIVE_ID")
+receive_id_type = env.get("FEISHU_APPROVAL_RECEIVE_ID_TYPE", "chat_id")
+if not (app_id and app_secret and receive_id):
+    sys.exit(1)
+
+def post(url, payload, headers=None):
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(), method="POST",
+        headers={"Content-Type": "application/json", **(headers or {})},
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+tok = post(
+    "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+    {"app_id": app_id, "app_secret": app_secret},
+)
+if tok.get("code") != 0:
+    sys.exit(1)
+
+if kind == "approval":
+    title, template = f"⚠️ {agent} · 需要授权", "orange"
+else:
+    title, template = f"🤖 {agent} · 任务完成", "green"
+ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+card = {
+    "config": {"wide_screen_mode": True},
+    "header": {"title": {"tag": "plain_text", "content": title}, "template": template},
+    "elements": [
+        {"tag": "div", "fields": [
+            {"is_short": True, "text": {"tag": "lark_md", "content": f"**Agent**\n{agent}"}},
+            {"is_short": True, "text": {"tag": "lark_md", "content": f"**Project**\n{project}"}},
+        ]},
+        {"tag": "hr"},
+        {"tag": "div", "text": {"tag": "lark_md", "content": content}},
+        {"tag": "note", "elements": [{"tag": "plain_text", "content": f"🕒 {ts}"}]},
+    ],
+}
+resp = post(
+    f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}",
+    {"receive_id": receive_id, "msg_type": "interactive",
+     "content": json.dumps(card, ensure_ascii=False)},
+    {"Authorization": f"Bearer {tok['tenant_access_token']}"},
+)
+sys.exit(0 if resp.get("code") == 0 else 1)
+PY
 }
 
 # 解析 message：优先 jq，失败退到纯文本抓取，再退到空
@@ -157,8 +223,13 @@ notify() {
   fi
   local project; project="$(project_name)"
   deliver "$1" "$project"
-  ( lark_notify "$TITLE" "$project" "$1" ) &
-  disown 2>/dev/null || true
+  if send_feishu_card done "$project" "$1"; then
+    dbg "飞书卡片已发送 (done)"
+  else
+    dbg "IM API 卡片失败，退回 webhook 兜底"
+    ( lark_notify "$TITLE" "$project" "$1" done ) &
+    disown 2>/dev/null || true
+  fi
 }
 
 approval_notify() {
@@ -166,15 +237,14 @@ approval_notify() {
     dbg "焦点在会话窗口，静默"
     return 0
   fi
-  local project id
+  local project
   project="$(project_name)"
-  id="$(approval_id)"
   deliver "$1" "$project"
-  if send_feishu_approval "$id" "$project" "$1"; then
-    dbg "飞书通知已发送: $id"
+  if send_feishu_card approval "$project" "$1"; then
+    dbg "飞书卡片已发送 (approval)"
   else
-    dbg "飞书审批发送失败，退回简单 webhook"
-    ( lark_notify "$TITLE" "$project" "$1" ) &
+    dbg "IM API 卡片失败，退回 webhook 兜底"
+    ( lark_notify "$TITLE" "$project" "$1" approval ) &
     disown 2>/dev/null || true
   fi
 }
