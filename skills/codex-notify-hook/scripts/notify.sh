@@ -27,8 +27,6 @@ TITLE="Codex"
 DEFAULT_MSG="需要你的关注"
 FEISHU_APPROVAL_SEND="${FEISHU_APPROVAL_SEND:-/Users/charles/.codex/hooks/feishu_send_approval.py}"
 FEISHU_APPROVAL_PYTHON="${FEISHU_APPROVAL_PYTHON:-/Users/charles/Nutstore/agent-space/.venv/bin/python}"
-CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
-AUTO_REVIEW_STATE_DIR="${AUTO_REVIEW_STATE_DIR:-${TMPDIR:-/tmp}/codex-notify-auto-review}"
 
 dbg() { [ "${NOTIFY_DEBUG:-0}" = "1" ] && echo "[notify] $*" >&2; return 0; }
 
@@ -118,63 +116,6 @@ jq_field() {
   local filter="$1"
   command -v jq >/dev/null 2>&1 || return 1
   printf '%s' "$INPUT" | jq -r "$filter // empty" 2>/dev/null || true
-}
-
-session_id() {
-  jq_field '.session_id' || true
-}
-
-auto_review_enabled() {
-  command -v python3 >/dev/null 2>&1 || return 1
-  local cwd config_home
-  cwd="$(jq_field '.cwd' || true)"
-  config_home="$CODEX_HOME_DIR"
-  python3 - "$cwd" "$config_home" <<'PY'
-from __future__ import annotations
-
-import sys
-from pathlib import Path
-
-try:
-    import tomllib
-except ModuleNotFoundError:
-    raise SystemExit(1)
-
-cwd = Path(sys.argv[1]) if sys.argv[1] else None
-codex_home = Path(sys.argv[2])
-
-paths = []
-if cwd:
-    paths.append(cwd / ".codex" / "config.toml")
-paths.append(codex_home / "config.toml")
-
-reviewer = None
-for path in reversed(paths):
-    if not path.is_file():
-        continue
-    try:
-        data = tomllib.loads(path.read_text())
-    except Exception:
-        continue
-    value = data.get("approvals_reviewer")
-    if isinstance(value, str):
-        reviewer = value
-
-raise SystemExit(0 if reviewer == "auto_review" else 1)
-PY
-}
-
-auto_review_notice_needed() {
-  local sid state_file
-  sid="$(session_id)"
-  [ -n "$sid" ] || sid="default"
-  state_file="$AUTO_REVIEW_STATE_DIR/$sid"
-  mkdir -p "$AUTO_REVIEW_STATE_DIR" 2>/dev/null || return 0
-  if [ -f "$state_file" ]; then
-    return 1
-  fi
-  : >"$state_file" 2>/dev/null || return 0
-  return 0
 }
 
 # 构造授权类消息：tool_name + tool_input.description / tool_input.command
@@ -279,13 +220,6 @@ EVENT="$(resolve_event)"
 
 case "$EVENT" in
   permission-request|PermissionRequest)
-    if auto_review_enabled; then
-      dbg "已开启 auto_review，跳过权限申请提醒"
-      if auto_review_notice_needed; then
-        notify "已开启 Auto-review，权限申请将由 reviewer 自动处理"
-      fi
-      exit 0
-    fi
     msg="$(extract_approval_msg)"
     approval_notify "$msg"
     ;;

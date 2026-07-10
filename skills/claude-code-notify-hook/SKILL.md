@@ -72,28 +72,40 @@ jq -e '.hooks.Notification[].hooks[].command, .hooks.Stop[].hooks[].command' ~/.
 
 ### 4. 可选：配置飞书 Agent 通知
 
-若已经按 `codex-notify-hook` 创建 Feishu Agent 应用，可直接复用同一套脚本和网关：
+**与 codex 完全解耦，自带 IM API 发送，无需 codex 脚本或网关。** 凭证放在 `~/.claude/feishu-agent.env`。
+
+#### 4a. 一键创建 / 选择应用（推荐）
+
+`scripts/create_feishu_agent_app.py` 复刻 codex 的一键创建流程：扫码后飞书创建或**选择已有应用**，SDK 返回 App ID / App Secret，脚本直接写入 `~/.claude/feishu-agent.env`（mode 600），无需手工复制或软链。
 
 ```bash
-cp <codex-notify-hook-dir>/scripts/feishu_approval_common.py ~/.codex/hooks/
-cp <codex-notify-hook-dir>/scripts/feishu_send_approval.py ~/.codex/hooks/
-cp <codex-notify-hook-dir>/scripts/feishu_approval_gateway.py ~/.codex/hooks/
+python3 <skill-dir>/scripts/create_feishu_agent_app.py            # dry-run，打印将提交的权限清单
+python3 -m pip install 'lark-oapi>=1.5.5'
+python3 <skill-dir>/scripts/create_feishu_agent_app.py --live     # 扫码，新建一个应用
+python3 <skill-dir>/scripts/create_feishu_agent_app.py --live --app-id cli_xxx  # 共用同一应用：指定已有 app_id
+python3 <skill-dir>/scripts/create_feishu_agent_app.py --manual   # 手工创建兜底
 ```
 
-`~/.codex/feishu-agent.env` 至少需要：
+env 路径可用 `--env-out` 改写；`--env-out ''` 只打印不落盘。
+
+> **共用一个应用的注意点**：三个 agent 各自跑本脚本、各写各的 env，指向同一 app_id 时拿到的是**同一个 App Secret**（飞书一个应用只有一个 secret）。若某次重新授权导致飞书**重置了 secret**，其余 agent 的旧 secret 会失效——此时重跑另外两个 agent 的创建脚本刷新即可。
+
+#### 4b. 手工填写
+
+也可直接编辑 `~/.claude/feishu-agent.env`：
 
 ```bash
-FEISHU_DOMAIN=feishu
 FEISHU_APP_ID=cli_xxx
 FEISHU_APP_SECRET=xxx
-FEISHU_HOME_CHANNEL=oc_xxx
+FEISHU_HOME_CHANNEL=oc_xxx           # 或 FEISHU_APPROVAL_RECEIVE_ID
+# FEISHU_APPROVAL_RECEIVE_ID_TYPE=chat_id   # 默认 chat_id
 ```
 
-`Notification` 事件命中授权文案时，脚本会先弹本地通知，再发送飞书文本消息。消息内容保持三项：`Agent: ClaudeCode`、`Project: <项目根目录名称>`、`Content: <通知内容>`。
+`notify.sh` 会读取该文件、用 `app_id/app_secret` 取 `tenant_access_token`，再经 `im/v1/messages` 直接投递飞书**交互卡片**（`msg_type=interactive`），全程只用 Python 标准库。env 缺失或凭证不全时自动跳过，不影响本地通知。env 路径可用 `FEISHU_ENV` 覆盖（默认 `~/.claude/feishu-agent.env`）。
 
-`FEISHU_HOME_CHANNEL` 可由网关收到机器人私聊 `/set-home` 后写入。网关建议用 LaunchAgent 常驻，具体创建步骤沿用 `codex-notify-hook`。
+卡片按事件着色：任务完成（`stop`）绿色标题 `🤖 ClaudeCode · 任务完成`，需要授权（`notification`）橙色标题 `⚠️ ClaudeCode · 需要授权`；正文含 `Agent` / `Project` 两个字段、通知内容和时间戳 note。
 
-当前行为：只发送飞书文本通知，不记录选择、不等待结果、不替代 Claude Code 原生审批提示。
+当前行为：只发送飞书通知卡片（**无操作按钮**），不记录选择、不等待结果、不替代 Claude Code 原生审批提示。
 
 ### 5. 可选：配置飞书 webhook 兜底
 
@@ -104,9 +116,9 @@ export LARK_WEBHOOK_URL="https://open.feishu.cn/open-apis/bot/v2/hook/..."
 export LARK_WEBHOOK_SECRET="..." # 机器人未启用签名校验时可不填
 ```
 
-飞书消息固定为三行：`Agent: ClaudeCode`、`Project: <项目根目录名称>`、`Content: <通知内容>`。
+webhook 兜底同样发**交互卡片**（`msg_type=interactive`，与 Agent 通道一致的绿/橙配色），仅在 IM API 发送失败或显式配置 `LARK_WEBHOOK_URL` 时使用。
 
-incoming webhook 和 Feishu Agent 当前都只承载通知；不要在消息里添加操作按钮。
+incoming webhook 和 Feishu Agent 当前都只承载通知；卡片为「仅展示」，不加操作按钮（自定义 bot webhook 收不到按钮回调）。
 
 ### 6. 可选：装 terminal-notifier 以获得更好的通知体验
 
@@ -134,7 +146,7 @@ settings 改动通常下一轮即生效。若没生效，让用户打开一次 `
 | 项目识别 | `NOTIFY_PROJECT_DIR` | stdin JSON 的 `cwd` | 当前工作目录 |
 | 焦点识别 | `lsappinfo` + `__CFBundleIdentifier` 比对 | 任一信号缺失 → 跳过（宁可多弹） | — |
 | 本地通知投递 | `terminal-notifier`（subtitle 显示项目名） | `osascript` 原生 | 终端响铃 `\a` |
-| 飞书投递 | Feishu Agent 通知 | webhook 兜底 | 未配置则跳过 |
+| 飞书投递 | Feishu Agent 卡片（IM API） | webhook 卡片兜底 | 未配置则跳过 |
 
 关键设计原则（改脚本时务必保持）：
 
@@ -144,7 +156,7 @@ settings 改动通常下一轮即生效。若没生效，让用户打开一次 `
 - **焦点识别用 `lsappinfo` 不用 System Events**：前者查 CoreServices DB 无需自动化授权弹窗，后者会弹权限框。
 - **焦点是应用级非窗口级**：在 VSCode 但看的是代码而非集成终端、或开了多个同 app 窗口时，会误判为"在焦点"而静默。需窗口级要用 Accessibility 脚本逐 app 取窗口标题，代价大且对 VSCode 集成终端不可靠，一般不做。
 - **远程/SSH 会话**：`__CFBundleIdentifier` 为空时自动跳过焦点检查，通知照常弹出。
-- **通知内容保持简单**：本地通知 title 是 `ClaudeCode`，subtitle 是项目根目录名称，body 是通知内容；飞书同样只发 agent、project、content。
+- **通知内容保持简单**：本地通知 title 是 `ClaudeCode`，subtitle 是项目根目录名称，body 是通知内容；飞书发通知卡片（绿=完成/橙=授权），卡片只含 agent、project、content、时间戳，不加按钮。
 
 ## 自定义
 

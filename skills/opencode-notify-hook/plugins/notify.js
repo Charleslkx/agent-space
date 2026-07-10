@@ -1,6 +1,11 @@
 // opencode notification plugin
 // Events: permission.asked (needs auth) + session.idle (task done)
-// 投递链: terminal-notifier → osascript → bell (本地) ; 飞书文本消息 (可选)
+// 投递链: terminal-notifier → osascript → bell (本地) ; 飞书交互卡片 (可选)
+//
+// 飞书通道自带 IM API 发送（无 codex 依赖），读取 FEISHU_ENV 指向的 env 文件
+// （默认 ~/.config/opencode/feishu-agent.env）里的 FEISHU_APP_ID/SECRET/HOME_CHANNEL，
+// 取 tenant token 后投递纯通知卡片（无按钮）。kind=done 绿色；kind=approval 橙色。
+// IM API 失败时回退 LARK_WEBHOOK_URL webhook（同款卡片）。
 //
 // 注意: 全部 shell 调用走 node:child_process (stdio ignore/pipe)，不使用 opencode 的 $
 // helper —— 否则 opencode 会把 plugin 内的 $ 命令回显到 TUI（如 lsappinfo 的 ASN 输出
@@ -8,8 +13,7 @@
 
 const TITLE = "OpenCode"
 const SOUND = "Glass"
-const APPROVAL_PYTHON = process.env.FEISHU_APPROVAL_PYTHON ?? "/Users/charles/Nutstore/agent-space/.venv/bin/python"
-const APPROVAL_SEND = process.env.FEISHU_APPROVAL_SEND ?? "/Users/charles/.codex/hooks/feishu_send_approval.py"
+const FEISHU_ENV = process.env.FEISHU_ENV ?? `${process.env.HOME}/.config/opencode/feishu-agent.env`
 
 // Terminal app bundle IDs that host opencode (add yours if missing)
 const TERMINAL_BUNDLES = [
@@ -31,6 +35,58 @@ async function run(cmd, args) {
     child.on("error", () => resolve({ code: 1, stdout: out }))
     child.on("close", code => resolve({ code: code ?? 1, stdout: out }))
   })
+}
+
+// POST JSON，返回解析后的响应（供飞书 IM API 用）
+async function httpsPostJson(url, payload, headers) {
+  const https = await import("node:https")
+  const body = JSON.stringify(payload)
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, {
+      method: "POST",
+      timeout: 10000,
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body), ...(headers ?? {}) },
+    }, res => {
+      let data = ""
+      res.on("data", d => { data += d })
+      res.on("end", () => { try { resolve(JSON.parse(data)) } catch (e) { reject(e) } })
+    })
+    req.on("error", reject)
+    req.on("timeout", () => req.destroy(new Error("timeout")))
+    req.end(body)
+  })
+}
+
+function parseEnv(text) {
+  const env = {}
+  for (const line of text.split("\n")) {
+    const t = line.trim()
+    if (!t || t.startsWith("#") || !t.includes("=")) continue
+    const i = t.indexOf("=")
+    env[t.slice(0, i)] = t.slice(i + 1)
+  }
+  return env
+}
+
+// 绿=完成/橙=授权 的纯通知卡片（无按钮），IM API 与 webhook 共用
+function buildCard(agent, project, content, kind) {
+  const [title, template] = kind === "approval"
+    ? [`⚠️ ${agent} · 需要授权`, "orange"]
+    : [`🤖 ${agent} · 任务完成`, "green"]
+  const ts = new Date().toLocaleString("sv-SE") // YYYY-MM-DD HH:MM:SS
+  return {
+    config: { wide_screen_mode: true },
+    header: { title: { tag: "plain_text", content: title }, template },
+    elements: [
+      { tag: "div", fields: [
+        { is_short: true, text: { tag: "lark_md", content: `**Agent**\n${agent}` } },
+        { is_short: true, text: { tag: "lark_md", content: `**Project**\n${project}` } },
+      ]},
+      { tag: "hr" },
+      { tag: "div", text: { tag: "lark_md", content } },
+      { tag: "note", elements: [{ tag: "plain_text", content: `🕒 ${ts}` }] },
+    ],
+  }
 }
 
 export const OpenCodeNotifyPlugin = async () => {
@@ -73,56 +129,51 @@ export const OpenCodeNotifyPlugin = async () => {
   }
 
   // 本地通知：terminal-notifier → osascript → bell（都不向 TUI 输出任何东西）
-  async function notify(title, message) {
-    const project = projectName()
+  async function notify(title, project, message) {
     const tn = await run("terminal-notifier", ["-title", title, "-subtitle", project, "-message", message, "-sound", SOUND])
-    if (tn.code === 0) {
-      void larkNotify(title, project, message).catch(() => {})
-      return
-    }
+    if (tn.code === 0) return
     const script = `display notification ${JSON.stringify(message)} with title ${JSON.stringify(title)} subtitle ${JSON.stringify(project)} sound name ${JSON.stringify(SOUND)}`
     const osa = await run("osascript", ["-e", script])
-    if (osa.code === 0) {
-      void larkNotify(title, project, message).catch(() => {})
-      return
-    }
+    if (osa.code === 0) return
     process.stdout.write("\a") // terminal bell last resort
-    void larkNotify(title, project, message).catch(() => {})
   }
 
-  async function approvalNotify(message) {
-    const project = projectName()
-    await notify(TITLE, message)
-    const approvalId = `opencode-${Math.floor(Date.now() / 1000)}-${process.pid}`
-    await sendFeishuApproval(approvalId, project, message)
+  // 飞书主通道：自带 IM API 发卡片，失败回退 webhook。全程 stdlib，无 codex 依赖。
+  async function feishuNotify(kind, project, content) {
+    if (await feishuCard(kind, project, content)) return
+    await larkNotify(kind, project, content).catch(() => {})
   }
 
-  async function sendFeishuApproval(approvalId, project, content) {
-    const fs = await import("node:fs/promises")
+  async function feishuCard(kind, project, content) {
     try {
-      await fs.access(APPROVAL_SEND)
-      const { spawn } = await import("node:child_process")
-      const child = spawn(APPROVAL_PYTHON, [
-        APPROVAL_SEND,
-        "--agent", TITLE,
-        "--approval-id", approvalId,
-        "--project", project,
-        "--content", content,
-      ], { stdio: "ignore" })
-      const code = await new Promise(resolve => child.on("close", resolve))
-      return code === 0
+      const fs = await import("node:fs/promises")
+      const env = parseEnv(await fs.readFile(FEISHU_ENV, "utf8"))
+      const appId = env.FEISHU_APP_ID
+      const appSecret = env.FEISHU_APP_SECRET
+      const receiveId = env.FEISHU_HOME_CHANNEL || env.FEISHU_APPROVAL_RECEIVE_ID
+      const receiveIdType = env.FEISHU_APPROVAL_RECEIVE_ID_TYPE || "chat_id"
+      if (!appId || !appSecret || !receiveId) return false
+      const tok = await httpsPostJson(
+        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        { app_id: appId, app_secret: appSecret },
+      )
+      if (tok.code !== 0) return false
+      const resp = await httpsPostJson(
+        `https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`,
+        { receive_id: receiveId, msg_type: "interactive", content: JSON.stringify(buildCard(TITLE, project, content, kind)) },
+        { Authorization: `Bearer ${tok.tenant_access_token}` },
+      )
+      return resp.code === 0
     } catch {
       return false
     }
   }
 
-  async function larkNotify(agent, project, content) {
+  // webhook 兜底：仅在 IM API 失败且配置了 LARK_WEBHOOK_URL 时使用，发同款卡片
+  async function larkNotify(kind, project, content) {
     const url = process.env.LARK_WEBHOOK_URL
     if (!url) return
-    const payload = {
-      msg_type: "text",
-      content: { text: `Agent: ${agent}\nProject: ${project}\nContent: ${content}` },
-    }
+    const payload = { msg_type: "interactive", card: buildCard(TITLE, project, content, kind) }
     const secret = process.env.LARK_WEBHOOK_SECRET?.trim()
     if (secret) {
       const crypto = await import("node:crypto")
@@ -131,9 +182,7 @@ export const OpenCodeNotifyPlugin = async () => {
       payload.sign = crypto.createHmac("sha256", `${timestamp}\n${secret}`).digest("base64")
     }
     const body = JSON.stringify(payload)
-    const { request } = await (url.startsWith("https:")
-      ? import("node:https")
-      : import("node:http"))
+    const { request } = await (url.startsWith("https:") ? import("node:https") : import("node:http"))
     await new Promise(resolve => {
       const req = request(url, { method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) }, timeout: 5000 }, res => {
         res.resume()
@@ -161,11 +210,16 @@ export const OpenCodeNotifyPlugin = async () => {
     event: async ({ event }) => {
       if (event.type === "permission.asked") {
         if (await isFocused()) return
-        await approvalNotify(`需要操作: ${extractPermissionMsg(event)}`)
+        const project = projectName()
+        const msg = `需要操作: ${extractPermissionMsg(event)}`
+        await notify(TITLE, project, msg)
+        await feishuNotify("approval", project, msg)
       }
       if (event.type === "session.idle") {
         if (await isFocused()) return
-        await notify(TITLE, "任务已完成")
+        const project = projectName()
+        await notify(TITLE, project, "任务已完成")
+        await feishuNotify("done", project, "任务已完成")
       }
     },
   }
