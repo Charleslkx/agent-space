@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import re
 
@@ -40,6 +41,11 @@ hard break
 next line
 """
 
+PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000d4944415408d763f8cfc0f01f00050001ff89993d1d0000000049454e44ae426082"
+)
+
 
 def document_token(doc: str) -> str:
     return doc.rstrip("/").rsplit("/", 1)[-1]
@@ -49,7 +55,8 @@ async def run(url: str, doc: str) -> None:
     async with Client(url) as client:
         tools = {tool.name for tool in await client.list_tools()}
         expected = {
-            "check_lark_cli", "batch_pull", "batch_push", "point_update",
+            "check_lark_cli", "begin_lark_auth", "complete_lark_auth",
+            "batch_pull", "batch_push", "point_update",
             "create_document", "insert_media", "whiteboard_query", "whiteboard_update",
         }
         assert tools == expected, tools
@@ -86,6 +93,13 @@ async def run(url: str, doc: str) -> None:
             "documents": [doc], "doc_format": "markdown",
         })).data[0]["content"]
         assert "plain-updated" in updated
+        await client.call_tool("insert_media", {
+            "doc": doc,
+            "filename": "mcp-media-test.png",
+            "content_base64": base64.b64encode(PNG).decode(),
+            "selection": "plain-updated",
+            "before": True,
+        })
 
         token = document_token(doc)
         native_xml = f"""
@@ -130,6 +144,7 @@ A[MD] --&gt; B[Feishu]</whiteboard>
         ]
         missing_tags = [tag for tag in native_tags if tag not in xml]
         assert not missing_tags, missing_tags
+        assert xml.index("<img") < xml.index("plain-updated")
         downgrade_markers = {
             "url_preview": "preview-marker",
             "button": "button-marker",
@@ -165,6 +180,7 @@ A[MD] --&gt; B[Feishu]</whiteboard>
             "whiteboard_query_before": bool(re.search("MD", json.dumps(before))),
             "whiteboard_update_verified": True,
             "point_update_verified": True,
+            "media_position_verified": True,
         }, ensure_ascii=False, indent=2))
 
 

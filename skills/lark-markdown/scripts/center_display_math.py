@@ -60,16 +60,21 @@ def main() -> None:
     args = parser.parse_args()
     if not args.source.is_dir():
         parser.error(f"not a directory: {args.source}")
-    shutil.rmtree(args.destination, ignore_errors=True)
-    counts: dict[str, int] = {}
-    for path in args.source.rglob("*.md"):
+    if args.destination.is_symlink():
+        parser.error("destination must not be a symlink")
+    source = args.source.resolve()
+    destination = args.destination.resolve()
+    if source == destination or source in destination.parents or destination in source.parents:
+        parser.error("source and destination directories must not overlap")
+    shutil.rmtree(destination, ignore_errors=True)
+    count_total = 0
+    for path in source.rglob("*.md"):
         content, count = convert_text(path.read_text())
-        output = args.destination / path.relative_to(args.source)
+        output = destination / path.relative_to(source)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(content)
-        if count:
-            counts[str(path.relative_to(args.source))] = count
-    print(f"centered_display_formulas={sum(counts.values())}")
+        count_total += count
+    print(f"centered_display_formulas={count_total}")
 
 
 if __name__ == "__main__":

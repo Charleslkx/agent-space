@@ -21,7 +21,10 @@ def cleanup(workdir: Path) -> list[str]:
         if path.name in KEEP:
             continue
         removed.append(path.name)
-        shutil.rmtree(path) if path.is_dir() else path.unlink()
+        if path.is_symlink() or not path.is_dir():
+            path.unlink()
+        else:
+            shutil.rmtree(path)
     if not any(workdir.iterdir()):
         workdir.rmdir()
     return sorted(removed)

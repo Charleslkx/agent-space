@@ -13,9 +13,12 @@ parser.add_argument("--out", type=Path, required=True)
 args = parser.parse_args()
 state = json.loads(args.state.read_text()).get("documents", {})
 remote = json.loads(args.remote_index.read_text())
-plan = {"pull": [], "local_only": [], "conflicts": [], "unchanged": [], "new_remote": [], "missing_remote": []}
+root = args.local_root.resolve()
+plan = {"pull": [], "local_only": [], "conflicts": [], "unchanged": [], "new_remote": [], "missing_remote": [], "invalid_paths": []}
 for path, item in state.items():
-    local = args.local_root / path
+    local = (root / path).resolve()
+    if not local.is_relative_to(root):
+        plan["invalid_paths"].append(path); continue
     local_sha = hashlib.sha256(local.read_bytes()).hexdigest() if local.exists() else None
     local_changed = local_sha != item.get("sha256")
     fetched = remote.get(path)
