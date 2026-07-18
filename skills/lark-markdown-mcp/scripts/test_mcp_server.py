@@ -27,7 +27,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {tool.name for tool in tools},
             {
-                "check_lark_cli", "batch_pull", "batch_push", "point_update",
+                "check_lark_cli", "begin_lark_auth", "complete_lark_auth", "batch_pull", "batch_push", "point_update",
                 "create_document", "insert_media", "whiteboard_query", "whiteboard_update",
             },
         )
@@ -78,6 +78,37 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
              patch.object(SERVER.time, "sleep"):
             status = SERVER._check_lark_cli(use_cache=False)
         self.assertTrue(status["verified"])
+
+    def test_begin_lark_auth_returns_link_device_code_and_qr(self) -> None:
+        payload = {
+            "data": {
+                "verification_url": "https://auth.example/verify",
+                "device_code": "device-code",
+            }
+        }
+        completed = type("Completed", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
+             patch.object(SERVER, "_run_cli", return_value=payload), \
+             patch.object(SERVER.subprocess, "run", return_value=completed) as run:
+            def write_qr(*args, **kwargs):
+                output = Path(args[0][args[0].index("--output") + 1])
+                output.write_bytes(b"png")
+                return completed
+            run.side_effect = write_qr
+            result = SERVER.begin_lark_auth()
+        self.assertEqual(result["verification_url"], "https://auth.example/verify")
+        self.assertEqual(result["device_code"], "device-code")
+        self.assertEqual(base64.b64decode(result["qr_code_png_base64"]), b"png")
+        self.assertFalse((Path(tmp) / ".lark_publish").exists())
+
+    def test_complete_lark_auth_uses_device_code(self) -> None:
+        with patch.object(SERVER, "_run_cli", return_value={"ok": True}) as run_cli, \
+             patch.object(SERVER, "_check_lark_cli", return_value={"verified": True}):
+            self.assertEqual(SERVER.complete_lark_auth("device-code"), {"verified": True})
+        self.assertEqual(
+            run_cli.call_args.args[0], ["auth", "login", "--device-code", "device-code"],
+        )
 
     def test_hidden_payload_is_removed_after_failure(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"):
@@ -214,10 +245,11 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             SERVER.BASE_URL_ENV: "https://mcp.example.com",
             SERVER.GITHUB_CLIENT_ID_ENV: "client",
             SERVER.GITHUB_CLIENT_SECRET_ENV: "secret",
+            SERVER.GITHUB_JWT_SIGNING_KEY_ENV: "stable-signing-key",
             SERVER.GITHUB_USER_ENV: "Charles",
         }
         with patch.dict(SERVER.os.environ, env, clear=True), \
-             patch.object(SERVER, "GitHubProvider", return_value="provider") as provider:
+             patch.object(SERVER, "_ChatGPTOriginCompatibleGitHubProvider", return_value="provider") as provider:
             self.assertEqual(SERVER._auth_provider("github"), "provider")
             kwargs = provider.call_args.kwargs
             self.assertEqual(kwargs["base_url"], "https://mcp.example.com")
@@ -232,6 +264,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             SERVER.BASE_URL_ENV: "http://mcp.example.com/path",
             SERVER.GITHUB_CLIENT_ID_ENV: "client",
             SERVER.GITHUB_CLIENT_SECRET_ENV: "secret",
+            SERVER.GITHUB_JWT_SIGNING_KEY_ENV: "stable-signing-key",
             SERVER.GITHUB_USER_ENV: "charles",
         }
         with patch.dict(SERVER.os.environ, env, clear=True):

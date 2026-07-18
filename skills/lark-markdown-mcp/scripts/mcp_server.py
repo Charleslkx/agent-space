@@ -28,6 +28,7 @@ BASE_URL_ENV = "LARK_MCP_BASE_URL"
 GITHUB_CLIENT_ID_ENV = "LARK_MCP_GITHUB_CLIENT_ID"
 GITHUB_CLIENT_SECRET_ENV = "LARK_MCP_GITHUB_CLIENT_SECRET"
 GITHUB_USER_ENV = "LARK_MCP_GITHUB_USER"
+GITHUB_JWT_SIGNING_KEY_ENV = "LARK_MCP_JWT_SIGNING_KEY"
 CLI_TIMEOUT_SECONDS = 60
 MAX_BATCH_ITEMS = 100
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
@@ -46,11 +47,29 @@ def _auth_mode() -> str:
 AUTH_MODE = _auth_mode()
 
 
+class _ChatGPTOriginCompatibleGitHubProvider(GitHubProvider):
+    """Accept ChatGPT's origin-form resource indicator for this MCP endpoint."""
+
+    async def authorize(self, client, params):
+        client_resource = getattr(params, "resource", None)
+        if client_resource:
+            requested = urlparse(str(client_resource))
+            configured = urlparse(str(self.base_url))
+            if (
+                requested.scheme == configured.scheme
+                and requested.netloc == configured.netloc
+                and requested.path.rstrip("/") == ""
+            ):
+                params = params.model_copy(
+                    update={"resource": f"{str(self.base_url).rstrip('/')}/mcp"}
+                )
+        return await super().authorize(client, params)
+
 def _auth_provider(mode: str = AUTH_MODE):
     if mode == "github":
         names = (
             BASE_URL_ENV, GITHUB_CLIENT_ID_ENV,
-            GITHUB_CLIENT_SECRET_ENV, GITHUB_USER_ENV,
+            GITHUB_CLIENT_SECRET_ENV, GITHUB_USER_ENV, GITHUB_JWT_SIGNING_KEY_ENV,
         )
         missing = [name for name in names if not os.environ.get(name)]
         if missing:
@@ -59,9 +78,10 @@ def _auth_provider(mode: str = AUTH_MODE):
         parsed = urlparse(base_url)
         if parsed.scheme != "https" or not parsed.netloc or parsed.path:
             raise RuntimeError(f"{BASE_URL_ENV} must be an HTTPS origin without a path")
-        return GitHubProvider(
+        return _ChatGPTOriginCompatibleGitHubProvider(
             client_id=os.environ[GITHUB_CLIENT_ID_ENV],
             client_secret=os.environ[GITHUB_CLIENT_SECRET_ENV],
+            jwt_signing_key=os.environ[GITHUB_JWT_SIGNING_KEY_ENV],
             base_url=base_url,
             resource_base_url=base_url,
             required_scopes=["read:user"],
@@ -276,6 +296,82 @@ def _batch_failure(operation: str, index: int, item: str, completed: int, error:
         "completed": completed,
         "error": str(error),
     }, ensure_ascii=False))
+
+
+def _find_auth_value(payload: object, names: tuple[str, ...]) -> str | None:
+    if isinstance(payload, dict):
+        for name in names:
+            value = payload.get(name)
+            if isinstance(value, str) and value:
+                return value
+        for value in payload.values():
+            found = _find_auth_value(value, names)
+            if found:
+                return found
+    if isinstance(payload, list):
+        for value in payload:
+            found = _find_auth_value(value, names)
+            if found:
+                return found
+    return None
+
+
+def _lark_auth_qrcode(verification_url: str) -> str:
+    with _hidden_run() as run:
+        output = run / "lark-auth.png"
+        result = subprocess.run(
+            [
+                "lark-cli", "auth", "qrcode", verification_url,
+                "--output", output.relative_to(Path.cwd()).as_posix(),
+            ],
+            text=True,
+            capture_output=True,
+            env={**os.environ, **QUIET_ENV},
+            timeout=CLI_TIMEOUT_SECONDS,
+        )
+        if result.returncode:
+            raise RuntimeError(json.dumps({
+                "operation": "generate lark authorization QR code",
+                "error": "lark_cli_failed",
+                "exit_code": result.returncode,
+                "message": (result.stderr.strip() or result.stdout.strip())[:4000],
+            }, ensure_ascii=False))
+        return base64.b64encode(output.read_bytes()).decode("ascii")
+
+
+@mcp.tool(title="Start Lark user authorization", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+def begin_lark_auth() -> dict:
+    """Create a one-time Lark device authorization URL and QR code for Docs and Drive."""
+    payload = _run_cli(
+        ["auth", "login", "--domain", "docs", "--domain", "drive", "--no-wait", "--json"],
+        "start lark user authorization",
+    )
+    verification_url = _find_auth_value(
+        payload, ("verification_url", "verification_uri_complete"),
+    )
+    device_code = _find_auth_value(payload, ("device_code",))
+    if not verification_url or not device_code:
+        raise RuntimeError("lark-cli did not return a verification URL and device code")
+    return {
+        "verification_url": verification_url,
+        "device_code": device_code,
+        "qr_code_png_base64": _lark_auth_qrcode(verification_url),
+        "next_step": "Open the verification URL or scan the QR code, complete authorization, then call complete_lark_auth with the device code.",
+    }
+
+
+@mcp.tool(title="Complete Lark user authorization", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+def complete_lark_auth(device_code: str) -> dict:
+    """Complete a Lark device authorization after the user has approved its URL."""
+    global _auth_cache
+    if not device_code.strip():
+        raise ValueError("device_code must not be empty")
+    _run_cli(
+        ["auth", "login", "--device-code", device_code],
+        "complete lark user authorization",
+    )
+    _auth_cache = None
+    return _check_lark_cli(use_cache=False)
 
 
 @mcp.tool(title="Check Lark CLI", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})

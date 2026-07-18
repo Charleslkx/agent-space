@@ -200,7 +200,8 @@ def main() -> int:
                 for m in pattern.finditer(prose):
                     raw = m.group(2 if kind == 'markdown' else 1); target = resolve(p.parent, raw)
                     if target and target.exists() and target.is_file():
-                        marker = f'LOCAL_IMAGE_{hashlib.sha256((rel + "\\0" + str(target)).encode()).hexdigest()[:16]}'
+                        marker_source = rel + "\0" + str(target)
+                        marker = f'LOCAL_IMAGE_{hashlib.sha256(marker_source.encode()).hexdigest()[:16]}'
                         images.append({'document': rel, 'source': str(target), 'syntax': kind,
                                        'alt': m.group(1) if kind == 'markdown' else '', 'marker': marker})
                     elif not re.match(r'https?://', raw.strip()):
