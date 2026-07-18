@@ -1,7 +1,0 @@
-[project]
-name = "campus-recruit"
-version = "0.1.0"
-description = "Query a Feishu Base view for campus recruitment records via lark-cli"
-readme = "SKILL.md"
-requires-python = ">=3.11"
-dependencies = []

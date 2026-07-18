@@ -1,0 +1,6 @@
+.env
+.venv/
+.lark_publish/
+*.key
+*.pem
+*.crt
