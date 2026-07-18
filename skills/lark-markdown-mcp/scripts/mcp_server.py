@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 from fastmcp import FastMCP
 from fastmcp.server.auth import AuthContext
 from fastmcp.server.auth.providers.github import GitHubProvider
+from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient
 from fastmcp.server.middleware import AuthMiddleware
 
 TOKEN_ENV = "LARK_MCP_AUTH_TOKEN"
@@ -29,6 +30,8 @@ GITHUB_CLIENT_ID_ENV = "LARK_MCP_GITHUB_CLIENT_ID"
 GITHUB_CLIENT_SECRET_ENV = "LARK_MCP_GITHUB_CLIENT_SECRET"
 GITHUB_USER_ENV = "LARK_MCP_GITHUB_USER"
 GITHUB_JWT_SIGNING_KEY_ENV = "LARK_MCP_JWT_SIGNING_KEY"
+CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
+CLAUDE_CODE_REDIRECT_URI_PATTERN = "http://localhost:*"
 CLI_TIMEOUT_SECONDS = 60
 MAX_BATCH_ITEMS = 100
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
@@ -48,8 +51,40 @@ AUTH_MODE = _auth_mode()
 
 
 class _ChatGPTOriginCompatibleGitHubProvider(GitHubProvider):
-    """Accept ChatGPT's origin-form resource indicator for this MCP endpoint."""
+    """Handle narrowly scoped compatibility differences in MCP OAuth clients."""
 
+    async def get_client(self, client_id: str):
+        """Provide Claude Code's public CIMD client when its metadata fetch is blocked.
+
+        Claude Code identifies itself with a public client-metadata URL. FastMCP
+        normally fetches that document, but Claude's edge may reject server-side
+        requests. The fallback is deliberately limited to the published client
+        ID and its documented loopback callback; all other clients keep FastMCP's
+        normal DCR/CIMD validation path.
+        """
+        if client_id != CLAUDE_CODE_CLIENT_ID:
+            return await super().get_client(client_id)
+
+        client = await self._client_store.get(key=client_id)
+        if client is not None:
+            if client.allowed_redirect_uri_patterns != [CLAUDE_CODE_REDIRECT_URI_PATTERN]:
+                client.allowed_redirect_uri_patterns = [CLAUDE_CODE_REDIRECT_URI_PATTERN]
+                await self._client_store.put(key=client_id, value=client)
+            return client
+
+        client = ProxyDCRClient(
+            client_id=CLAUDE_CODE_CLIENT_ID,
+            client_secret=None,
+            redirect_uris=None,
+            grant_types=["authorization_code"],
+            response_types=["code"],
+            scope="read:user",
+            token_endpoint_auth_method="none",
+            client_name="Claude Code",
+            allowed_redirect_uri_patterns=[CLAUDE_CODE_REDIRECT_URI_PATTERN],
+        )
+        await self._client_store.put(key=client_id, value=client)
+        return client
     async def authorize(self, client, params):
         client_resource = getattr(params, "resource", None)
         if client_resource:
@@ -278,7 +313,7 @@ def _payload(path: Path, content: str) -> str:
     if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
         raise ValueError(f"content exceeds {MAX_CONTENT_BYTES} bytes")
     path.write_text(content, encoding="utf-8")
-    return "@" + path.relative_to(Path.cwd()).as_posix()
+    return "@" + path.resolve().relative_to(Path.cwd()).as_posix()
 
 
 def _validate_batch(items: list, name: str) -> None:
