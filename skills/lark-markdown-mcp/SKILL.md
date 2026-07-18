@@ -1,6 +1,6 @@
 ---
 name: lark-markdown-mcp
-version: 0.6.0
+version: 0.7.0
 description: "将本地 Obsidian Markdown 目录发布到飞书 Docx 或 Wiki 节点。当用户要求上传、迁移、同步本地 Markdown/Obsidian 知识库到飞书，并要求保留公式、图片、相互引用或把相对链接改为飞书文档链接时，必须使用本 skill。"
 metadata:
   requires:
@@ -201,10 +201,14 @@ uv run python scripts/mcp_server.py \
   --transport http --host 127.0.0.1 --port 8765
 ```
 
-公网优先按 README 使用反向代理终止 TLS，MCP 仍绑定 `127.0.0.1` 并启用 Bearer Token。需要直接监听公网地址时强制直接 TLS；token 只从 `LARK_MCP_AUTH_TOKEN` 读取，长度至少 32 字符。非回环地址缺少 token、证书或私钥时拒绝启动：
+公网优先按 README 使用反向代理终止 TLS，MCP 仍绑定 `127.0.0.1`。ChatGPT 模式使用 `LARK_MCP_AUTH_MODE=github`：FastMCP 提供 OAuth 2.1、PKCE、CIMD/DCR 和发现路由，`LARK_MCP_GITHUB_USER` 限制唯一允许账户。静态 Bearer Token 仅用于 Codex 等支持自定义 Token 的客户端，不适用于 ChatGPT。非回环地址缺少认证、证书或私钥时拒绝启动。
 
 ```bash
-export LARK_MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
+export LARK_MCP_AUTH_MODE=github
+export LARK_MCP_BASE_URL=https://mcp.example.com
+export LARK_MCP_GITHUB_CLIENT_ID=...
+export LARK_MCP_GITHUB_CLIENT_SECRET=...
+export LARK_MCP_GITHUB_USER=your-login
 uv run python scripts/mcp_server.py \
   --transport http --host 0.0.0.0 --port 8765 \
   --tls-cert /etc/letsencrypt/live/mcp.example.com/fullchain.pem \

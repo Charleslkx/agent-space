@@ -1,6 +1,6 @@
 # Lark Markdown MCP
 
-可分发的 uv 项目：把 Markdown/Obsidian 内容写入飞书 Docx，支持批量拉取、批量推送、定点修改、创建文档、插入媒体及画板读写。
+可分发的 uv 项目：把 Markdown/Obsidian 内容写入飞书 Docx，支持批量拉取、批量推送、定点修改、创建文档、插入媒体及画板读写。公网部署后可由 ChatGPT 扫描工具并通过 OAuth 2.1 连接。
 
 ## 环境要求
 
@@ -61,28 +61,46 @@ codex mcp get lark-markdown-mcp
 
 | 配置 | 必需 | 说明 |
 |-|-|-|
-| `LARK_MCP_AUTH_TOKEN` | 公网必需 | 至少 32 字符；只从环境变量读取 |
+| `LARK_MCP_AUTH_MODE` | 公网必需 | ChatGPT 使用 `github`；Codex 静态 Bearer 使用 `token` |
+| `LARK_MCP_BASE_URL` | ChatGPT 必需 | MCP 的公开 HTTPS origin，例如 `https://mcp.example.com`，不能带路径 |
+| `LARK_MCP_GITHUB_CLIENT_ID` | ChatGPT 必需 | GitHub OAuth App Client ID |
+| `LARK_MCP_GITHUB_CLIENT_SECRET` | ChatGPT 必需 | GitHub OAuth App Client Secret |
+| `LARK_MCP_GITHUB_USER` | ChatGPT 必需 | 唯一允许访问的 GitHub 登录名 |
+| `LARK_MCP_AUTH_TOKEN` | `token` 模式必需 | 至少 32 字符；ChatGPT 不接受自定义 API Key |
 | 工作目录 | 必需 | 服务在这里创建 `.lark_publish/.run-*`，每次调用后删除 |
 | TCP 8765 | 可改 | `--port` 设置；公网只开放反向代理的 443 |
 | TLS 证书与私钥 | 直接公网模式必需 | 通过 `--tls-cert`、`--tls-key` 传入 |
 
 固定边界：单批 100 项、正文 10 MiB、媒体 20 MiB、每次 `lark-cli` 60 秒。更大的文件应先拆分；不要提高限制来绕过反向代理或飞书 API 的约束。
 
-## 推荐的公网部署
+## ChatGPT 远程部署
 
-生产环境使用 Nginx/Caddy 终止 HTTPS，MCP 仅监听同机 `127.0.0.1`。先创建只允许服务账户读取的环境文件：
+ChatGPT 不会从服务器“自动安装”MCP。它会扫描公开 HTTPS `/mcp` 端点；OAuth 客户端可通过 CIMD 或 DCR 自动登记。当前实现使用 FastMCP 的 GitHub OAuth 代理提供 OAuth 2.1、PKCE、CIMD/DCR 和 protected-resource discovery，并只放行 `LARK_MCP_GITHUB_USER`。
+
+先在 GitHub 创建 OAuth App：
+
+- Homepage URL：`https://mcp.example.com`
+- Authorization callback URL：`https://mcp.example.com/auth/callback`
+
+创建仅服务账户可读的环境文件：
 
 ```bash
 umask 077
-openssl rand -hex 32 > /tmp/lark-mcp-token
-# 将下列内容写入服务环境文件，不要提交到仓库：
-# LARK_MCP_AUTH_TOKEN=<上一步生成的值>
+sudo install -m 600 /dev/null /etc/lark-markdown-mcp.env
+# 写入：
+# LARK_MCP_AUTH_MODE=github
+# LARK_MCP_BASE_URL=https://mcp.example.com
+# LARK_MCP_GITHUB_CLIENT_ID=...
+# LARK_MCP_GITHUB_CLIENT_SECRET=...
+# LARK_MCP_GITHUB_USER=你的GitHub登录名
 ```
 
-服务进程必须在启动前获得 `LARK_MCP_AUTH_TOKEN`，因为 FastMCP 在导入时建立鉴权器：
+认证变量必须在进程启动前加载，因为 FastMCP 在导入时建立认证器：
 
 ```bash
-export LARK_MCP_AUTH_TOKEN='至少32字符的随机值'
+set -a
+. /etc/lark-markdown-mcp.env
+set +a
 uv run python scripts/mcp_server.py --transport http --host 127.0.0.1 --port 8765
 ```
 
@@ -96,7 +114,8 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/mcp.example.com/privkey.pem;
     client_max_body_size 22m;
 
-    location /mcp {
+    # OAuth discovery、DCR、callback 与 /mcp 都必须转发。
+    location / {
         proxy_pass http://127.0.0.1:8765;
         proxy_http_version 1.1;
         proxy_buffering off;
@@ -116,6 +135,8 @@ User=lark-mcp
 WorkingDirectory=/opt/lark-markdown-mcp
 EnvironmentFile=/etc/lark-markdown-mcp.env
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=XDG_DATA_HOME=/var/lib/lark-markdown-mcp
+StateDirectory=lark-markdown-mcp
 ExecStart=/opt/lark-markdown-mcp/.venv/bin/python scripts/mcp_server.py --transport http --host 127.0.0.1 --port 8765
 Restart=on-failure
 NoNewPrivileges=true
@@ -124,22 +145,38 @@ PrivateTmp=true
 
 该服务账户必须单独完成 `lark-cli auth login`；复制项目不会复制飞书凭据。防火墙只开放 443，不开放 8765。
 
-## 直接 TLS 模式
-
-没有反向代理时可直接监听公网；缺少 Token、证书或私钥时服务拒绝启动：
+部署后确认 OAuth 发现文档可访问：
 
 ```bash
-export LARK_MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
+curl -fsS https://mcp.example.com/.well-known/oauth-protected-resource/mcp
+curl -fsS https://mcp.example.com/.well-known/oauth-authorization-server
+```
+
+在 ChatGPT 中启用 Developer mode，然后打开 Settings → Plugins → `+`，填写名称、用途说明和 `https://mcp.example.com/mcp`。ChatGPT 完成 OAuth 后会列出八个工具。服务器不能替用户把自己写入 ChatGPT 账户；公开分发还需在 OpenAI plugin submission portal 扫描、提交、审核并发布。
+
+## 直接 TLS 模式
+
+没有反向代理时可直接监听公网；缺少认证、证书或私钥时服务拒绝启动：
+
+`LARK_MCP_BASE_URL` 必须与外部地址完全一致；下例监听 8765 时应设为 `https://mcp.example.com:8765`。
+
+```bash
+set -a
+. /etc/lark-markdown-mcp.env
+set +a
 uv run python scripts/mcp_server.py \
   --transport http --host 0.0.0.0 --port 8765 \
   --tls-cert /etc/letsencrypt/live/mcp.example.com/fullchain.pem \
   --tls-key /etc/letsencrypt/live/mcp.example.com/privkey.pem
 ```
 
-Codex 只保存 Token 环境变量名：
+## 静态 Token 模式
+
+该模式用于 Codex 或支持自定义 Bearer Token 的 MCP 客户端，不适用于 ChatGPT：
 
 ```bash
-export LARK_MCP_AUTH_TOKEN='与服务器一致的值'
+export LARK_MCP_AUTH_MODE=token
+export LARK_MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
 codex mcp remove lark-markdown-mcp 2>/dev/null || true
 codex mcp add lark-markdown-mcp \
   --url https://mcp.example.com/mcp \
@@ -148,7 +185,7 @@ codex mcp add lark-markdown-mcp \
 
 ## 验证
 
-本地或公网启动后，先验证工具发现和认证：
+静态 Token 模式启动后可验证工具发现和认证：
 
 ```bash
 uv run python scripts/test_https_mcp.py \

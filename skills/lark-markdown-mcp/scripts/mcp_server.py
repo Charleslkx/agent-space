@@ -15,20 +15,68 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import urlparse
 
 from fastmcp import FastMCP
+from fastmcp.server.auth import AuthContext
+from fastmcp.server.auth.providers.github import GitHubProvider
+from fastmcp.server.middleware import AuthMiddleware
 
 TOKEN_ENV = "LARK_MCP_AUTH_TOKEN"
+AUTH_MODE_ENV = "LARK_MCP_AUTH_MODE"
+BASE_URL_ENV = "LARK_MCP_BASE_URL"
+GITHUB_CLIENT_ID_ENV = "LARK_MCP_GITHUB_CLIENT_ID"
+GITHUB_CLIENT_SECRET_ENV = "LARK_MCP_GITHUB_CLIENT_SECRET"
+GITHUB_USER_ENV = "LARK_MCP_GITHUB_USER"
 CLI_TIMEOUT_SECONDS = 60
 MAX_BATCH_ITEMS = 100
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 
 
-def _auth_provider():
+def _auth_mode() -> str:
+    mode = os.environ.get(AUTH_MODE_ENV)
+    if mode:
+        if mode not in {"none", "token", "github"}:
+            raise RuntimeError(f"{AUTH_MODE_ENV} must be none, token, or github")
+        return mode
+    return "token" if os.environ.get(TOKEN_ENV) else "none"
+
+
+AUTH_MODE = _auth_mode()
+
+
+def _auth_provider(mode: str = AUTH_MODE):
+    if mode == "github":
+        names = (
+            BASE_URL_ENV, GITHUB_CLIENT_ID_ENV,
+            GITHUB_CLIENT_SECRET_ENV, GITHUB_USER_ENV,
+        )
+        missing = [name for name in names if not os.environ.get(name)]
+        if missing:
+            raise RuntimeError(f"GitHub OAuth requires: {', '.join(missing)}")
+        base_url = os.environ[BASE_URL_ENV].rstrip("/")
+        parsed = urlparse(base_url)
+        if parsed.scheme != "https" or not parsed.netloc or parsed.path:
+            raise RuntimeError(f"{BASE_URL_ENV} must be an HTTPS origin without a path")
+        return GitHubProvider(
+            client_id=os.environ[GITHUB_CLIENT_ID_ENV],
+            client_secret=os.environ[GITHUB_CLIENT_SECRET_ENV],
+            base_url=base_url,
+            resource_base_url=base_url,
+            required_scopes=["read:user"],
+            allowed_client_redirect_uris=[
+                "https://chatgpt.com/connector/oauth/*",
+                "https://chatgpt.com/connector_platform_oauth_redirect",
+                "http://localhost:*",
+                "http://127.0.0.1:*",
+            ],
+        )
+    if mode == "none":
+        return None
     token = os.environ.get(TOKEN_ENV)
     if not token:
-        return None
+        raise RuntimeError(f"token auth requires {TOKEN_ENV}")
     if len(token) < 32:
         raise RuntimeError(f"{TOKEN_ENV} must contain at least 32 characters")
     from fastmcp.server.auth import StaticTokenVerifier
@@ -39,7 +87,39 @@ def _auth_provider():
     }})
 
 
-mcp = FastMCP(name="Lark Markdown MCP", auth=_auth_provider())
+def _authorized_github_user(ctx: AuthContext) -> bool:
+    expected = os.environ.get(GITHUB_USER_ENV)
+    return bool(
+        ctx.token and expected
+        and (ctx.token.claims or {}).get("login", "").casefold() == expected.casefold()
+    )
+
+
+def _security_schemes(mode: str) -> list[dict]:
+    if mode == "github":
+        return [{"type": "oauth2", "scopes": ["read:user"]}]
+    if mode == "none":
+        return [{"type": "noauth"}]
+    return []
+
+
+TOOL_META = {"securitySchemes": _security_schemes(AUTH_MODE)}
+AUTH_PROVIDER = _auth_provider()
+mcp = FastMCP(
+    name="Lark Markdown MCP",
+    version="0.7.0",
+    instructions=(
+        "Use batch_pull before modifying an unfamiliar document. "
+        "Use point_update for one exact change and batch_push for full replacements. "
+        "Write tools modify the authenticated user's Lark documents."
+    ),
+    website_url=os.environ.get(BASE_URL_ENV),
+    auth=AUTH_PROVIDER,
+    middleware=(
+        [AuthMiddleware(auth=_authorized_github_user)]
+        if AUTH_MODE == "github" else []
+    ),
+)
 WORKDIR = Path(".lark_publish")
 QUIET_ENV = {
     "LARKSUITE_CLI_NO_UPDATE_NOTIFIER": "1",
@@ -59,16 +139,15 @@ def _is_loopback(host: str) -> bool:
 
 
 def _https_config(host: str, cert: Path | None, key: Path | None) -> dict[str, str]:
-    token = os.environ.get(TOKEN_ENV)
     if bool(cert) != bool(key):
         raise RuntimeError("--tls-cert and --tls-key must be supplied together")
-    if not _is_loopback(host) and not token:
-        raise RuntimeError(f"public HTTP binding requires {TOKEN_ENV}")
+    if not _is_loopback(host) and AUTH_PROVIDER is None:
+        raise RuntimeError("public HTTP binding requires configured authentication")
     if not _is_loopback(host) and not cert:
         raise RuntimeError("public HTTP binding requires --tls-cert and --tls-key")
     if cert:
-        if not token:
-            raise RuntimeError(f"HTTPS mode requires {TOKEN_ENV}")
+        if AUTH_PROVIDER is None:
+            raise RuntimeError("HTTPS mode requires configured authentication")
         if not cert.is_file() or not key or not key.is_file():
             raise RuntimeError("TLS certificate or key file does not exist")
         return {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
@@ -199,13 +278,13 @@ def _batch_failure(operation: str, index: int, item: str, completed: int, error:
     }, ensure_ascii=False))
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@mcp.tool(title="Check Lark CLI", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 def check_lark_cli() -> dict:
     """Check the lark-cli binary, version, and verified user login."""
     return _check_lark_cli(use_cache=False)
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+@mcp.tool(title="Batch pull Lark documents", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
 def batch_pull(
     documents: list[str],
     doc_format: str = "markdown",
@@ -237,7 +316,7 @@ def batch_pull(
     return pulled
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(title="Batch push Lark documents", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
 def batch_push(documents: list[dict[str, str]]) -> list[dict]:
     """Overwrite or append multiple documents from inline content."""
     _check_lark_cli()
@@ -266,7 +345,7 @@ def batch_push(documents: list[dict[str, str]]) -> list[dict]:
     return results
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(title="Update exact document text", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
 def point_update(
     doc: str,
     pattern: str,
@@ -286,7 +365,7 @@ def point_update(
         ], "point_update")
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(title="Create a Lark document", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 def create_document(
     content: str,
     doc_format: str = "markdown",
@@ -307,7 +386,7 @@ def create_document(
         return _run_cli(args, "create_document")
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(title="Insert document media", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 def insert_media(
     doc: str,
     filename: str,
@@ -345,7 +424,7 @@ def insert_media(
         return _run_cli(args, "insert_media")
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+@mcp.tool(title="Read a Lark whiteboard", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
 def whiteboard_query(whiteboard_token: str, output_as: str = "code") -> dict:
     """Read one Lark whiteboard as Mermaid/PlantUML code or raw nodes."""
     _check_lark_cli()
@@ -366,7 +445,7 @@ def whiteboard_query(whiteboard_token: str, output_as: str = "code") -> dict:
     raise AssertionError("unreachable")
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(title="Update a Lark whiteboard", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
 def whiteboard_update(
     whiteboard_token: str,
     source: str,
