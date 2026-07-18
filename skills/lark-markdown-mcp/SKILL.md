@@ -185,7 +185,7 @@ python3 scripts/cleanup_workspace.py \
 
 ## 7 FastMCP 服务
 
-`scripts/mcp_server.py` 提供八个工具：`check_lark_cli`、`batch_pull`、`batch_push`、`point_update`、`create_document`、`insert_media`、`whiteboard_query`、`whiteboard_update`。除健康检查外，每次调用前都会检查 `lark-cli` 与 user 登录态；需要文件载荷的操作使用 `.lark_publish/.run-*` 隐藏目录，并在成功或异常时删除。清理失败会显式报错，不会静默遗留正文。
+`scripts/mcp_server.py` 提供十个工具：`check_lark_cli`、`begin_lark_auth`、`complete_lark_auth`、`batch_pull`、`batch_push`、`point_update`、`create_document`、`insert_media`、`whiteboard_query`、`whiteboard_update`。`begin_lark_auth` 按需生成 docs/drive 的一次性用户授权 URL、device code 与二维码，`complete_lark_auth` 在用户已完成页面授权后提交 device code；其余写入或读取工具（健康检查除外）每次调用前都会检查 `lark-cli` 与 user 登录态；需要文件载荷的操作使用 `.lark_publish/.run-*` 隐藏目录，并在成功或异常时删除。清理失败会显式报错，不会静默遗留正文。
 
 该目录是完整 uv 项目。复制目录后运行 `uv sync --frozen`；依赖版本由 `uv.lock` 固定。部署细节见 [`README.md`](README.md)。
 
