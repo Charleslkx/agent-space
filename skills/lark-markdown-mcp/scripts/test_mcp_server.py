@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +13,7 @@ from unittest.mock import patch
 from fastmcp import Client
 
 MODULE_PATH = Path(__file__).with_name("mcp_server.py")
-SPEC = importlib.util.spec_from_file_location("lark_publish_mcp", MODULE_PATH)
+SPEC = importlib.util.spec_from_file_location("lark_markdown_mcp", MODULE_PATH)
 SERVER = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 SPEC.loader.exec_module(SERVER)
@@ -24,7 +27,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             {tool.name for tool in tools},
             {
                 "check_lark_cli", "batch_pull", "batch_push", "point_update",
-                "whiteboard_query", "whiteboard_update",
+                "create_document", "insert_media", "whiteboard_query", "whiteboard_update",
             },
         )
 
@@ -76,6 +79,48 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
                     SERVER._payload(run / ".content", "text")
                     raise RuntimeError("boom")
             self.assertFalse(SERVER.WORKDIR.exists())
+
+    def test_cli_timeout_is_actionable(self) -> None:
+        with patch.object(
+            SERVER.subprocess, "run",
+            side_effect=subprocess.TimeoutExpired(["lark-cli"], SERVER.CLI_TIMEOUT_SECONDS),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                SERVER._run_cli(["docs", "+fetch"], "pull test")
+        error = json.loads(str(raised.exception))
+        self.assertEqual(error["operation"], "pull test")
+        self.assertEqual(error["error"], "timeout")
+
+    def test_batch_failure_identifies_document(self) -> None:
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", side_effect=RuntimeError("denied")):
+            with self.assertRaises(RuntimeError) as raised:
+                SERVER.batch_pull(["doc-a"])
+        error = json.loads(str(raised.exception))
+        self.assertEqual(error["failed_item"], "doc-a")
+        self.assertEqual(error["completed"], 0)
+
+    async def test_create_and_media_cleanup_payloads(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
+             patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", return_value={"ok": True}) as run_cli:
+            async with Client(SERVER.mcp) as client:
+                await client.call_tool("create_document", {
+                    "content": "# title", "parent_token": "folder-token",
+                })
+                await client.call_tool("insert_media", {
+                    "doc": "doc-token", "filename": "pixel.png",
+                    "content_base64": base64.b64encode(b"png").decode(),
+                    "selection": "marker", "before": True,
+                })
+            self.assertEqual(run_cli.call_count, 2)
+            self.assertFalse(SERVER.WORKDIR.exists())
+
+    def test_media_rejects_path_filename(self) -> None:
+        with patch.object(SERVER, "_check_lark_cli"):
+            with self.assertRaisesRegex(ValueError, "plain file name"):
+                SERVER.insert_media("doc", "../secret", "eA==")
 
     async def test_whiteboard_update_cleans_payload(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \

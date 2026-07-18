@@ -1,6 +1,8 @@
 .env
 .venv/
 .lark_publish/
+__pycache__/
+*.pyc
 *.key
 *.pem
 *.crt

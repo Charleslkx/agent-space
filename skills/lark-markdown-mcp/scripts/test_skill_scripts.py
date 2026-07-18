@@ -27,11 +27,15 @@ class SkillScriptsTest(unittest.TestCase):
             cwd = Path(tmp)
             root = cwd / "knowledge-base" / "test"
             (root / "sub").mkdir(parents=True)
+            (root / "sub" / "b(test).md").write_text("# B\n\n## part\n")
+            (root / "sub" / "a.md").write_text("# duplicate title\n")
             (root / "a.md").write_text(
-                "# A\n\n[go](sub/b.md#part)\n\n$$x+y$$\n\n"
-                "```text\n$$literal$$\n```\n\n![pixel](pixel.png)\n"
+                "# A\n\n[go](sub/b(test).md#part \"title\")\n\n"
+                "[[sub/b(test)#part|wiki go]]\n\n"
+                "[reference]: <sub/b(test).md#part>\n\n"
+                "`[literal](sub/b(test).md)`\n\n$$x+y$$\n\n"
+                "```text\n[code](sub/b(test).md)\n$$literal$$\n```\n\n![pixel](pixel.png)\n"
             )
-            (root / "sub" / "b.md").write_text("# B\n\n## part\n")
             (root / "pixel.png").write_bytes(
                 bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415408d763f8cfc0f01f00050001ff89993d1d0000000049454e44ae426082")
             )
@@ -39,18 +43,26 @@ class SkillScriptsTest(unittest.TestCase):
             out = cwd / ".lark_publish"
             run("prepare_publish.py", "knowledge-base/test", "--out", ".lark_publish", cwd=cwd)
             manifest = json.loads((out / "manifest.json").read_text())
-            self.assertEqual(len(manifest["documents"]), 2)
-            self.assertEqual(len(manifest["edges"]), 1)
+            self.assertEqual(len(manifest["documents"]), 3)
+            self.assertEqual(len(manifest["edges"]), 3)
             self.assertEqual(len(manifest["images"]), 1)
+            self.assertEqual(manifest["duplicate_titles"][0]["title"], "a")
 
-            url_map = {"a.md": "https://example/a", "sub/b.md": "https://example/b"}
+            url_map = {
+                "a.md": "https://example/a", "sub/a.md": "https://example/sub-a",
+                "sub/b(test).md": "https://example/b",
+            }
             (out / "url-map.json").write_text(json.dumps(url_map))
             run(
                 "prepare_publish.py", "knowledge-base/test", "--out", ".lark_publish",
                 "--url-map", ".lark_publish/url-map.json", cwd=cwd,
             )
             staged = (out / "markdown" / "a.md").read_text()
-            self.assertIn("[go](https://example/b)", staged)
+            self.assertIn('[go](https://example/b "title")', staged)
+            self.assertIn("[wiki go](https://example/b)", staged)
+            self.assertIn("[reference]: <https://example/b>", staged)
+            self.assertIn("`[literal](sub/b(test).md)`", staged)
+            self.assertIn("[code](sub/b(test).md)", staged)
             self.assertIn("LOCAL_IMAGE_", staged)
 
             run(
@@ -62,12 +74,13 @@ class SkillScriptsTest(unittest.TestCase):
                 '<p align="center"><latex>x+y</latex></p>',
                 rendered,
             )
-            self.assertIn("```text\n$$literal$$\n```", rendered)
+            self.assertIn("$$literal$$", rendered)
 
             nodes = {"test": {}, "test/sub": {}}
             docs = {
-                "knowledge-base/test/a.md": {"url": "https://example/a"},
-                "knowledge-base/test/sub/b.md": {"url": "https://example/b"},
+                "a.md": {"url": "https://example/a"},
+                "sub/a.md": {"url": "https://example/sub-a"},
+                "sub/b(test).md": {"url": "https://example/b"},
             }
             (out / "nodes.json").write_text(json.dumps(nodes))
             (out / "docs.json").write_text(json.dumps(docs))
@@ -86,7 +99,7 @@ class SkillScriptsTest(unittest.TestCase):
                 cwd=cwd,
             )
             incremental = json.loads((out / "incremental-plan.json").read_text())
-            self.assertEqual(incremental["new"], ["sub/b.md"])
+            self.assertEqual(incremental["new"], ["sub/a.md", "sub/b(test).md"])
             self.assertIn("a.md", incremental["changed"])
 
             state["documents"]["a.md"]["sha256"] = manifest["documents"][0]["sha256"]

@@ -29,7 +29,7 @@ def main():
         links = []
         for source in sorted(folder.rglob("*.md")):
             rel = source.relative_to(root).as_posix()
-            doc_key = f"knowledge-base/{args.label}/{rel}"
+            doc_key = rel
             if doc_key not in docs:
                 raise SystemExit(f"document missing: {doc_key}")
             links.append(f"- [{rel[:-3]}]({docs[doc_key]['url']})")
