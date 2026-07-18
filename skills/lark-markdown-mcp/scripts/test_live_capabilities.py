@@ -50,7 +50,7 @@ async def run(url: str, doc: str) -> None:
         tools = {tool.name for tool in await client.list_tools()}
         expected = {
             "check_lark_cli", "batch_pull", "batch_push", "point_update",
-            "whiteboard_query", "whiteboard_update",
+            "create_document", "insert_media", "whiteboard_query", "whiteboard_update",
         }
         assert tools == expected, tools
 
@@ -79,6 +79,13 @@ async def run(url: str, doc: str) -> None:
         }
         missing = [name for name, marker in markdown_markers.items() if marker not in markdown]
         assert not missing, missing
+        await client.call_tool("point_update", {
+            "doc": doc, "pattern": "plain ", "replacement": "plain-updated ",
+        })
+        updated = (await client.call_tool("batch_pull", {
+            "documents": [doc], "doc_format": "markdown",
+        })).data[0]["content"]
+        assert "plain-updated" in updated
 
         token = document_token(doc)
         native_xml = f"""
@@ -157,6 +164,7 @@ A[MD] --&gt; B[Feishu]</whiteboard>
             "whiteboard_token": board,
             "whiteboard_query_before": bool(re.search("MD", json.dumps(before))),
             "whiteboard_update_verified": True,
+            "point_update_verified": True,
         }, ensure_ascii=False, indent=2))
 
 

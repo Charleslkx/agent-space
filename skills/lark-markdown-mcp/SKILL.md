@@ -1,6 +1,6 @@
 ---
-name: lark-obsidian-publish
-version: 0.5.0
+name: lark-markdown-mcp
+version: 0.6.0
 description: "将本地 Obsidian Markdown 目录发布到飞书 Docx 或 Wiki 节点。当用户要求上传、迁移、同步本地 Markdown/Obsidian 知识库到飞书，并要求保留公式、图片、相互引用或把相对链接改为飞书文档链接时，必须使用本 skill。"
 metadata:
   requires:
@@ -9,7 +9,7 @@ metadata:
 
 # 发布 Obsidian Markdown 到飞书
 
-> 先阅读 `lark-shared`、`lark-doc`、`lark-drive` 与 `lark-wiki` 的当前 CLI 指南。写入使用 `--as user`。所有 `lark-cli` 文件路径必须相对当前工作目录。
+> 本 skill 自包含，不依赖其他 Codex skill。执行写操作前用 `lark-cli skills read lark-doc` 及其引用路径读取 CLI 随版本附带的指南；认证规则用 `lark-cli skills read lark-shared`。写入使用 `--as user`，文件路径必须相对当前工作目录。
 
 ## 输入与边界
 
@@ -28,7 +28,7 @@ metadata:
 首次成功发布后，将每个文档的源文件 SHA-256、飞书 URL、doc token 与 revision 写入 `state.json`。后续先生成最新 `manifest.json`，再计算最小写入集合：
 
 ```bash
-python3 /Users/charles/.agents/skills/lark-obsidian-publish/scripts/plan_incremental.py \
+python3 scripts/plan_incremental.py \
   --manifest .lark_publish/manifest.json --state .lark_publish/state.json \
   --out .lark_publish/incremental-plan.json
 ```
@@ -45,7 +45,7 @@ python3 /Users/charles/.agents/skills/lark-obsidian-publish/scripts/plan_increme
 2. 运行冲突规划：
 
 ```bash
-python3 /Users/charles/.agents/skills/lark-obsidian-publish/scripts/plan_pull.py \
+python3 scripts/plan_pull.py \
   --state .lark_publish/state.json --remote-index .lark_publish/remote-index.json \
   --local-root knowledge-base/example --out .lark_publish/pull-plan.json
 ```
@@ -67,7 +67,7 @@ LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1 LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1 \
 `ok`、`verified` 或 `identities.user.status` 显示不可用时，按 `lark-shared` 修复配置或重新授权后再继续。
 
 ```bash
-python3 /Users/charles/.agents/skills/lark-obsidian-publish/scripts/prepare_publish.py \
+python3 scripts/prepare_publish.py \
   knowledge-base/math/ab-test --out .lark_publish
 ```
 
@@ -101,14 +101,14 @@ lark-cli docs +create --api-version v2 --as user --parent-token "$PARENT_TOKEN" 
 ## 3 生成已改写正文
 
 ```bash
-python3 /Users/charles/.agents/skills/lark-obsidian-publish/scripts/prepare_publish.py \
+python3 scripts/prepare_publish.py \
   knowledge-base/math/ab-test --out .lark_publish --url-map .lark_publish/url-map.json
 ```
 
 该步骤将相对 `.md` 链接改为映射中的飞书 URL。随后把独立的 `$$...$$` 转为居中的飞书公式段落；行内 `$...$` 保持不变：
 
 ```bash
-python3 /Users/charles/.agents/skills/lark-obsidian-publish/scripts/center_display_math.py \
+python3 scripts/center_display_math.py \
   .lark_publish/markdown .lark_publish/markdown-rendered
 ```
 
@@ -127,8 +127,10 @@ lark-cli docs +update --api-version v2 --as user --doc "$DOC_URL" --command over
 
 在全部 Markdown 页面 URL 已确定后，为每个文件夹生成索引页；索引页列出该文件夹下所有 Markdown 页面（含递归子文件夹）的飞书链接：
 
+`docs.json` 的键统一使用相对发布根目录的 Markdown 路径，不添加 `knowledge-base/` 等固定前缀。
+
 ```bash
-python3 /Users/charles/.agents/skills/lark-obsidian-publish/scripts/build_folder_indexes.py \
+python3 scripts/build_folder_indexes.py \
   --root knowledge-base/math --label math \
   --nodes .lark_publish/nodes.json --docs .lark_publish/docs.json \
   --out .lark_publish/folder-indexes
@@ -175,7 +177,7 @@ python3 /Users/charles/.agents/skills/lark-obsidian-publish/scripts/build_folder
 验收或异常处理结束后都运行：
 
 ```bash
-python3 /Users/charles/.agents/skills/lark-obsidian-publish/scripts/cleanup_workspace.py \
+python3 scripts/cleanup_workspace.py \
   --workdir .lark_publish
 ```
 
@@ -183,7 +185,7 @@ python3 /Users/charles/.agents/skills/lark-obsidian-publish/scripts/cleanup_work
 
 ## 7 FastMCP 服务
 
-`scripts/mcp_server.py` 提供六个工具：`check_lark_cli`、`batch_pull`、`batch_push`、`point_update`、`whiteboard_query`、`whiteboard_update`。除健康检查外，每次调用前都会检查 `lark-cli` 与 user 登录态；需要文件载荷的操作使用 `.lark_publish/.run-*` 隐藏目录，并在成功或异常时自动删除。
+`scripts/mcp_server.py` 提供八个工具：`check_lark_cli`、`batch_pull`、`batch_push`、`point_update`、`create_document`、`insert_media`、`whiteboard_query`、`whiteboard_update`。除健康检查外，每次调用前都会检查 `lark-cli` 与 user 登录态；需要文件载荷的操作使用 `.lark_publish/.run-*` 隐藏目录，并在成功或异常时删除。清理失败会显式报错，不会静默遗留正文。
 
 该目录是完整 uv 项目。复制目录后运行 `uv sync --frozen`；依赖版本由 `uv.lock` 固定。部署细节见 [`README.md`](README.md)。
 
@@ -199,7 +201,7 @@ uv run python scripts/mcp_server.py \
   --transport http --host 127.0.0.1 --port 8765
 ```
 
-公网模式强制 Bearer Token 和直接 TLS；token 只从 `LARK_MCP_AUTH_TOKEN` 读取，长度至少 32 字符。非回环地址缺少 token、证书或私钥时拒绝启动：
+公网优先按 README 使用反向代理终止 TLS，MCP 仍绑定 `127.0.0.1` 并启用 Bearer Token。需要直接监听公网地址时强制直接 TLS；token 只从 `LARK_MCP_AUTH_TOKEN` 读取，长度至少 32 字符。非回环地址缺少 token、证书或私钥时拒绝启动：
 
 ```bash
 export LARK_MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
@@ -219,5 +221,9 @@ uv run python scripts/test_live_capabilities.py \
 - `batch_pull(documents, doc_format, detail)`：批量读取 Docx/Wiki，返回 Markdown 或 XML 正文和 revision；验收原生块时用 `detail=full`，不留下本地副本。
 - `batch_push(documents)`：批量 `overwrite` 或 `append`；每项传 `doc`、`content`，可选 `mode`、`doc_format`。
 - `point_update(doc, pattern, replacement, doc_format)`：使用 `str_replace` 精确替换；`replacement` 为空时删除匹配内容。
+- `create_document(content, doc_format, parent_token)`：在个人空间、Drive 文件夹或 Wiki 节点下创建文档。
+- `insert_media(doc, filename, content_base64, media_type, selection, before)`：从 base64 插入图片或附件，调用后删除载荷。
 - `whiteboard_query(whiteboard_token, output_as)`：读取画板代码或原生节点，`output_as` 为 `code` / `raw`。
 - `whiteboard_update(whiteboard_token, source, input_format, overwrite)`：用 Mermaid、PlantUML 或 raw 节点更新已有画板，载荷调用后删除。
+
+单批最多 100 项，单份正文最多 10 MiB，媒体解码后最多 20 MiB；每次 `lark-cli` 调用最长 60 秒。批量失败错误包含操作名、失败索引、文档标识、已完成数量、CLI 退出码与消息。
