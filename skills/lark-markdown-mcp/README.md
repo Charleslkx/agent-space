@@ -152,7 +152,7 @@ curl -fsS https://mcp.example.com/.well-known/oauth-protected-resource/mcp
 curl -fsS https://mcp.example.com/.well-known/oauth-authorization-server
 ```
 
-在 ChatGPT 中启用 Developer mode，然后打开 Settings → Plugins → `+`，填写名称、用途说明和 `https://mcp.example.com/mcp`。ChatGPT 完成 OAuth 后会列出八个工具。服务器不能替用户把自己写入 ChatGPT 账户；公开分发还需在 OpenAI plugin submission portal 扫描、提交、审核并发布。
+在 ChatGPT 中启用 Developer mode，然后打开 Settings → Plugins → `+`，填写名称、用途说明和 `https://mcp.example.com/mcp`。ChatGPT 完成 OAuth 后会列出十个工具。服务器不能替用户把自己写入 ChatGPT 账户；公开分发还需在 OpenAI plugin submission portal 扫描、提交、审核并发布。
 
 ## 直接 TLS 模式
 
