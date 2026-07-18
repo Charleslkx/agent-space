@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a Feishu upload manifest and staged Markdown without touching source files."""
 from __future__ import annotations
-import argparse, hashlib, json, re, sys
+import argparse, hashlib, json, re, shutil, sys
 from collections import defaultdict
 from pathlib import Path
 from urllib.parse import unquote
@@ -142,7 +142,7 @@ def markdown_links(prose: str):
         }
 
 
-def document_target(root: Path, base: Path, raw: str, files: list[Path]) -> Path | None:
+def document_target(base: Path, raw: str, files: list[Path]) -> Path | None:
     target_raw, _ = split_dest(raw)
     if not target_raw:
         return base.resolve()
@@ -161,28 +161,40 @@ def document_target(root: Path, base: Path, raw: str, files: list[Path]) -> Path
 def transform_prose(content: str, transform) -> str:
     return "".join(chunk if is_code else transform(chunk) for is_code, chunk in prose_chunks(content))
 
+
+def reset_staging(out: Path) -> None:
+    keep = {"state.json", "url-map.json", "report.json"}
+    for path in out.iterdir():
+        if path.name in keep:
+            continue
+        if path.is_symlink() or not path.is_dir():
+            path.unlink()
+        else:
+            shutil.rmtree(path)
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('source', type=Path, help='local Markdown directory')
-    ap.add_argument('--out', type=Path, required=True, help='empty staging directory')
+    ap.add_argument('--out', type=Path, required=True, help='hidden .lark_publish staging directory')
     ap.add_argument('--url-map', type=Path, help='JSON object: source relative path -> Feishu doc URL')
-    ap.add_argument('--allow-control-chars', action='store_true', help='stage them unchanged; never upload by default')
     args = ap.parse_args()
     root = args.source.resolve(); out = args.out.resolve()
     if not root.is_dir(): ap.error(f'not a directory: {root}')
+    if out.name != '.lark_publish': ap.error('output directory must be named .lark_publish')
+    if root == out or root in out.parents or out in root.parents:
+        ap.error('source and output directories must not overlap')
     files = sorted(root.rglob('*.md'))
     if not files: ap.error('no Markdown files')
-    if out.exists() and any(out.iterdir()) and not args.url_map:
-        ap.error(f'output must be empty: {out}')
-    out.mkdir(parents=True, exist_ok=True)
     url_map = json.loads(args.url_map.read_text()) if args.url_map else {}
+    out.mkdir(parents=True, exist_ok=True)
+    reset_staging(out)
     source_keys = {p.relative_to(root).as_posix(): p for p in files}
     docs, edges, images, errors = [], [], [], []
 
     for p in files:
         rel = p.relative_to(root).as_posix(); text = p.read_text(encoding='utf-8')
         bad = CONTROL.search(text)
-        if bad and not args.allow_control_chars:
+        if bad:
             errors.append({'file': rel, 'error': f'control character U+{ord(bad.group()):04X} at offset {bad.start()}'})
         refs = []
         for is_code, prose in prose_chunks(text):
@@ -190,7 +202,7 @@ def main() -> int:
                 continue
             for link in markdown_links(prose):
                 target_raw, fragment = split_dest(link["target"])
-                target = document_target(root, p, target_raw, files)
+                target = document_target(p, target_raw, files)
                 if target:
                     target_rel = target.relative_to(root).as_posix()
                     refs.append(target_rel); edges.append({'from': rel, 'to': target_rel, 'fragment': fragment})
@@ -225,12 +237,13 @@ def main() -> int:
     missing = sorted(set(source_keys)-set(url_map)); extra = sorted(set(url_map)-set(source_keys))
     if missing or extra:
         print(json.dumps({'missing_url_map': missing, 'extra_url_map': extra}, ensure_ascii=False, indent=2), file=sys.stderr); return 2
+    image_markers = {(item['document'], Path(item['source']).resolve()): item['marker'] for item in images}
     for p in files:
         rel=p.relative_to(root).as_posix(); text=p.read_text(encoding='utf-8')
         def rewrite_links(prose: str) -> str:
             replacements = []
             for link in markdown_links(prose):
-                target = document_target(root, p, link['target'], files)
+                target = document_target(p, link['target'], files)
                 if not target:
                     continue
                 url = url_map[target.relative_to(root).as_posix()]
@@ -242,7 +255,6 @@ def main() -> int:
                 prose = prose[:start] + replacement + prose[end:]
             return prose
         staged=transform_prose(text, rewrite_links)
-        image_markers = {(item['document'], Path(item['source']).resolve()): item['marker'] for item in images}
         def replace_image(match: re.Match[str], kind: str) -> str:
             raw = match.group(2 if kind == 'markdown' else 1)
             target = resolve(p.parent, raw)
