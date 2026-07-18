@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastmcp import Client
@@ -30,6 +31,12 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
                 "create_document", "insert_media", "whiteboard_query", "whiteboard_update",
             },
         )
+        self.assertTrue(all(tool.title for tool in tools))
+        self.assertTrue(all(tool.outputSchema for tool in tools))
+        self.assertTrue(all(
+            tool.meta["securitySchemes"] == SERVER._security_schemes(SERVER.AUTH_MODE)
+            for tool in tools
+        ))
 
     async def test_batch_push_cleans_payload(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
@@ -171,9 +178,9 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(removed, ["manifest.json", "markdown"])
             self.assertEqual([p.name for p in workdir.iterdir()], ["state.json"])
 
-    def test_public_http_requires_token_and_tls(self) -> None:
-        with patch.dict(SERVER.os.environ, {}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "requires LARK_MCP_AUTH_TOKEN"):
+    def test_public_http_requires_authentication_and_tls(self) -> None:
+        with patch.object(SERVER, "AUTH_PROVIDER", None):
+            with self.assertRaisesRegex(RuntimeError, "configured authentication"):
                 SERVER._https_config("0.0.0.0", None, None)
 
     def test_local_http_allows_no_tls(self) -> None:
@@ -181,13 +188,13 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(SERVER._https_config("127.0.0.1", None, None), {})
 
     def test_https_requires_existing_certificates(self) -> None:
-        with patch.dict(SERVER.os.environ, {SERVER.TOKEN_ENV: "x" * 32}, clear=True):
+        with patch.object(SERVER, "AUTH_PROVIDER", object()):
             with self.assertRaisesRegex(RuntimeError, "does not exist"):
                 SERVER._https_config("0.0.0.0", Path("missing.crt"), Path("missing.key"))
 
-    def test_public_https_accepts_token_and_certificates(self) -> None:
+    def test_public_https_accepts_authentication_and_certificates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, \
-             patch.dict(SERVER.os.environ, {SERVER.TOKEN_ENV: "x" * 32}, clear=True):
+             patch.object(SERVER, "AUTH_PROVIDER", object()):
             cert = Path(tmp) / "server.crt"
             key = Path(tmp) / "server.key"
             cert.touch()
@@ -200,7 +207,36 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
     def test_auth_token_minimum_length(self) -> None:
         with patch.dict(SERVER.os.environ, {SERVER.TOKEN_ENV: "short"}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "at least 32"):
-                SERVER._auth_provider()
+                SERVER._auth_provider("token")
+
+    def test_github_oauth_is_dcr_ready_and_user_limited(self) -> None:
+        env = {
+            SERVER.BASE_URL_ENV: "https://mcp.example.com",
+            SERVER.GITHUB_CLIENT_ID_ENV: "client",
+            SERVER.GITHUB_CLIENT_SECRET_ENV: "secret",
+            SERVER.GITHUB_USER_ENV: "Charles",
+        }
+        with patch.dict(SERVER.os.environ, env, clear=True), \
+             patch.object(SERVER, "GitHubProvider", return_value="provider") as provider:
+            self.assertEqual(SERVER._auth_provider("github"), "provider")
+            kwargs = provider.call_args.kwargs
+            self.assertEqual(kwargs["base_url"], "https://mcp.example.com")
+            self.assertIn("https://chatgpt.com/connector/oauth/*", kwargs["allowed_client_redirect_uris"])
+            allowed = SERVER._authorized_github_user(SimpleNamespace(token=SimpleNamespace(
+                claims={"login": "charles"},
+            )))
+        self.assertTrue(allowed)
+
+    def test_github_oauth_rejects_non_https_origin(self) -> None:
+        env = {
+            SERVER.BASE_URL_ENV: "http://mcp.example.com/path",
+            SERVER.GITHUB_CLIENT_ID_ENV: "client",
+            SERVER.GITHUB_CLIENT_SECRET_ENV: "secret",
+            SERVER.GITHUB_USER_ENV: "charles",
+        }
+        with patch.dict(SERVER.os.environ, env, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "HTTPS origin"):
+                SERVER._auth_provider("github")
 
 
 if __name__ == "__main__":

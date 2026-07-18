@@ -1,6 +1,6 @@
 [project]
 name = "lark-markdown-mcp"
-version = "0.6.0"
+version = "0.7.0"
 description = "Authenticated FastMCP server for Obsidian and Lark documents"
 requires-python = ">=3.11"
 dependencies = ["fastmcp==3.2.4"]
