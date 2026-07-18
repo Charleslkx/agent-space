@@ -5,6 +5,7 @@ import importlib.util
 import base64
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,13 +15,18 @@ from unittest.mock import AsyncMock, patch
 from fastmcp import Client
 
 MODULE_PATH = Path(__file__).with_name("mcp_server.py")
-SPEC = importlib.util.spec_from_file_location("lark_markdown_mcp", MODULE_PATH)
+SPEC = importlib.util.spec_from_file_location("lark_markdown", MODULE_PATH)
 SERVER = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 SPEC.loader.exec_module(SERVER)
 
 
 class MCPServerTest(unittest.IsolatedAsyncioTestCase):
+    def test_server_name_is_canonical(self) -> None:
+        self.assertEqual(SERVER.mcp.name, "Lark-Markdown")
+        self.assertEqual(SERVER.mcp.version, "0.12.0")
+        self.assertIn("never configure or start a server", SERVER.mcp.instructions.lower())
+
     async def test_tools_are_registered(self) -> None:
         async with Client(SERVER.mcp) as client:
             tools = await client.list_tools()
@@ -50,19 +56,61 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(run_cli.call_count, 1)
             self.assertFalse(SERVER.WORKDIR.exists())
 
+    def test_batch_push_validates_every_item_before_writing(self) -> None:
+        with patch.object(SERVER, "_check_lark_cli") as check, \
+             patch.object(SERVER, "_run_cli") as run_cli:
+            with self.assertRaises(RuntimeError) as raised:
+                SERVER.batch_push([
+                    {"doc": "doc-a", "content": "valid"},
+                    {"doc": "doc-b", "content": "invalid", "mode": "unknown"},
+                ])
+        error = json.loads(str(raised.exception))
+        self.assertEqual(error["failed_index"], 1)
+        self.assertEqual(error["completed"], 0)
+        check.assert_not_called()
+        run_cli.assert_not_called()
+
     def test_lark_cli_success_shape(self) -> None:
         auth = {
             "identity": "user",
             "verified": True,
             "identities": {"user": {"status": "ready", "available": True, "verified": True}},
         }
-        completed = type("Completed", (), {"stdout": "lark-cli version 1.0.56"})()
+        completed = subprocess.CompletedProcess([], 0, "lark-cli version 1.0.69", "")
         with patch.object(SERVER.shutil, "which", return_value="/bin/lark-cli"), \
              patch.object(SERVER.subprocess, "run", return_value=completed), \
              patch.object(SERVER, "_run_cli", return_value=auth):
             status = SERVER._check_lark_cli(use_cache=False)
         self.assertEqual(status["user_status"], "ready")
         self.assertTrue(status["verified"])
+
+    def test_lark_cli_update_notice_is_non_blocking(self) -> None:
+        auth = {
+            "identity": "user", "verified": True,
+            "identities": {"user": {"status": "ready", "available": True, "verified": True}},
+            "_notice": {"update": {"latest": "9.9.9", "command": "lark-cli update"}},
+        }
+        completed = subprocess.CompletedProcess([], 0, "lark-cli version 1.0.69", "")
+        with patch.object(SERVER.shutil, "which", return_value="/bin/lark-cli"), \
+             patch.object(SERVER.subprocess, "run", return_value=completed), \
+             patch.object(SERVER, "_run_cli", return_value=auth):
+            status = SERVER._check_lark_cli(use_cache=False)
+        self.assertTrue(status["verified"])
+        self.assertEqual(status["update_notice"]["latest"], "9.9.9")
+
+    def test_lark_cli_version_failure_is_non_blocking(self) -> None:
+        auth = {
+            "identity": "user", "verified": True,
+            "identities": {"user": {"status": "ready", "available": True, "verified": True}},
+        }
+        with patch.object(SERVER.shutil, "which", return_value="/bin/lark-cli"), \
+             patch.object(SERVER, "_run_process", side_effect=SERVER.LarkCLIError({
+                 "operation": "check lark-cli version", "error": "timeout",
+             })), patch.object(SERVER, "_run_cli", return_value=auth):
+            status = SERVER._check_lark_cli(use_cache=False)
+        self.assertTrue(status["verified"])
+        self.assertIsNone(status["version"])
+        self.assertEqual(status["version_warning"]["error"], "timeout")
 
     def test_lark_cli_retries_transient_auth_failure(self) -> None:
         unavailable = {"verified": False, "identities": {"user": {}}}
@@ -71,7 +119,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             "verified": True,
             "identities": {"user": {"status": "ready", "available": True, "verified": True}},
         }
-        completed = type("Completed", (), {"stdout": "lark-cli version 1.0.56"})()
+        completed = subprocess.CompletedProcess([], 0, "lark-cli version 1.0.69", "")
         with patch.object(SERVER.shutil, "which", return_value="/bin/lark-cli"), \
              patch.object(SERVER.subprocess, "run", return_value=completed), \
              patch.object(SERVER, "_run_cli", side_effect=[unavailable, ready]), \
@@ -252,6 +300,48 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "at least 32"):
                 SERVER._auth_provider("token")
 
+    def test_auth_token_file_requires_private_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "token"
+            token_file.write_text("x" * 64)
+            token_file.chmod(0o644)
+            with patch.dict(SERVER.os.environ, {
+                SERVER.TOKEN_FILE_ENV: str(token_file),
+            }, clear=True), self.assertRaisesRegex(RuntimeError, "0600"):
+                SERVER._auth_provider("token")
+            token_file.chmod(0o600)
+            with patch.dict(SERVER.os.environ, {
+                SERVER.TOKEN_FILE_ENV: str(token_file),
+            }, clear=True):
+                self.assertIsNotNone(SERVER._auth_provider("token"))
+
+    def test_secret_manager_refuses_non_interactive_use(self) -> None:
+        script = Path(__file__).with_name("manage_secret_key.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "token"
+            result = subprocess.run(
+                [sys.executable, str(script), "init", str(target)],
+                text=True, capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("refusing non-interactive use", result.stderr)
+            self.assertFalse(target.exists())
+
+    def test_secret_manager_writes_and_rotates_private_file(self) -> None:
+        script = Path(__file__).with_name("manage_secret_key.py")
+        spec = importlib.util.spec_from_file_location("manage_secret_key", script)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "token"
+            module._write(target, replace=False)
+            original = target.read_text().strip()
+            self.assertGreaterEqual(len(original), 32)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            module._write(target, replace=True)
+            self.assertNotEqual(target.read_text().strip(), original)
+
     def test_github_oauth_is_dcr_ready_and_user_limited(self) -> None:
         env = {
             SERVER.BASE_URL_ENV: "https://mcp.example.com",
@@ -261,11 +351,14 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             SERVER.GITHUB_USER_ENV: "Charles",
         }
         with patch.dict(SERVER.os.environ, env, clear=True), \
-             patch.object(SERVER, "_ChatGPTOriginCompatibleGitHubProvider", return_value="provider") as provider:
+             patch.object(SERVER, "_OriginCompatibleGitHubProvider", return_value="provider") as provider:
             self.assertEqual(SERVER._auth_provider("github"), "provider")
             kwargs = provider.call_args.kwargs
             self.assertEqual(kwargs["base_url"], "https://mcp.example.com")
             self.assertIn("https://chatgpt.com/connector/oauth/*", kwargs["allowed_client_redirect_uris"])
+            self.assertIn("https://claude.ai/api/mcp/auth_callback", kwargs["allowed_client_redirect_uris"])
+            self.assertIn("http://localhost:*", kwargs["allowed_client_redirect_uris"])
+            self.assertIn("http://127.0.0.1:*", kwargs["allowed_client_redirect_uris"])
             allowed = SERVER._authorized_github_user(SimpleNamespace(token=SimpleNamespace(
                 claims={"login": "charles"},
             )))
@@ -284,7 +377,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
                 SERVER._auth_provider("github")
 
     async def test_claude_code_uses_fixed_local_oauth_client(self) -> None:
-        provider = object.__new__(SERVER._ChatGPTOriginCompatibleGitHubProvider)
+        provider = object.__new__(SERVER._OriginCompatibleGitHubProvider)
         provider._client_store = SimpleNamespace(
             get=AsyncMock(return_value=None), put=AsyncMock(),
         )

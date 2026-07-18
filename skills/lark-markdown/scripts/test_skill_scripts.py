@@ -22,6 +22,22 @@ def run(script: str, *args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
 
 
 class SkillScriptsTest(unittest.TestCase):
+    def test_skill_routes_daily_use_away_from_server_setup(self) -> None:
+        root = SCRIPTS.parent
+        skill = (root / "SKILL.md").read_text()
+        readme = (root / "README.md").read_text()
+        publish = (root / "references" / "obsidian-publish.md").read_text()
+
+        self.assertIn("日常文档模式（默认）", skill)
+        self.assertIn("服务器配置模式（仅显式触发）", skill)
+        self.assertIn("只调用已连接的 `Lark-Markdown` MCP 工具", skill)
+        self.assertNotIn("uv run python scripts/mcp_server.py", skill)
+        self.assertNotIn("codex mcp add", skill)
+        self.assertIn("Agent 即使正在协助部署，也只能给出命令，不得运行", skill)
+        self.assertIn("https://lark-markdown.nexuszone.link/mcp", readme)
+        self.assertIn("两阶段", publish)
+        self.assertIn("循环引用", publish)
+
     def test_full_local_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cwd = Path(tmp)
@@ -113,11 +129,57 @@ class SkillScriptsTest(unittest.TestCase):
             )
             self.assertEqual(json.loads((out / "pull-plan.json").read_text())["pull"], ["a.md"])
 
+            remote_index = {
+                path: {"doc": url, "revision_id": index + 10}
+                for index, (path, url) in enumerate(url_map.items())
+            }
+            (out / "remote-index.json").write_text(json.dumps(remote_index))
+            run("commit_publish_state.py", "--workdir", ".lark_publish", cwd=cwd)
+            committed = json.loads((out / "state.json").read_text())
+            self.assertEqual(set(committed["documents"]), set(url_map))
+            self.assertEqual(json.loads((out / "report.json").read_text())["status"], "success")
+
             run("cleanup_workspace.py", "--workdir", ".lark_publish", cwd=cwd)
             self.assertEqual(
                 sorted(path.name for path in out.iterdir()),
-                ["state.json", "url-map.json"],
+                ["report.json", "state.json", "url-map.json"],
             )
+            run("prepare_publish.py", "knowledge-base/test", "--out", ".lark_publish", cwd=cwd)
+            self.assertTrue((out / "manifest.json").exists())
+            self.assertTrue((out / "state.json").exists())
+
+    def test_formula_converter_rejects_overlapping_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source"
+            source.mkdir()
+            (source / "note.md").write_text("$$x$$")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS / "center_display_math.py"), str(source), str(source)],
+                text=True, capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue((source / "note.md").exists())
+
+    def test_failed_commit_preserves_previous_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            workdir = cwd / ".lark_publish"
+            workdir.mkdir()
+            previous = {"version": 1, "documents": {"a.md": {"sha256": "old"}}}
+            (workdir / "state.json").write_text(json.dumps(previous))
+            (workdir / "manifest.json").write_text(json.dumps({
+                "documents": [{"path": "a.md", "sha256": "new"}],
+            }))
+            (workdir / "url-map.json").write_text(json.dumps({"a.md": "https://example/a"}))
+            (workdir / "remote-index.json").write_text(json.dumps({"a.md": {}}))
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS / "commit_publish_state.py")],
+                cwd=cwd, text=True, capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(json.loads((workdir / "state.json").read_text()), previous)
+            self.assertEqual(json.loads((workdir / "report.json").read_text())["status"], "failed")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ import ipaddress
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Literal
 from urllib.parse import urlparse
 
 from fastmcp import FastMCP
@@ -24,6 +24,7 @@ from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient
 from fastmcp.server.middleware import AuthMiddleware
 
 TOKEN_ENV = "LARK_MCP_AUTH_TOKEN"
+TOKEN_FILE_ENV = "LARK_MCP_AUTH_TOKEN_FILE"
 AUTH_MODE_ENV = "LARK_MCP_AUTH_MODE"
 BASE_URL_ENV = "LARK_MCP_BASE_URL"
 GITHUB_CLIENT_ID_ENV = "LARK_MCP_GITHUB_CLIENT_ID"
@@ -37,6 +38,8 @@ MAX_BATCH_ITEMS = 100
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 
+DocFormat = Literal["markdown", "xml"]
+
 
 def _auth_mode() -> str:
     mode = os.environ.get(AUTH_MODE_ENV)
@@ -44,13 +47,38 @@ def _auth_mode() -> str:
         if mode not in {"none", "token", "github"}:
             raise RuntimeError(f"{AUTH_MODE_ENV} must be none, token, or github")
         return mode
-    return "token" if os.environ.get(TOKEN_ENV) else "none"
+    return "token" if os.environ.get(TOKEN_ENV) or os.environ.get(TOKEN_FILE_ENV) else "none"
 
 
 AUTH_MODE = _auth_mode()
 
 
-class _ChatGPTOriginCompatibleGitHubProvider(GitHubProvider):
+def _static_token() -> str:
+    token = os.environ.get(TOKEN_ENV)
+    token_file = os.environ.get(TOKEN_FILE_ENV)
+    if token and token_file:
+        raise RuntimeError(f"set only one of {TOKEN_ENV} and {TOKEN_FILE_ENV}")
+    if token_file:
+        path = Path(token_file)
+        try:
+            stat = path.stat()
+            if path.is_symlink() or not path.is_file():
+                raise RuntimeError(f"{TOKEN_FILE_ENV} must point to a regular file")
+            if stat.st_uid != os.geteuid():
+                raise RuntimeError(f"{TOKEN_FILE_ENV} must be owned by the service user")
+            if stat.st_mode & 0o077:
+                raise RuntimeError(f"{TOKEN_FILE_ENV} permissions must be 0600 or stricter")
+            token = path.read_text().strip()
+        except OSError as error:
+            raise RuntimeError(f"cannot read {TOKEN_FILE_ENV}: {error}") from error
+    if not token:
+        raise RuntimeError(f"token auth requires {TOKEN_ENV} or {TOKEN_FILE_ENV}")
+    if len(token) < 32:
+        raise RuntimeError("static auth token must contain at least 32 characters")
+    return token
+
+
+class _OriginCompatibleGitHubProvider(GitHubProvider):
     """Handle narrowly scoped compatibility differences in MCP OAuth clients."""
 
     async def get_client(self, client_id: str):
@@ -85,6 +113,7 @@ class _ChatGPTOriginCompatibleGitHubProvider(GitHubProvider):
         )
         await self._client_store.put(key=client_id, value=client)
         return client
+
     async def authorize(self, client, params):
         client_resource = getattr(params, "resource", None)
         if client_resource:
@@ -100,6 +129,7 @@ class _ChatGPTOriginCompatibleGitHubProvider(GitHubProvider):
                 )
         return await super().authorize(client, params)
 
+
 def _auth_provider(mode: str = AUTH_MODE):
     if mode == "github":
         names = (
@@ -113,7 +143,7 @@ def _auth_provider(mode: str = AUTH_MODE):
         parsed = urlparse(base_url)
         if parsed.scheme != "https" or not parsed.netloc or parsed.path:
             raise RuntimeError(f"{BASE_URL_ENV} must be an HTTPS origin without a path")
-        return _ChatGPTOriginCompatibleGitHubProvider(
+        return _OriginCompatibleGitHubProvider(
             client_id=os.environ[GITHUB_CLIENT_ID_ENV],
             client_secret=os.environ[GITHUB_CLIENT_SECRET_ENV],
             jwt_signing_key=os.environ[GITHUB_JWT_SIGNING_KEY_ENV],
@@ -123,21 +153,18 @@ def _auth_provider(mode: str = AUTH_MODE):
             allowed_client_redirect_uris=[
                 "https://chatgpt.com/connector/oauth/*",
                 "https://chatgpt.com/connector_platform_oauth_redirect",
+                "https://claude.ai/api/mcp/auth_callback",
                 "http://localhost:*",
                 "http://127.0.0.1:*",
             ],
         )
     if mode == "none":
         return None
-    token = os.environ.get(TOKEN_ENV)
-    if not token:
-        raise RuntimeError(f"token auth requires {TOKEN_ENV}")
-    if len(token) < 32:
-        raise RuntimeError(f"{TOKEN_ENV} must contain at least 32 characters")
+    token = _static_token()
     from fastmcp.server.auth import StaticTokenVerifier
 
     return StaticTokenVerifier(tokens={token: {
-        "client_id": "personal-lark-mcp",
+        "client_id": "lark-markdown",
         "scopes": ["lark:read", "lark:write"],
     }})
 
@@ -161,12 +188,14 @@ def _security_schemes(mode: str) -> list[dict]:
 TOOL_META = {"securitySchemes": _security_schemes(AUTH_MODE)}
 AUTH_PROVIDER = _auth_provider()
 mcp = FastMCP(
-    name="Lark Markdown MCP",
-    version="0.7.0",
+    name="Lark-Markdown",
+    version="0.12.0",
     instructions=(
-        "Use batch_pull before modifying an unfamiliar document. "
-        "Use point_update for one exact change and batch_push for full replacements. "
-        "Write tools modify the authenticated user's Lark documents."
+        "For normal document work, use the connected tools and never configure or start a server. "
+        "Call check_lark_cli only when connection or user auth is uncertain; use begin_lark_auth "
+        "and complete_lark_auth only to recover missing user authorization. Pull current content "
+        "before every edit, use point_update for one exact change and batch_push for explicit full "
+        "replacements, then pull again to verify formatting, links, formulas, and unaffected content."
     ),
     website_url=os.environ.get(BASE_URL_ENV),
     auth=AUTH_PROVIDER,
@@ -177,11 +206,19 @@ mcp = FastMCP(
 )
 WORKDIR = Path(".lark_publish")
 QUIET_ENV = {
-    "LARKSUITE_CLI_NO_UPDATE_NOTIFIER": "1",
     "LARKSUITE_CLI_NO_SKILLS_NOTIFIER": "1",
 }
 AUTH_CACHE_SECONDS = 60
 _auth_cache: tuple[float, dict] | None = None
+
+
+class LarkCLIError(RuntimeError):
+    def __init__(self, details: dict):
+        self.details = details
+        super().__init__()
+
+    def __str__(self) -> str:
+        return json.dumps(self.details, ensure_ascii=False)
 
 
 def _is_loopback(host: str) -> bool:
@@ -209,37 +246,47 @@ def _https_config(host: str, cert: Path | None, key: Path | None) -> dict[str, s
     return {}
 
 
-def _run_cli(args: list[str], context: str = "lark-cli") -> dict:
+def _run_process(
+    args: list[str], operation: str, suppress_update: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, **QUIET_ENV}
+    if suppress_update:
+        env["LARKSUITE_CLI_NO_UPDATE_NOTIFIER"] = "1"
     try:
         result = subprocess.run(
-            ["lark-cli", *args],
+            args,
             text=True,
             capture_output=True,
-            env={**os.environ, **QUIET_ENV},
+            env=env,
             timeout=CLI_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as error:
-        raise RuntimeError(json.dumps({
-            "operation": context,
+        raise LarkCLIError({
+            "operation": operation,
             "error": "timeout",
             "timeout_seconds": CLI_TIMEOUT_SECONDS,
             "next_step": "retry once; if it repeats, run lark-cli auth status --json --verify",
-        })) from error
+        }) from error
     if result.returncode:
-        raise RuntimeError(json.dumps({
-            "operation": context,
+        raise LarkCLIError({
+            "operation": operation,
             "error": "lark_cli_failed",
             "exit_code": result.returncode,
             "message": (result.stderr.strip() or result.stdout.strip())[:4000],
-        }, ensure_ascii=False))
+        })
+    return result
+
+
+def _run_cli(args: list[str], context: str = "lark-cli") -> dict:
+    result = _run_process(["lark-cli", *args], context)
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as error:
-        raise RuntimeError(json.dumps({
+        raise LarkCLIError({
             "operation": context,
             "error": "invalid_json",
             "message": str(error),
-        })) from error
+        }) from error
 
 
 def _check_lark_cli(use_cache: bool = True) -> dict:
@@ -248,14 +295,19 @@ def _check_lark_cli(use_cache: bool = True) -> dict:
         return _auth_cache[1]
     executable = shutil.which("lark-cli")
     if not executable:
-        raise RuntimeError("lark-cli is not installed or not on PATH")
+        raise LarkCLIError({
+            "operation": "check lark-cli",
+            "error": "not_installed",
+            "message": "lark-cli is not installed or not on PATH",
+        })
+    version = None
+    version_warning = None
     try:
-        version = subprocess.run(
-            [executable, "--version"], text=True, capture_output=True,
-            check=True, timeout=CLI_TIMEOUT_SECONDS,
+        version = _run_process(
+            [executable, "--version"], "check lark-cli version", suppress_update=True,
         ).stdout.strip()
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-        raise RuntimeError(f"unable to run lark-cli --version: {error}") from error
+    except LarkCLIError as error:
+        version_warning = error.details
     for attempt in range(2):
         auth = _run_cli(
             ["auth", "status", "--json", "--verify"],
@@ -267,7 +319,12 @@ def _check_lark_cli(use_cache: bool = True) -> dict:
         if attempt == 0:
             time.sleep(1)
     else:
-        raise RuntimeError("lark-cli user authentication is unavailable after one retry")
+        raise LarkCLIError({
+            "operation": "check lark-cli user authentication",
+            "error": "authentication_unavailable",
+            "message": "verified user authentication is unavailable after one retry",
+            "next_step": "call begin_lark_auth",
+        })
     status = {
         "executable": executable,
         "version": version,
@@ -275,6 +332,11 @@ def _check_lark_cli(use_cache: bool = True) -> dict:
         "user_status": user.get("status"),
         "verified": True,
     }
+    update_notice = auth.get("_notice", {}).get("update")
+    if update_notice:
+        status["update_notice"] = update_notice
+    if version_warning:
+        status["version_warning"] = version_warning
     _auth_cache = (time.monotonic() + AUTH_CACHE_SECONDS, status)
     return status
 
@@ -285,15 +347,31 @@ def _hidden_run() -> Iterator[Path]:
         raise RuntimeError("refusing to use a symlinked .lark_publish directory")
     WORKDIR.mkdir(exist_ok=True)
     path = Path(tempfile.mkdtemp(prefix=".run-", dir=WORKDIR))
+    original_error: BaseException | None = None
     try:
         yield path
+    except BaseException as error:
+        original_error = error
+        raise
     finally:
         try:
             shutil.rmtree(path)
         except OSError as error:
-            raise RuntimeError(
-                f"failed to remove temporary payload {path.name}: {error}"
-            ) from error
+            message = f"failed to remove temporary payload {path.name}: {error}"
+            if isinstance(original_error, LarkCLIError):
+                original_error.details["cleanup_error"] = message
+            elif original_error is not None:
+                raise LarkCLIError({
+                    "operation": "temporary payload cleanup",
+                    "error": "operation_and_cleanup_failed",
+                    "cause": {
+                        "error": type(original_error).__name__,
+                        "message": str(original_error),
+                    },
+                    "cleanup_error": message,
+                }) from original_error
+            else:
+                raise RuntimeError(message) from error
         if WORKDIR.exists() and not any(WORKDIR.iterdir()):
             WORKDIR.rmdir()
 
@@ -323,14 +401,17 @@ def _validate_batch(items: list, name: str) -> None:
         raise ValueError(f"{name} exceeds {MAX_BATCH_ITEMS} items")
 
 
-def _batch_failure(operation: str, index: int, item: str, completed: int, error: Exception) -> RuntimeError:
-    return RuntimeError(json.dumps({
+def _batch_failure(operation: str, index: int, item: str, completed: int, error: Exception) -> LarkCLIError:
+    details = error.details if isinstance(error, LarkCLIError) else {
+        "error": type(error).__name__, "message": str(error),
+    }
+    return LarkCLIError({
         "operation": operation,
         "failed_index": index,
         "failed_item": item,
         "completed": completed,
-        "error": str(error),
-    }, ensure_ascii=False))
+        "cause": details,
+    })
 
 
 def _find_auth_value(payload: object, names: tuple[str, ...]) -> str | None:
@@ -354,24 +435,18 @@ def _find_auth_value(payload: object, names: tuple[str, ...]) -> str | None:
 def _lark_auth_qrcode(verification_url: str) -> str:
     with _hidden_run() as run:
         output = run / "lark-auth.png"
-        result = subprocess.run(
-            [
+        _run_process([
                 "lark-cli", "auth", "qrcode", verification_url,
                 "--output", output.relative_to(Path.cwd()).as_posix(),
-            ],
-            text=True,
-            capture_output=True,
-            env={**os.environ, **QUIET_ENV},
-            timeout=CLI_TIMEOUT_SECONDS,
-        )
-        if result.returncode:
-            raise RuntimeError(json.dumps({
+            ], "generate lark authorization QR code")
+        try:
+            return base64.b64encode(output.read_bytes()).decode("ascii")
+        except OSError as error:
+            raise LarkCLIError({
                 "operation": "generate lark authorization QR code",
-                "error": "lark_cli_failed",
-                "exit_code": result.returncode,
-                "message": (result.stderr.strip() or result.stdout.strip())[:4000],
-            }, ensure_ascii=False))
-        return base64.b64encode(output.read_bytes()).decode("ascii")
+                "error": "missing_output",
+                "message": str(error),
+            }) from error
 
 
 @mcp.tool(title="Start Lark user authorization", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
@@ -386,7 +461,11 @@ def begin_lark_auth() -> dict:
     )
     device_code = _find_auth_value(payload, ("device_code",))
     if not verification_url or not device_code:
-        raise RuntimeError("lark-cli did not return a verification URL and device code")
+        raise LarkCLIError({
+            "operation": "start lark user authorization",
+            "error": "invalid_response",
+            "message": "lark-cli did not return a verification URL and device code",
+        })
     return {
         "verification_url": verification_url,
         "device_code": device_code,
@@ -411,15 +490,15 @@ def complete_lark_auth(device_code: str) -> dict:
 
 @mcp.tool(title="Check Lark CLI", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 def check_lark_cli() -> dict:
-    """Check the lark-cli binary, version, and verified user login."""
+    """Check lark-cli and user login; return any optional update notice without blocking."""
     return _check_lark_cli(use_cache=False)
 
 
 @mcp.tool(title="Batch pull Lark documents", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
 def batch_pull(
     documents: list[str],
-    doc_format: str = "markdown",
-    detail: str = "simple",
+    doc_format: DocFormat = "markdown",
+    detail: Literal["simple", "with-ids", "full"] = "simple",
 ) -> list[dict]:
     """Fetch multiple Lark Docx or Wiki documents as Markdown or XML."""
     _check_lark_cli()
@@ -428,6 +507,11 @@ def batch_pull(
     if detail not in {"simple", "with-ids", "full"}:
         raise ValueError("detail must be simple, with-ids, or full")
     _validate_batch(documents, "documents")
+    for index, doc in enumerate(documents):
+        if not isinstance(doc, str) or not doc.strip():
+            raise _batch_failure(
+                "batch_pull", index, "", 0, ValueError("document must not be empty"),
+            )
     pulled = []
     for index, doc in enumerate(documents):
         try:
@@ -438,7 +522,13 @@ def batch_pull(
             ], f"batch_pull documents[{index}]")
         except RuntimeError as error:
             raise _batch_failure("batch_pull", index, doc, len(pulled), error) from error
-        document = result["data"]["document"]
+        try:
+            document = result["data"]["document"]
+        except (KeyError, TypeError) as error:
+            raise _batch_failure(
+                "batch_pull", index, doc, len(pulled),
+                LarkCLIError({"error": "invalid_response", "message": "missing data.document"}),
+            ) from error
         pulled.append({
             "doc": doc,
             "revision_id": document.get("revision_id"),
@@ -449,30 +539,47 @@ def batch_pull(
 
 @mcp.tool(title="Batch push Lark documents", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
 def batch_push(documents: list[dict[str, str]]) -> list[dict]:
-    """Overwrite or append multiple documents from inline content."""
-    _check_lark_cli()
+    """Write documents containing doc, content, optional mode, and optional doc_format."""
     _validate_batch(documents, "documents")
+    prepared = []
+    for index, item in enumerate(documents):
+        if not isinstance(item, dict):
+            raise _batch_failure("batch_push", index, "", 0, ValueError("item must be an object"))
+        doc_value = item.get("doc")
+        content = item.get("content")
+        mode = item.get("mode", "overwrite")
+        doc_format = item.get("doc_format", "markdown")
+        if not isinstance(doc_value, str) or not doc_value.strip():
+            raise _batch_failure("batch_push", index, "", 0, ValueError("doc must not be empty"))
+        doc = doc_value.strip()
+        if not isinstance(content, str):
+            raise _batch_failure("batch_push", index, doc, 0, ValueError("content must be a string"))
+        if mode not in {"overwrite", "append"}:
+            raise _batch_failure("batch_push", index, doc, 0, ValueError("mode must be overwrite or append"))
+        if doc_format not in {"markdown", "xml"}:
+            raise _batch_failure("batch_push", index, doc, 0, ValueError("doc_format must be markdown or xml"))
+        if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
+            raise _batch_failure(
+                "batch_push", index, doc, 0,
+                ValueError(f"content exceeds {MAX_CONTENT_BYTES} bytes"),
+            )
+        prepared.append((doc, content, mode, doc_format))
+    _check_lark_cli()
     results = []
     with _hidden_run() as run:
-        for index, item in enumerate(documents):
-            mode = item.get("mode", "overwrite")
-            doc_format = item.get("doc_format", "markdown")
-            if mode not in {"overwrite", "append"}:
-                raise ValueError("mode must be overwrite or append")
-            if doc_format not in {"markdown", "xml"}:
-                raise ValueError("doc_format must be markdown or xml")
-            content = _payload(run / f".{index}.content", item["content"])
+        for index, (doc, raw_content, mode, doc_format) in enumerate(prepared):
+            content = _payload(run / f".{index}.content", raw_content)
             try:
                 result = _run_cli([
                     "docs", "+update", "--api-version", "v2", "--as", "user",
-                    "--doc", item["doc"], "--command", mode,
+                    "--doc", doc, "--command", mode,
                     "--doc-format", doc_format, "--content", content, "--format", "json",
                 ], f"batch_push documents[{index}]")
             except RuntimeError as error:
                 raise _batch_failure(
-                    "batch_push", index, item.get("doc", ""), len(results), error
+                    "batch_push", index, doc, len(results), error
                 ) from error
-            results.append({"doc": item["doc"], "result": result})
+            results.append({"doc": doc, "result": result})
     return results
 
 
@@ -481,12 +588,16 @@ def point_update(
     doc: str,
     pattern: str,
     replacement: str,
-    doc_format: str = "markdown",
+    doc_format: DocFormat = "markdown",
 ) -> dict:
     """Replace one exact text target and remove the hidden payload afterward."""
-    _check_lark_cli()
+    if not doc.strip():
+        raise ValueError("doc must not be empty")
+    if not pattern:
+        raise ValueError("pattern must not be empty")
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")
+    _check_lark_cli()
     with _hidden_run() as run:
         content = _payload(run / ".replacement", replacement)
         return _run_cli([
@@ -499,7 +610,7 @@ def point_update(
 @mcp.tool(title="Create a Lark document", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 def create_document(
     content: str,
-    doc_format: str = "markdown",
+    doc_format: DocFormat = "markdown",
     parent_token: str | None = None,
 ) -> dict:
     """Create one Lark Docx in a Drive folder, Wiki node, or personal space."""
@@ -556,7 +667,9 @@ def insert_media(
 
 
 @mcp.tool(title="Read a Lark whiteboard", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-def whiteboard_query(whiteboard_token: str, output_as: str = "code") -> dict:
+def whiteboard_query(
+    whiteboard_token: str, output_as: Literal["code", "raw"] = "code",
+) -> dict:
     """Read one Lark whiteboard as Mermaid/PlantUML code or raw nodes."""
     _check_lark_cli()
     if output_as not in {"code", "raw"}:
@@ -580,7 +693,7 @@ def whiteboard_query(whiteboard_token: str, output_as: str = "code") -> dict:
 def whiteboard_update(
     whiteboard_token: str,
     source: str,
-    input_format: str = "mermaid",
+    input_format: Literal["mermaid", "plantuml", "raw"] = "mermaid",
     overwrite: bool = True,
 ) -> dict:
     """Update one Lark whiteboard from Mermaid, PlantUML, or raw node JSON."""
