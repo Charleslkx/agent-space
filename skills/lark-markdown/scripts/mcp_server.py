@@ -37,6 +37,7 @@ CLI_TIMEOUT_SECONDS = 60
 MAX_BATCH_ITEMS = 100
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DocFormat = Literal["markdown", "xml"]
 
@@ -204,7 +205,7 @@ mcp = FastMCP(
         if AUTH_MODE == "github" else []
     ),
 )
-WORKDIR = Path(".lark_publish")
+WORKDIR = PROJECT_ROOT / ".lark_publish"
 QUIET_ENV = {
     "LARKSUITE_CLI_NO_SKILLS_NOTIFIER": "1",
 }
@@ -258,6 +259,7 @@ def _run_process(
             text=True,
             capture_output=True,
             env=env,
+            cwd=PROJECT_ROOT,
             timeout=CLI_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as error:
@@ -391,7 +393,7 @@ def _payload(path: Path, content: str) -> str:
     if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
         raise ValueError(f"content exceeds {MAX_CONTENT_BYTES} bytes")
     path.write_text(content, encoding="utf-8")
-    return "@" + path.resolve().relative_to(Path.cwd()).as_posix()
+    return "@" + path.resolve().relative_to(PROJECT_ROOT).as_posix()
 
 
 def _validate_batch(items: list, name: str) -> None:
@@ -437,7 +439,7 @@ def _lark_auth_qrcode(verification_url: str) -> str:
         output = run / "lark-auth.png"
         _run_process([
                 "lark-cli", "auth", "qrcode", verification_url,
-                "--output", output.relative_to(Path.cwd()).as_posix(),
+                "--output", output.relative_to(PROJECT_ROOT).as_posix(),
             ], "generate lark authorization QR code")
         try:
             return base64.b64encode(output.read_bytes()).decode("ascii")
@@ -691,7 +693,7 @@ def insert_media(
         path.write_bytes(data)
         args = [
             "docs", "+media-insert", "--as", "user", "--doc", doc,
-            "--file", path.relative_to(Path.cwd()).as_posix(),
+            "--file", path.relative_to(PROJECT_ROOT).as_posix(),
             "--type", media_type, "--format", "json",
         ]
         if selection:
