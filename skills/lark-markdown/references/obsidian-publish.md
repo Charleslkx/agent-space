@@ -63,9 +63,9 @@ python3 scripts/prepare_publish.py \
 
 ## 2 创建文档并生成 URL 映射
 
-目标为 Wiki 节点时传 `--parent-token <wiki_node_token>`；目标为普通 Drive 文件夹时传文件夹 token。
+目标为 Wiki 时使用 `create_wiki_node`：根页面传 `space_id`，子页面传 `parent_node_token`。目标为普通 Drive 文件夹时使用 `create_document` 并传文件夹 token。
 
-先按本地目录树创建每个文件夹的空 Docx 页面，再按 `manifest.json` 的 `documents` 顺序创建 Markdown 的空 Docx 页面；立即将每个返回的 `document.url` 写入 `.lark_publish/url-map.json`。Markdown 置于其父文件夹页面下，子文件夹页面置于父文件夹页面下。
+先按本地目录树创建每个文件夹的空白 Wiki Docx 节点，再按 `manifest.json` 的 `documents` 顺序创建 Markdown 的 Wiki Docx 节点；立即将每个返回的文档 URL 写入 `.lark_publish/url-map.json`。Markdown 置于其父文件夹节点下，子文件夹节点置于父文件夹节点下。
 
 ```json
 {
@@ -73,7 +73,7 @@ python3 scripts/prepare_publish.py \
 }
 ```
 
-使用 MCP `create_document` 创建空文档并传入 `parent_token`。每次成功后立即记录返回 URL；不要等整批结束后才保存映射。
+发布到 Wiki 时使用 MCP `create_wiki_node`，根节点传 `space_id`、子节点传 `parent_node_token`；发布到 Drive 文件夹时使用 `create_document` 并传 `parent_token`。每次成功后立即记录返回 URL；不要等整批结束后才保存映射。
 
 创建前先 dry-run；创建成功后才能继续。失败时停止，保留已写入的 `url-map.json` 以便恢复，不要重建已存在的文档。
 

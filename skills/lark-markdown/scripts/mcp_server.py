@@ -451,9 +451,9 @@ def _lark_auth_qrcode(verification_url: str) -> str:
 
 @mcp.tool(title="Start Lark user authorization", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 def begin_lark_auth() -> dict:
-    """Create a one-time Lark device authorization URL and QR code for Docs and Drive."""
+    """Create a one-time Lark device authorization URL and QR code for Docs, Drive, and Wiki."""
     payload = _run_cli(
-        ["auth", "login", "--domain", "docs", "--domain", "drive", "--no-wait", "--json"],
+        ["auth", "login", "--domain", "docs", "--domain", "drive", "--domain", "wiki", "--no-wait", "--json"],
         "start lark user authorization",
     )
     verification_url = _find_auth_value(
@@ -626,6 +626,41 @@ def create_document(
         if parent_token:
             args.extend(["--parent-token", parent_token])
         return _run_cli(args, "create_document")
+
+
+@mcp.tool(title="Create a Lark Wiki node", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+def create_wiki_node(
+    title: str,
+    parent_node_token: str | None = None,
+    space_id: str | None = None,
+) -> dict:
+    """Create a blank Docx Wiki node in a specified Wiki space or beneath a parent node."""
+    if not title.strip():
+        raise ValueError("title must not be empty")
+    if not (parent_node_token or space_id):
+        raise ValueError("parent_node_token or space_id is required")
+    _check_lark_cli()
+    args = [
+        "wiki", "+node-create", "--as", "user", "--title", title,
+        "--obj-type", "docx", "--format", "json",
+    ]
+    if parent_node_token:
+        args.extend(["--parent-node-token", parent_node_token])
+    if space_id:
+        args.extend(["--space-id", space_id])
+    return _run_cli(args, "create_wiki_node")
+
+
+@mcp.tool(title="Create a Lark Wiki space", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+def create_wiki_space(name: str, description: str | None = None) -> dict:
+    """Create a Wiki space owned by the authorized Lark user."""
+    if not name.strip():
+        raise ValueError("name must not be empty")
+    _check_lark_cli()
+    args = ["wiki", "+space-create", "--as", "user", "--name", name, "--format", "json"]
+    if description:
+        args.extend(["--description", description])
+    return _run_cli(args, "create_wiki_space")
 
 
 @mcp.tool(title="Insert document media", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
