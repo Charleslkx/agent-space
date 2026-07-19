@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 from fastmcp import FastMCP
 from fastmcp.server.auth import AuthContext
 from fastmcp.server.auth.providers.github import GitHubProvider
+from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient
 from fastmcp.server.middleware import AuthMiddleware
 
 TOKEN_ENV = "LARK_MCP_AUTH_TOKEN"
@@ -30,6 +31,8 @@ GITHUB_CLIENT_ID_ENV = "LARK_MCP_GITHUB_CLIENT_ID"
 GITHUB_CLIENT_SECRET_ENV = "LARK_MCP_GITHUB_CLIENT_SECRET"
 GITHUB_USER_ENV = "LARK_MCP_GITHUB_USER"
 GITHUB_JWT_SIGNING_KEY_ENV = "LARK_MCP_JWT_SIGNING_KEY"
+CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
+CLAUDE_CODE_REDIRECT_URI_PATTERN = "http://localhost:*"
 CLI_TIMEOUT_SECONDS = 60
 MAX_BATCH_ITEMS = 100
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
@@ -76,7 +79,40 @@ def _static_token() -> str:
 
 
 class _OriginCompatibleGitHubProvider(GitHubProvider):
-    """Accept clients that send the MCP origin instead of its resource URL."""
+    """Handle narrowly scoped compatibility differences in MCP OAuth clients."""
+
+    async def get_client(self, client_id: str):
+        """Provide Claude Code's public CIMD client when its metadata fetch is blocked.
+
+        Claude Code identifies itself with a public client-metadata URL. FastMCP
+        normally fetches that document, but Claude's edge may reject server-side
+        requests. The fallback is deliberately limited to the published client
+        ID and its documented loopback callback; all other clients keep FastMCP's
+        normal DCR/CIMD validation path.
+        """
+        if client_id != CLAUDE_CODE_CLIENT_ID:
+            return await super().get_client(client_id)
+
+        client = await self._client_store.get(key=client_id)
+        if client is not None:
+            if client.allowed_redirect_uri_patterns != [CLAUDE_CODE_REDIRECT_URI_PATTERN]:
+                client.allowed_redirect_uri_patterns = [CLAUDE_CODE_REDIRECT_URI_PATTERN]
+                await self._client_store.put(key=client_id, value=client)
+            return client
+
+        client = ProxyDCRClient(
+            client_id=CLAUDE_CODE_CLIENT_ID,
+            client_secret=None,
+            redirect_uris=None,
+            grant_types=["authorization_code"],
+            response_types=["code"],
+            scope="read:user",
+            token_endpoint_auth_method="none",
+            client_name="Claude Code",
+            allowed_redirect_uri_patterns=[CLAUDE_CODE_REDIRECT_URI_PATTERN],
+        )
+        await self._client_store.put(key=client_id, value=client)
+        return client
 
     async def authorize(self, client, params):
         client_resource = getattr(params, "resource", None)
@@ -92,6 +128,7 @@ class _OriginCompatibleGitHubProvider(GitHubProvider):
                     update={"resource": f"{str(self.base_url).rstrip('/')}/mcp"}
                 )
         return await super().authorize(client, params)
+
 
 def _auth_provider(mode: str = AUTH_MODE):
     if mode == "github":
@@ -354,7 +391,7 @@ def _payload(path: Path, content: str) -> str:
     if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
         raise ValueError(f"content exceeds {MAX_CONTENT_BYTES} bytes")
     path.write_text(content, encoding="utf-8")
-    return "@" + path.relative_to(Path.cwd()).as_posix()
+    return "@" + path.resolve().relative_to(Path.cwd()).as_posix()
 
 
 def _validate_batch(items: list, name: str) -> None:
@@ -414,9 +451,9 @@ def _lark_auth_qrcode(verification_url: str) -> str:
 
 @mcp.tool(title="Start Lark user authorization", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 def begin_lark_auth() -> dict:
-    """Create a one-time Lark device authorization URL and QR code for Docs and Drive."""
+    """Create a one-time Lark device authorization URL and QR code for Docs, Drive, and Wiki."""
     payload = _run_cli(
-        ["auth", "login", "--domain", "docs", "--domain", "drive", "--no-wait", "--json"],
+        ["auth", "login", "--domain", "docs", "--domain", "drive", "--domain", "wiki", "--no-wait", "--json"],
         "start lark user authorization",
     )
     verification_url = _find_auth_value(
@@ -589,6 +626,41 @@ def create_document(
         if parent_token:
             args.extend(["--parent-token", parent_token])
         return _run_cli(args, "create_document")
+
+
+@mcp.tool(title="Create a Lark Wiki node", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+def create_wiki_node(
+    title: str,
+    parent_node_token: str | None = None,
+    space_id: str | None = None,
+) -> dict:
+    """Create a blank Docx Wiki node in a specified Wiki space or beneath a parent node."""
+    if not title.strip():
+        raise ValueError("title must not be empty")
+    if not (parent_node_token or space_id):
+        raise ValueError("parent_node_token or space_id is required")
+    _check_lark_cli()
+    args = [
+        "wiki", "+node-create", "--as", "user", "--title", title,
+        "--obj-type", "docx", "--format", "json",
+    ]
+    if parent_node_token:
+        args.extend(["--parent-node-token", parent_node_token])
+    if space_id:
+        args.extend(["--space-id", space_id])
+    return _run_cli(args, "create_wiki_node")
+
+
+@mcp.tool(title="Create a Lark Wiki space", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+def create_wiki_space(name: str, description: str | None = None) -> dict:
+    """Create a Wiki space owned by the authorized Lark user."""
+    if not name.strip():
+        raise ValueError("name must not be empty")
+    _check_lark_cli()
+    args = ["wiki", "+space-create", "--as", "user", "--name", name, "--format", "json"]
+    if description:
+        args.extend(["--description", description])
+    return _run_cli(args, "create_wiki_space")
 
 
 @mcp.tool(title="Insert document media", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
