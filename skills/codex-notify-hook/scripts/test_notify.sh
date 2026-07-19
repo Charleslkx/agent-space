@@ -6,6 +6,8 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" >"$NOTIFY_CAPTURE"' >"$tmp/bin/terminal-notifier"
 chmod +x "$tmp/bin/terminal-notifier"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" Darwin' >"$tmp/bin/uname"
+chmod +x "$tmp/bin/uname"
 
 printf '%s' '{"hook_event_name":"Stop","cwd":"/tmp/demo-project"}' \
   | PATH="$tmp/bin:/opt/homebrew/bin:/usr/bin:/bin" \

@@ -1,8 +1,8 @@
 ---
 name: claude-code-notify-hook
 description: >
-  在 macOS 上为 Claude Code 搭建系统通知 hook：当 Claude Code 需要用户干预
-  （请求工具授权、等待输入）或任务完成时，自动弹出 macOS 系统通知提醒用户。
+  为 Claude Code 搭建系统通知 hook：macOS/WSL 同时发送系统通知和飞书；
+  原生 Linux 只发送飞书。
   支持焦点识别（正盯着会话窗口时不打扰）、通知 subtitle 显示项目根目录名称、
   可选飞书 Agent / webhook 通知、
   以及多依赖缺失时的逐级降级兜底。
@@ -12,7 +12,7 @@ description: >
   即使用户没明说"hook"，只要意图是"让 Claude Code 在某事件发生时通知我"，也应触发。
 ---
 
-# Claude Code macOS 通知 Hook
+# Claude Code 通知 Hook
 
 为 Claude Code 配置在「需要干预」和「任务完成」时弹出 macOS 系统通知的 hook。核心是两个生命周期事件 + 一个带兜底的投递脚本。
 
@@ -30,6 +30,41 @@ Claude Code 在生命周期里埋了事件点。命中事件时，它**启动一
 `Notification` 是"需要注意"的总入口，**不止授权**——空闲等待也会触发，文案是 `...waiting for your input`。脚本会过滤掉这条（与 Stop 完成通知重复），避免每次任务后被重复打扰。
 
 ## 安装步骤
+
+### 0. 先检查环境
+
+```bash
+case "$(uname -s)" in
+  Darwin) echo 'macOS：系统通知 + 飞书通知' ;;
+  Linux)
+    if [ -n "${WSL_INTEROP:-}" ] || grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
+      echo 'WSL：Windows 系统通知 + 飞书通知'
+    else
+      echo 'Linux：仅飞书通知'
+    fi
+    ;;
+  *) echo '不支持本地通知；仅在已配置时发送飞书通知' ;;
+esac
+```
+
+原生 Linux 仍需注册两个 hook，用它们触发飞书；脚本不会尝试本地通知或终端响铃。
+
+### 飞书配置交接规则
+
+需要飞书时，先给用户生成可编辑脚本，**不要代填、不要运行、不要要求用户在对话中发送密钥**：
+
+```bash
+cp <skill-dir>/scripts/write_feishu_agent_env.sh ~/.claude/configure-feishu-agent.sh
+chmod 700 ~/.claude/configure-feishu-agent.sh
+```
+
+告知用户编辑 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`（接收会话的 `chat_id`）；用户自行运行：
+
+```bash
+~/.claude/configure-feishu-agent.sh
+```
+
+用户回复“已运行”后，检查 `~/.claude/feishu-agent.env` 存在且权限为 `600`，再触发一次 hook 测试。
 
 ### 1. 放置脚本
 
@@ -145,7 +180,7 @@ settings 改动通常下一轮即生效。若没生效，让用户打开一次 `
 | 消息解析 | `jq` 取 `.message` | 纯文本 `grep`/`sed` 抓取 | 默认文案 |
 | 项目识别 | `NOTIFY_PROJECT_DIR` | stdin JSON 的 `cwd` | 当前工作目录 |
 | 焦点识别 | `lsappinfo` + `__CFBundleIdentifier` 比对 | 任一信号缺失 → 跳过（宁可多弹） | — |
-| 本地通知投递 | `terminal-notifier`（subtitle 显示项目名） | `osascript` 原生 | 终端响铃 `\a` |
+| 本地通知投递 | macOS：`terminal-notifier`（subtitle 显示项目名） | macOS：`osascript` 原生 | WSL：Windows Toast；原生 Linux 跳过 |
 | 飞书投递 | Feishu Agent 卡片（IM API） | webhook 卡片兜底 | 未配置则跳过 |
 
 关键设计原则（改脚本时务必保持）：
@@ -186,4 +221,4 @@ echo '{"message":"x"}' | NOTIFY_FORCE=1 PATH=/bin /bin/bash $SH notification
 
 ## 平台说明
 
-仅 macOS（依赖 `osascript`/`lsappinfo`，`__CFBundleIdentifier` 由 macOS GUI 启动注入）。Linux 需改用 `notify-send`、Windows 需改用 PowerShell `BurntToast`——投递层 `deliver()` 是唯一需要替换的部分，事件结构与降级思路通用。
+macOS 使用 `osascript`/`lsappinfo`；WSL 使用 Windows Toast；原生 Linux 跳过本地通道，只发送飞书。
