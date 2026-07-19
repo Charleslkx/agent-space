@@ -393,7 +393,7 @@ def _payload(path: Path, content: str) -> str:
     if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
         raise ValueError(f"content exceeds {MAX_CONTENT_BYTES} bytes")
     path.write_text(content, encoding="utf-8")
-    return "@" + str(path.resolve())
+    return "@./" + path.resolve().relative_to(PROJECT_ROOT).as_posix()
 
 
 def _validate_batch(items: list, name: str) -> None:
@@ -439,7 +439,7 @@ def _lark_auth_qrcode(verification_url: str) -> str:
         output = run / "lark-auth.png"
         _run_process([
                 "lark-cli", "auth", "qrcode", verification_url,
-                "--output", str(output.resolve()),
+                "--output", "./" + output.resolve().relative_to(PROJECT_ROOT).as_posix(),
             ], "generate lark authorization QR code")
         try:
             return base64.b64encode(output.read_bytes()).decode("ascii")
@@ -693,7 +693,7 @@ def insert_media(
         path.write_bytes(data)
         args = [
             "docs", "+media-insert", "--as", "user", "--doc", doc,
-            "--file", str(path.resolve()),
+            "--file", "./" + path.resolve().relative_to(PROJECT_ROOT).as_posix(),
             "--type", media_type, "--format", "json",
         ]
         if selection:
