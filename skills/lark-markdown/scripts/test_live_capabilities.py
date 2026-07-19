@@ -57,7 +57,7 @@ async def run(url: str, doc: str) -> None:
         expected = {
             "check_lark_cli", "begin_lark_auth", "complete_lark_auth",
             "batch_pull", "batch_push", "point_update",
-            "create_document", "insert_media", "whiteboard_query", "whiteboard_update",
+            "create_document", "create_wiki_node", "create_wiki_space", "insert_media", "whiteboard_query", "whiteboard_update",
         }
         assert tools == expected, tools
 

@@ -34,7 +34,7 @@ description: "使用远程 Lark-Markdown MCP 阅读、创建和编辑飞书 Docx
 
 开始首个文档操作前，确认会话中存在以下 MCP 工具：
 
-`check_lark_cli`、`begin_lark_auth`、`complete_lark_auth`、`batch_pull`、`batch_push`、`point_update`、`create_document`、`insert_media`、`whiteboard_query`、`whiteboard_update`。
+`check_lark_cli`、`begin_lark_auth`、`complete_lark_auth`、`batch_pull`、`batch_push`、`point_update`、`create_document`、`create_wiki_node`、`create_wiki_space`、`insert_media`、`whiteboard_query`、`whiteboard_update`。
 
 - 工具存在时直接使用，不执行服务器安装。
 - 工具缺失或连接失败时，报告“远程 Lark-Markdown MCP 未连接”，不要自行创建本地服务。
@@ -67,7 +67,9 @@ description: "使用远程 Lark-Markdown MCP 阅读、创建和编辑飞书 Docx
 
 ### 创建与媒体
 
-- 新建文档使用 `create_document`；用户给出 Drive 文件夹或 Wiki 节点时传 `parent_token`。
+- 创建 Wiki 空间：使用 `create_wiki_space(name, description?)`。它创建独立 Wiki 空间，不创建页面。
+- 创建 Wiki 页面：使用 `create_wiki_node(title, parent_node_token?, space_id?)`。根页面传 `space_id`；子页面传 `parent_node_token`；两者至少提供一个。该工具创建带空白 Docx 的 Wiki 节点。
+- 创建普通 Drive Docx：使用 `create_document(content, parent_token?)`。`parent_token` 是 Drive 文件夹 token 时创建到该文件夹；已有 Wiki 的层级页面优先使用 `create_wiki_node`，不要把它当作创建 Wiki 节点的替代方案。
 - 创建后立即回读，返回实际文档 URL。
 - 本地图片或附件使用 `insert_media`，传纯文件名和 base64；需要原位插入时提供唯一 `selection`，必要时设置 `before=true`。
 - 不把图片默认附加到文末。媒体写入后回读目标位置。
