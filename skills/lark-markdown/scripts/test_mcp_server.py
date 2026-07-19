@@ -190,6 +190,12 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error["operation"], "pull test")
         self.assertEqual(error["error"], "timeout")
 
+    def test_cli_runs_from_skill_root(self) -> None:
+        completed = subprocess.CompletedProcess(["lark-cli"], 0, "{}", "")
+        with patch.object(SERVER.subprocess, "run", return_value=completed) as run:
+            SERVER._run_cli(["docs", "+media-insert"], "insert media")
+        self.assertEqual(run.call_args.kwargs["cwd"], SERVER.PROJECT_ROOT)
+
     def test_batch_failure_identifies_document(self) -> None:
         with patch.object(SERVER, "_check_lark_cli"), \
              patch.object(SERVER, "_run_cli", side_effect=RuntimeError("denied")):

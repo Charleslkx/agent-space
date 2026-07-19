@@ -73,7 +73,7 @@ codex mcp get lark-markdown
 | `LARK_MCP_JWT_SIGNING_KEY` | OAuth 必需 | 至少 32 字节的独立随机值，用于签发 MCP OAuth Token |
 | `LARK_MCP_AUTH_TOKEN` | `token` 模式必需 | 至少 32 字符；不适用于不接受自定义 Authorization header 的客户端 |
 | `LARK_MCP_AUTH_TOKEN_FILE` | `token` 模式推荐 | 存放 Token 的普通文件；须由服务用户所有且权限为 `0600` 或更严格；不得与 `LARK_MCP_AUTH_TOKEN` 同时设置 |
-| 工作目录 | 必需 | 服务在这里创建 `.lark_publish/.run-*`，每次调用后删除 |
+| 工作目录 | 必需 | 服务固定在项目根目录创建 `.lark_publish/.run-*`，每次调用后删除 |
 | TCP 8765 | 可改 | `--port` 设置；公网只开放反向代理的 443 |
 | TLS 证书与私钥 | 直接公网模式必需 | 通过 `--tls-cert`、`--tls-key` 传入 |
 
