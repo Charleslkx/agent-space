@@ -33,7 +33,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {tool.name for tool in tools},
             {
-                "check_lark_cli", "begin_lark_auth", "complete_lark_auth", "batch_pull", "batch_push", "point_update",
+                "check_lark_cli", "begin_lark_auth", "complete_lark_auth", "schedule_mcp_restart", "batch_pull", "batch_push", "point_update",
                 "create_document", "create_wiki_node", "create_wiki_space", "insert_media", "whiteboard_query", "whiteboard_update",
             },
         )
@@ -189,6 +189,27 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         error = json.loads(str(raised.exception))
         self.assertEqual(error["operation"], "pull test")
         self.assertEqual(error["error"], "timeout")
+
+    def test_schedule_mcp_restart_requires_confirmation_and_valid_delay(self) -> None:
+        with self.assertRaisesRegex(ValueError, "confirmation"):
+            SERVER.schedule_mcp_restart("restart")
+        with self.assertRaisesRegex(ValueError, "between 5 and 300"):
+            SERVER.schedule_mcp_restart(SERVER.RESTART_CONFIRMATION, 4)
+
+    def test_schedule_mcp_restart_starts_fixed_worker(self) -> None:
+        worker = SimpleNamespace(pid=4321)
+        with patch.object(SERVER.subprocess, "Popen", return_value=worker) as popen:
+            result = SERVER.schedule_mcp_restart(SERVER.RESTART_CONFIRMATION, 12)
+        self.assertEqual(result["status"], "scheduled")
+        self.assertEqual(result["service"], "lark-markdown-mcp.service")
+        self.assertEqual(result["delay_seconds"], 12)
+        self.assertEqual(result["worker_pid"], 4321)
+        self.assertEqual(
+            popen.call_args.args[0],
+            [sys.executable, str(SERVER.RESTART_WORKER), "--delay", "12"],
+        )
+        self.assertEqual(popen.call_args.kwargs["cwd"], SERVER.PROJECT_ROOT)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
     def test_cli_runs_from_skill_root(self) -> None:
         completed = subprocess.CompletedProcess(["lark-cli"], 0, "{}", "")

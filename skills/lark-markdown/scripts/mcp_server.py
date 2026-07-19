@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import ipaddress
 import time
@@ -38,6 +39,8 @@ MAX_BATCH_ITEMS = 100
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+RESTART_CONFIRMATION = "RESTART_LARK_MARKDOWN_MCP"
+RESTART_WORKER = PROJECT_ROOT / "scripts" / "restart_mcp_worker.py"
 
 DocFormat = Literal["markdown", "xml"]
 
@@ -748,6 +751,38 @@ def whiteboard_update(
         if overwrite:
             args.append("--overwrite")
         return _run_cli(args, "whiteboard_update")
+
+
+@mcp.tool(title="Schedule Lark-Markdown MCP restart", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False})
+def schedule_mcp_restart(
+    confirmation: str,
+    delay_seconds: int = 10,
+) -> dict:
+    """Schedule a restart of this MCP service after the current request completes."""
+    if confirmation != RESTART_CONFIRMATION:
+        raise ValueError(f"confirmation must exactly equal {RESTART_CONFIRMATION}")
+    if not 5 <= delay_seconds <= 300:
+        raise ValueError("delay_seconds must be between 5 and 300")
+    if not RESTART_WORKER.is_file():
+        raise RuntimeError(f"restart worker is missing: {RESTART_WORKER}")
+    try:
+        worker = subprocess.Popen(
+            [sys.executable, str(RESTART_WORKER), "--delay", str(delay_seconds)],
+            cwd=PROJECT_ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise RuntimeError(f"could not schedule MCP restart: {error}") from error
+    return {
+        "status": "scheduled",
+        "service": "lark-markdown-mcp.service",
+        "delay_seconds": delay_seconds,
+        "worker_pid": worker.pid,
+        "message": "The service will restart after the delay; the current tool call is complete.",
+    }
 
 
 def main() -> None:

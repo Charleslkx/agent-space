@@ -240,6 +240,7 @@ uv run python scripts/test_live_capabilities.py \
 ## MCP 工具
 
 - `check_lark_cli`：检查 CLI、版本和用户登录态。
+- `schedule_mcp_restart`：在当前调用完成后延迟重启固定的 MCP 服务；必须传入确认词 `RESTART_LARK_MARKDOWN_MCP`，延迟范围为 5–300 秒。
 - `begin_lark_auth`、`complete_lark_auth`：发起和完成飞书用户授权。
 - `batch_pull`：批量读取 Markdown/XML 与 revision。
 - `batch_push`：批量覆盖或追加 Markdown/XML。
