@@ -92,7 +92,7 @@ class SkillScriptsTest(unittest.TestCase):
             )
             self.assertIn("$$literal$$", rendered)
 
-            nodes = {"test": {}, "test/sub": {}}
+            nodes = {"test": "https://example/test", "test/sub": "https://example/sub"}
             docs = {
                 "a.md": {"url": "https://example/a"},
                 "sub/a.md": {"url": "https://example/sub-a"},
@@ -105,7 +105,16 @@ class SkillScriptsTest(unittest.TestCase):
                 "--nodes", ".lark_publish/nodes.json", "--docs", ".lark_publish/docs.json",
                 "--out", ".lark_publish/folder-indexes", cwd=cwd,
             )
-            self.assertIn("https://example/b", (out / "folder-indexes" / "index.md").read_text())
+            # Root index links to the sub-folder node, not to its documents.
+            root_index = (out / "folder-indexes" / "index.md").read_text()
+            self.assertIn("https://example/sub", root_index)
+            self.assertIn("[sub]", root_index)
+            self.assertNotIn("https://example/b", root_index)
+            # Sub-folder index lists its direct documents by name (no path prefix).
+            sub_index = (out / "folder-indexes" / "sub.md").read_text()
+            self.assertIn("https://example/b", sub_index)
+            self.assertIn("[b(test)]", sub_index)
+            self.assertNotIn("sub/b(test)", sub_index)
 
             state = {"documents": {"a.md": {"sha256": "old", "remote_revision": 1}}}
             (out / "state.json").write_text(json.dumps(state))

@@ -4,11 +4,43 @@
 
 本地转换只需要 Python 和本目录下的 `scripts/`；飞书读取和写入统一调用已连接的远程 Lark-Markdown MCP，不要求本机安装 `lark-cli`。
 
+## 标准 SOP
+
+适用于首次把一个本地 Markdown/Obsidian 目录发布到新建或既有飞书 Wiki。增量发布与反向拉取分别按后文对应章节执行。
+
+```mermaid
+flowchart TD
+    A[确认源目录与目标 Wiki] --> B[认证与本地预检]
+    B -->|预检失败| C[修复源文件后重跑]
+    C --> B
+    B -->|预检通过| D[创建文件夹页与文档页]
+    D --> E[保存完整 URL 映射]
+    E --> F[改写链接并转换展示公式]
+    F --> G[抽样写入与回读]
+    G -->|验收失败| H[停止并保留映射和报告]
+    G -->|验收通过| I[批量写入、目录索引与本地媒体]
+    I --> J[全量验收并提交状态]
+    J --> K[清理一次性产物]
+```
+
+1. 确认本地源目录、发布目标和是否允许创建新页面；目标缺失时只预检。
+2. 调用 `check_lark_cli`；仅在 `user_status=ready` 且 `verified=true` 时继续。运行 `prepare_publish.py`，处理 `errors` 和重复标题。
+3. 先为每个本地文件夹创建 Wiki Docx 页面，再创建全部 Markdown 页面；每成功一个页面立即写入 `url-map.json`。不要以正文中的链接推断页面创建顺序。
+4. 映射完整后重新运行 `prepare_publish.py --url-map`，将本地文档链接替换为远端 URL；再运行 `center_display_math.py`。源 Markdown 保持不变。
+5. 选取含链接、表格、公式或图片的页面，使用 `batch_push` 覆盖写入并回读 Markdown 与 XML。`partial_success` 必须靠回读判定，不能直接视为成功。
+6. 抽样通过后批量写入其余正文，每批最多 100 项；在正文 URL 全部确定后生成并写入每个文件夹的索引页。
+7. 对本地媒体保留唯一标记，调用 `insert_media` 在标记位置插入，再用 `point_update` 删除标记。媒体失败时停止该项并保留标记，不得把文件附加到文末。
+8. 验证文档数、目录索引链接、跨文档 URL、公式 XML 和媒体块；写入远端 revision 后运行 `commit_publish_state.py`。最后运行 `cleanup_workspace.py`，只保留状态、URL 映射和报告。
+
+恢复规则：创建阶段失败时保留 `url-map.json`，恢复时仅创建未映射页面；本地删除默认不删除远端页面；检测到 `conflicts`、`new_remote` 或 `missing_remote` 时停止，等待用户决定。
+
 ## 输入与边界
 
 需要：本地目录、目标 Wiki 节点 token（或目标文件夹 token）、是否允许创建新文档。未提供目标 token 时只做预检，不执行写入。
 
 不修改源 Markdown。所有转换写入隐藏工作目录 `.lark_publish/`；发布状态写入 `.lark_publish/state.json`，并将 `.lark_publish/` 加入 `.gitignore`。每次运行结束（成功或失败）都删除一次性产物，只保留 `state.json`、`url-map.json` 和 `report.json`。
+
+`prepare_publish.py` 强制工作目录名为 `.lark_publish`，不同发布根（例如先发布 `knowledge-base` 的 AI/ML 子树，再单独发布 `knowledge-base/math`）的 state 会占用同一目录而冲突。多批次发布时，把上一批的 `.lark_publish/` 整体改名为 `.lark_publish_<批次>_state/`（加入 `.gitignore`）再开始下一批；后续对某批做增量发布前，把对应备份目录换回 `.lark_publish/`。`state.json` 的文档键应相对于该批的发布根，不要混用不同发布根的键空间。
 
 跨文档引用可能形成环，不能按拓扑序逐篇导入。固定采用两阶段：**先为全部 Markdown 和本地文件夹创建空 Docx 并取得 URL，再回写正文**。这是唯一能保证循环引用正常的顺序。
 
@@ -40,7 +72,7 @@ python3 scripts/plan_incremental.py \
 ```bash
 python3 scripts/plan_pull.py \
   --state .lark_publish/state.json --remote-index .lark_publish/remote-index.json \
-  --local-root knowledge-base/example --out .lark_publish/pull-plan.json
+  --local-root <source-directory> --out .lark_publish/pull-plan.json
 ```
 
 3. 仅将 `pull` 项转换到临时目录，再生成 diff；`conflicts`、`new_remote`、`missing_remote` 一律停下并报告。未经用户确认，绝不覆盖本地文件或删除本地文件。
@@ -52,7 +84,7 @@ python3 scripts/plan_pull.py \
 
 ```bash
 python3 scripts/prepare_publish.py \
-  knowledge-base/math/ab-test --out .lark_publish
+  <source-directory> --out .lark_publish
 ```
 
 检查 `.lark_publish/manifest.json`：
@@ -73,6 +105,8 @@ python3 scripts/prepare_publish.py \
 }
 ```
 
+文件夹节点的 token 不要放进 `url-map.json`：`prepare_publish.py --url-map` 要求键集合**严格等于** `manifest.json` 的 source Markdown 相对路径，多出文件夹键会以 `extra_url_map` 报错退出码 2 且不落盘改写稿。文件夹节点 token 单独存入 `.lark_publish/nodes.json`（键为 `{label}` 或 `{label}/{相对路径}`），供 `build_folder_indexes.py` 使用。
+
 发布到 Wiki 时使用 MCP `create_wiki_node`，根节点传 `space_id`、子节点传 `parent_node_token`；发布到 Drive 文件夹时使用 `create_document` 并传 `parent_token`。每次成功后立即记录返回 URL；不要等整批结束后才保存映射。
 
 创建前先 dry-run；创建成功后才能继续。失败时停止，保留已写入的 `url-map.json` 以便恢复，不要重建已存在的文档。
@@ -81,10 +115,14 @@ python3 scripts/prepare_publish.py \
 
 ```bash
 python3 scripts/prepare_publish.py \
-  knowledge-base/math/ab-test --out .lark_publish --url-map .lark_publish/url-map.json
+  <source-directory> --out .lark_publish --url-map .lark_publish/url-map.json
 ```
 
-该步骤将相对 `.md` 链接改为映射中的飞书 URL。随后把独立的 `$$...$$` 转为居中的飞书公式段落；行内 `$...$` 保持不变：
+该步骤将相对 `.md` 链接改为映射中的飞书 URL。随后 `center_display_math.py` 做三项预处理（均跳过代码块）：
+
+- 独立 `$$...$$` 转为居中的飞书公式段落 `<p align="center"><latex>...</latex></p>`；行内 `$...$` 保持不变。
+- `\(...\)` LaTeX 行内公式转为 `$...$`。飞书只渲染 `$...$`，`\(...\)` 会被降级为字面括号文本（如 `(\alpha)`），必须在此步改写。
+- 成对 `**...**` 粗体转为 `<b>...</b>`。飞书 Markdown 粗体解析器对 `**词**（` 等 CJK 标点紧邻模式会错位边界，`<b>` 是飞书原生标签，无此问题。
 
 ```bash
 python3 scripts/center_display_math.py \
@@ -99,13 +137,13 @@ python3 scripts/center_display_math.py \
 
 先抽样读取 1 个含表格/公式/链接的文档验证格式，再写入其余文档。写入完成后用 MCP `batch_pull` 复核。
 
-在全部 Markdown 页面 URL 已确定后，为每个文件夹生成索引页；索引页列出该文件夹下所有 Markdown 页面（含递归子文件夹）的飞书链接：
+在全部 Markdown 页面 URL 已确定后，为每个文件夹生成索引页。索引页只列该文件夹的**直接子文档**和**直接子文件夹**（链接到子文件夹节点），不递归平铺全部后代文档——否则父子页内容重复。链接文字用文档名（不含目录前缀）。
 
-`docs.json` 的键统一使用相对发布根目录的 Markdown 路径，不添加 `knowledge-base/` 等固定前缀。
+`nodes.json` 是文件夹节点 token 或 `{"url": ...}` 对象，键为 `{label}` 或 `{label}/{相对路径}`。`docs.json` 的键统一使用相对发布根目录的 Markdown 路径，值为 `{"url": ...}` 或 `{"url": ..., "summary": "一句话简介"}`（带 `summary` 时索引页生成 `链接：summary` 格式）。两者需在运行前手动构造，`prepare_publish.py` 不生成它们。
 
 ```bash
 python3 scripts/build_folder_indexes.py \
-  --root knowledge-base/math --label math \
+  --root <source-directory> --label <root-label> \
   --nodes .lark_publish/nodes.json --docs .lark_publish/docs.json \
   --out .lark_publish/folder-indexes
 ```
@@ -151,6 +189,8 @@ python3 scripts/commit_publish_state.py --workdir .lark_publish
 | 画板 | 简单图直接嵌入 `<whiteboard type="mermaid">`；拿到 `block_token` 后用 MCP `whiteboard_query` / `whiteboard_update` 读写 |
 | Sheet、任务、群聊卡片、Wiki 子页面列表 | 使用 XML 资源块并要求真实 token/ID；不伪造测试数据 |
 | Bitable、同步块、OKR 等 CLI 标为不可创建的资源块 | 只保留或移动已有块，不从 Markdown 新建 |
+
+**有序列表内嵌展示公式的编号降级**：飞书把有序列表项之间的独立 `$$...$$` 段落当作列表打断符，后续列表项会被自动重新从 1 编号。`center_display_math.py` 无法规避（公式已在列表项外）。源文件层面规避：把列表项内的展示公式改写为行内 `$...$`，使公式留在列表项内部；或把该步骤的公式拆成独立段落、列表只列非公式步骤。
 
 验收时同时 fetch Markdown 与 XML：Markdown 回读检查文本语义，XML 回读检查飞书原生块类型。画板还要用 `whiteboard +query --output_as code` 验证可读，并至少执行一次更新后再次查询。
 
