@@ -159,13 +159,13 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             run_cli.call_args.args[0], ["auth", "login", "--device-code", "device-code"],
         )
 
-    def test_payload_uses_absolute_cli_path(self) -> None:
+    def test_payload_uses_project_relative_cli_path(self) -> None:
         workdir = Path(".lark_publish-relative-payload-test")
         try:
             with patch.object(SERVER, "WORKDIR", workdir):
                 with SERVER._hidden_run() as run:
                     payload = SERVER._payload(run / ".content", "body")
-                    self.assertTrue(Path(payload[1:]).is_absolute())
+                    self.assertTrue(payload.startswith("@./.lark_publish-relative-payload-test/"))
         finally:
             if workdir.exists():
                 import shutil
@@ -221,9 +221,9 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
                 })
             self.assertEqual(run_cli.call_count, 2)
             media_args = run_cli.call_args_list[1].args[0]
-            media_path = Path(media_args[media_args.index("--file") + 1])
-            self.assertTrue(media_path.is_absolute())
-            self.assertTrue(media_path.is_relative_to(SERVER.PROJECT_ROOT))
+            media_path = media_args[media_args.index("--file") + 1]
+            self.assertTrue(media_path.startswith("./"))
+            self.assertFalse(Path(media_path).is_absolute())
             self.assertFalse(SERVER.WORKDIR.exists())
 
     def test_create_wiki_node_uses_explicit_parent_or_space(self) -> None:
