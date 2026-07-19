@@ -34,13 +34,14 @@ description: "使用远程 Lark-Markdown MCP 阅读、创建和编辑飞书 Docx
 
 开始首个文档操作前，确认会话中存在以下 MCP 工具：
 
-`check_lark_cli`、`begin_lark_auth`、`complete_lark_auth`、`batch_pull`、`batch_push`、`point_update`、`create_document`、`create_wiki_node`、`create_wiki_space`、`insert_media`、`whiteboard_query`、`whiteboard_update`。
+`check_lark_cli`、`begin_lark_auth`、`complete_lark_auth`、`batch_pull`、`batch_push`、`point_update`、`create_document`、`create_wiki_node`、`create_wiki_space`、`insert_media`、`whiteboard_query`、`whiteboard_update`、`schedule_mcp_restart`。
 
 - 工具存在时直接使用，不执行服务器安装。
 - 工具缺失或连接失败时，报告“远程 Lark-Markdown MCP 未连接”，不要自行创建本地服务。
 - 首次使用、认证状态不明或文档工具返回认证错误时调用 `check_lark_cli`。
 - `user_status=ready` 且 `verified=true` 表示服务器端飞书用户认证可用。
 - `update_notice` 只表示存在可选更新；可以转告用户手动运行 `lark-cli update`，不得自动升级或阻断当前操作。
+- 用户明确要求重启服务时才可调用 `schedule_mcp_restart`；`confirmation` 必须为 `RESTART_LARK_MARKDOWN_MCP`，延迟范围为 5–300 秒。工具会在当前调用返回后重启远端 MCP。
 - 只有认证缺失或过期时才调用 `begin_lark_auth`，把授权 URL、device code 或二维码交给用户；用户确认完成页面授权后再调用 `complete_lark_auth`。
 - OAuth 登录恢复属于远程连接认证，不等于服务器部署；不要因此进入服务器配置模式。
 
