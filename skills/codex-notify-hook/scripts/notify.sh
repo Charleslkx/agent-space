@@ -13,7 +13,7 @@
 # 降级链:
 #   消息解析: jq  ->  纯文本 grep/sed  ->  通用默认文案
 #   焦点识别: lsappinfo + __CFBundleIdentifier  ->  缺任一则跳过(宁可多弹)
-#   通知投递: terminal-notifier(可点击跳转) -> osascript(原生) -> 终端响铃
+#   通知投递: macOS terminal-notifier/osascript；WSL Windows Toast；原生 Linux 仅飞书
 #
 # 调试: NOTIFY_DEBUG=1 打印决策；NOTIFY_FORCE=1 跳过焦点检查强制弹出。
 # 提示音: /System/Library/Sounds/ 下任意名字（Glass/Ping/Hero/Submarine...）。
@@ -27,8 +27,29 @@ TITLE="Codex"
 DEFAULT_MSG="需要你的关注"
 FEISHU_APPROVAL_SEND="${FEISHU_APPROVAL_SEND:-/Users/charles/.codex/hooks/feishu_send_approval.py}"
 FEISHU_APPROVAL_PYTHON="${FEISHU_APPROVAL_PYTHON:-/Users/charles/Nutstore/agent-space/.venv/bin/python}"
+FEISHU_WEBHOOK_ENV="${FEISHU_WEBHOOK_ENV:-$HOME/.codex/feishu-webhook.env}"
 
 dbg() { [ "${NOTIFY_DEBUG:-0}" = "1" ] && echo "[notify] $*" >&2; return 0; }
+
+load_webhook_env() {
+  [ -r "$FEISHU_WEBHOOK_ENV" ] || return 0
+  while IFS='=' read -r key value; do
+    case "$key" in
+      LARK_WEBHOOK_URL|LARK_WEBHOOK_SECRET) export "$key=$value" ;;
+    esac
+  done < "$FEISHU_WEBHOOK_ENV"
+}
+
+load_webhook_env
+
+is_wsl() {
+  [ "$(uname -s 2>/dev/null)" = "Linux" ] || return 1
+  [ -n "${WSL_INTEROP:-}" ] || grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null
+}
+
+local_notifications_enabled() {
+  [ "$(uname -s 2>/dev/null)" = "Darwin" ] || is_wsl
+}
 
 # 一次性读入 stdin（事件 JSON），为空也不报错
 INPUT="$(cat 2>/dev/null || true)"
@@ -157,6 +178,23 @@ is_focused_on_session() {
 # 投递通知：三级降级，每级失败都落到下一级
 deliver() {
   local body="$1" subtitle="$2"
+
+  if ! local_notifications_enabled; then
+    dbg "原生 Linux：跳过本地通知，仅发送飞书"
+    return 0
+  fi
+
+  if is_wsl; then
+    command -v powershell.exe >/dev/null 2>&1 || { dbg "WSL 未找到 powershell.exe"; return 0; }
+    local ps_title ps_subtitle ps_body script
+    ps_title="$(printf '%s' "$TITLE" | sed "s/'/''/g")"
+    ps_subtitle="$(printf '%s' "$subtitle" | sed "s/'/''/g")"
+    ps_body="$(printf '%s' "$body" | sed "s/'/''/g")"
+    script="[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime] > \$null; [Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom,ContentType=WindowsRuntime] > \$null; \$x=New-Object Windows.Data.Xml.Dom.XmlDocument; \$x.LoadXml(\"<toast><visual><binding template='ToastGeneric'><text>\$([System.Security.SecurityElement]::Escape('$ps_title'))</text><text>\$([System.Security.SecurityElement]::Escape('$ps_subtitle'))</text><text>\$([System.Security.SecurityElement]::Escape('$ps_body'))</text></binding></visual></toast>\"); [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Codex').Show((New-Object Windows.UI.Notifications.ToastNotification \$x))"
+    ( powershell.exe -NoProfile -NonInteractive -Command "$script" >/dev/null 2>&1 & )
+    dbg "投递: WSL Windows Toast"
+    return 0
+  fi
 
   # 1) terminal-notifier：同步试投，崩溃/非零退出立即降级
   #    macOS 26 (Tahoe) 上 terminal-notifier 已不维护会 Abort trap，必须检测崩溃才能降级

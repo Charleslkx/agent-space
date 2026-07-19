@@ -1,9 +1,8 @@
 ---
 name: opencode-notify-hook
 description: >
-  在 macOS 上为 opencode 搭建系统通知插件：当 opencode 需要用户授权
-  （permission.asked：bash 提权、文件编辑等）或任务完成（session.idle）时，
-  自动弹出 macOS 系统通知提醒用户。
+  为 opencode 搭建系统通知插件：macOS/WSL 同时发送系统通知和飞书；
+  原生 Linux 只发送飞书。
   支持焦点识别（正盯着会话窗口时不打扰）、项目名 subtitle、可选飞书 Agent / webhook、
   以及多依赖缺失时的逐级降级兜底。
   当用户提到"完成后通知我""需要授权时提醒""opencode 通知""任务做完弹个通知"
@@ -11,7 +10,7 @@ description: >
   即使用户没明说"插件"，只要意图是"让 opencode 在某事件发生时通知我"，也应触发。
 ---
 
-# opencode macOS 通知插件
+# opencode 通知插件
 
 为 opencode 配置在「需要授权」和「任务完成」时弹出 macOS 系统通知的插件。
 核心是一个 JS 插件文件，监听两个生命周期事件。
@@ -40,6 +39,41 @@ opencode 用 **JS 插件系统**而非 shell hook。插件放在
 | `session.idle` | 一轮回答结束，任务完成 | 弹完成通知 |
 
 ## 安装步骤
+
+### 0. 先检查环境
+
+```bash
+case "$(uname -s)" in
+  Darwin) echo 'macOS：系统通知 + 飞书通知' ;;
+  Linux)
+    if [ -n "${WSL_INTEROP:-}" ] || grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
+      echo 'WSL：Windows 系统通知 + 飞书通知'
+    else
+      echo 'Linux：仅飞书通知'
+    fi
+    ;;
+  *) echo '不支持本地通知；仅在已配置时发送飞书通知' ;;
+esac
+```
+
+原生 Linux 仍需放置插件，用它触发飞书；插件不会尝试本地通知或终端响铃。
+
+### 飞书配置交接规则
+
+需要飞书时，先给用户生成可编辑脚本，**不要代填、不要运行、不要要求用户在对话中发送密钥**：
+
+```bash
+cp <skill-dir>/scripts/write_feishu_agent_env.sh ~/.config/opencode/configure-feishu-agent.sh
+chmod 700 ~/.config/opencode/configure-feishu-agent.sh
+```
+
+告知用户编辑 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`（接收会话的 `chat_id`）；用户自行运行：
+
+```bash
+~/.config/opencode/configure-feishu-agent.sh
+```
+
+用户回复“已运行”后，检查 `~/.config/opencode/feishu-agent.env` 存在且权限为 `600`，再触发一次插件事件测试。
 
 ### 1. 放置插件
 
@@ -222,8 +256,7 @@ EOF
 
 ## 平台说明
 
-仅 macOS（依赖 `osascript`/`lsappinfo`）。Linux 需将 `notify` 函数中的投递层改为
-`notify-send`；Windows 改为 PowerShell `BurntToast`。事件结构与降级思路通用。
+macOS 使用 `osascript`/`lsappinfo`；WSL 使用 Windows Toast；原生 Linux 跳过本地通道，只发送飞书。
 
 ## 与已有 `plugin` 共存
 

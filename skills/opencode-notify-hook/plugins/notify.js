@@ -1,6 +1,6 @@
 // opencode notification plugin
 // Events: permission.asked (needs auth) + session.idle (task done)
-// 投递链: terminal-notifier → osascript → bell (本地) ; 飞书交互卡片 (可选)
+// 投递链: macOS terminal-notifier/osascript；WSL Windows Toast；原生 Linux 仅飞书
 //
 // 飞书通道自带 IM API 发送（无 codex 依赖），读取 FEISHU_ENV 指向的 env 文件
 // （默认 ~/.config/opencode/feishu-agent.env）里的 FEISHU_APP_ID/SECRET/HOME_CHANNEL，
@@ -92,6 +92,17 @@ function buildCard(agent, project, content, kind) {
 export const OpenCodeNotifyPlugin = async () => {
   const projectName = () => process.env.NOTIFY_PROJECT_DIR?.split("/").filter(Boolean).at(-1) ?? process.cwd().split("/").filter(Boolean).at(-1) ?? "unknown"
 
+  async function localNotificationsEnabled() {
+    if (process.platform === "darwin") return true
+    if (process.platform !== "linux") return false
+    if (process.env.WSL_INTEROP) return true
+    try {
+      return /microsoft|wsl/i.test(await (await import("node:fs/promises")).readFile("/proc/version", "utf8"))
+    } catch {
+      return false
+    }
+  }
+
   // 焦点检查：opencode 运行在终端里，若该终端正是最前 app 则静默。
   //
   // ASN 问题（已修复）：
@@ -109,6 +120,7 @@ export const OpenCodeNotifyPlugin = async () => {
   //   只有前台正好是同一个终端时才静默。
   async function isFocused() {
     try {
+      if (process.platform !== "darwin") return false
       const owner = process.env.__CFBundleIdentifier
       if (!owner) return false // SSH/远程或拿不到 owner → 永远通知
       const front = await frontBundleId()
@@ -128,8 +140,15 @@ export const OpenCodeNotifyPlugin = async () => {
     return info.match(/"CFBundleIdentifier"="([^"]+)"/)?.[1] ?? ""
   }
 
-  // 本地通知：terminal-notifier → osascript → bell（都不向 TUI 输出任何东西）
+  // 本地通知：macOS terminal-notifier → osascript → bell；WSL 使用 Windows Toast。
   async function notify(title, project, message) {
+    if (!await localNotificationsEnabled()) return
+    if (process.platform === "linux") {
+      const quote = value => String(value).replaceAll("'", "''")
+      const script = `[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime] > $null; [Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom,ContentType=WindowsRuntime] > $null; $x=New-Object Windows.Data.Xml.Dom.XmlDocument; $x.LoadXml(\"<toast><visual><binding template='ToastGeneric'><text>$([System.Security.SecurityElement]::Escape('${quote(title)}'))</text><text>$([System.Security.SecurityElement]::Escape('${quote(project)}'))</text><text>$([System.Security.SecurityElement]::Escape('${quote(message)}'))</text></binding></visual></toast>\"); [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('OpenCode').Show((New-Object Windows.UI.Notifications.ToastNotification $x))`
+      await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script])
+      return
+    }
     const tn = await run("terminal-notifier", ["-title", title, "-subtitle", project, "-message", message, "-sound", SOUND])
     if (tn.code === 0) return
     const script = `display notification ${JSON.stringify(message)} with title ${JSON.stringify(title)} subtitle ${JSON.stringify(project)} sound name ${JSON.stringify(SOUND)}`
