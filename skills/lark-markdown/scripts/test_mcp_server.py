@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastmcp import Client
 
@@ -34,7 +34,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             {tool.name for tool in tools},
             {
                 "check_lark_cli", "begin_lark_auth", "complete_lark_auth", "batch_pull", "batch_push", "point_update",
-                "create_document", "insert_media", "whiteboard_query", "whiteboard_update",
+                "create_document", "create_wiki_node", "create_wiki_space", "insert_media", "whiteboard_query", "whiteboard_update",
             },
         )
         self.assertTrue(all(tool.title for tool in tools))
@@ -137,7 +137,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         completed = type("Completed", (), {"returncode": 0, "stderr": "", "stdout": ""})()
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
              patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
-             patch.object(SERVER, "_run_cli", return_value=payload), \
+             patch.object(SERVER, "_run_cli", return_value=payload) as run_cli, \
              patch.object(SERVER.subprocess, "run", return_value=completed) as run:
             def write_qr(*args, **kwargs):
                 output = Path(args[0][args[0].index("--output") + 1])
@@ -148,6 +148,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["verification_url"], "https://auth.example/verify")
         self.assertEqual(result["device_code"], "device-code")
         self.assertEqual(base64.b64decode(result["qr_code_png_base64"]), b"png")
+        self.assertIn("wiki", run_cli.call_args.args[0])
         self.assertFalse((Path(tmp) / ".lark_publish").exists())
 
     def test_complete_lark_auth_uses_device_code(self) -> None:
@@ -157,6 +158,18 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             run_cli.call_args.args[0], ["auth", "login", "--device-code", "device-code"],
         )
+
+    def test_payload_resolves_relative_workdir_before_making_cli_path(self) -> None:
+        workdir = Path(".lark_publish-relative-payload-test")
+        try:
+            with patch.object(SERVER, "WORKDIR", workdir):
+                with SERVER._hidden_run() as run:
+                    payload = SERVER._payload(run / ".content", "body")
+                    self.assertTrue(payload.startswith("@.lark_publish-relative-payload-test/"))
+        finally:
+            if workdir.exists():
+                import shutil
+                shutil.rmtree(workdir)
 
     def test_hidden_payload_is_removed_after_failure(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"):
@@ -202,6 +215,28 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
                 })
             self.assertEqual(run_cli.call_count, 2)
             self.assertFalse(SERVER.WORKDIR.exists())
+
+    def test_create_wiki_node_uses_explicit_parent_or_space(self) -> None:
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", return_value={"ok": True}) as run_cli:
+            SERVER.create_wiki_node("Child", parent_node_token="parent-token")
+        self.assertEqual(run_cli.call_args.args[0], [
+            "wiki", "+node-create", "--as", "user", "--title", "Child", "--obj-type", "docx", "--format", "json",
+            "--parent-node-token", "parent-token",
+        ])
+
+    def test_create_wiki_node_requires_target(self) -> None:
+        with self.assertRaisesRegex(ValueError, "parent_node_token or space_id"):
+            SERVER.create_wiki_node("Unplaced")
+
+    def test_create_wiki_space_passes_description(self) -> None:
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", return_value={"ok": True}) as run_cli:
+            SERVER.create_wiki_space("Team wiki", "Shared notes")
+        self.assertEqual(run_cli.call_args.args[0], [
+            "wiki", "+space-create", "--as", "user", "--name", "Team wiki", "--format", "json",
+            "--description", "Shared notes",
+        ])
 
     def test_media_rejects_path_filename(self) -> None:
         with patch.object(SERVER, "_check_lark_cli"):
@@ -363,6 +398,30 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         with patch.dict(SERVER.os.environ, env, clear=True):
             with self.assertRaisesRegex(RuntimeError, "HTTPS origin"):
                 SERVER._auth_provider("github")
+
+    async def test_claude_code_uses_fixed_local_oauth_client(self) -> None:
+        provider = object.__new__(SERVER._OriginCompatibleGitHubProvider)
+        provider._client_store = SimpleNamespace(
+            get=AsyncMock(return_value=None), put=AsyncMock(),
+        )
+
+        client = await provider.get_client(SERVER.CLAUDE_CODE_CLIENT_ID)
+
+        self.assertEqual(client.client_id, SERVER.CLAUDE_CODE_CLIENT_ID)
+        self.assertEqual(client.token_endpoint_auth_method, "none")
+        self.assertEqual(
+            str(client.validate_redirect_uri("http://localhost:57569/callback")),
+            "http://localhost:57569/callback",
+        )
+        provider._client_store.put.assert_awaited_once_with(
+            key=SERVER.CLAUDE_CODE_CLIENT_ID, value=client,
+        )
+
+        client.allowed_redirect_uri_patterns = ["http://localhost:3118/callback"]
+        provider._client_store.get.return_value = client
+        client = await provider.get_client(SERVER.CLAUDE_CODE_CLIENT_ID)
+        self.assertEqual(client.allowed_redirect_uri_patterns, [SERVER.CLAUDE_CODE_REDIRECT_URI_PATTERN])
+        self.assertEqual(provider._client_store.put.await_count, 2)
 
 
 if __name__ == "__main__":

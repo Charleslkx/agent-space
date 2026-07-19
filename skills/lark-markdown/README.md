@@ -22,7 +22,7 @@ uv --version
 完成飞书用户授权；文档、云空间和 Wiki 操作需要应用后台 scope 与用户授权同时具备：
 
 ```bash
-lark-cli auth login --domain docs --domain drive --no-wait --json
+lark-cli auth login --domain docs --domain drive --domain wiki --no-wait --json
 lark-cli auth status --json --verify
 ```
 
@@ -244,9 +244,22 @@ uv run python scripts/test_live_capabilities.py \
 - `batch_pull`：批量读取 Markdown/XML 与 revision。
 - `batch_push`：批量覆盖或追加 Markdown/XML。
 - `point_update`：精确替换或删除匹配内容。
-- `create_document`：在个人空间、Drive 文件夹或 Wiki 节点创建 Docx。
+- `create_document`：在个人空间或 Drive 文件夹创建普通 Docx。
+- `create_wiki_node`：在指定 Wiki 空间根目录或父节点下创建空白 Docx 页面。
+- `create_wiki_space`：创建 Wiki 空间。
 - `insert_media`：从 base64 插入图片或附件并删除本地载荷。
 - `whiteboard_query`、`whiteboard_update`：读取和更新飞书画板。
+
+### 创建 Wiki 的选择
+
+| 目标 | 工具 | 必填参数 | 创建结果 |
+|---|---|---|---|
+| 新 Wiki 空间 | `create_wiki_space` | `name` | 一个独立 Wiki 空间，没有页面 |
+| Wiki 空间根目录的页面 | `create_wiki_node` | `title`、`space_id` | 一个带空白 Docx 的 Wiki 节点 |
+| 已有 Wiki 页面的子页面 | `create_wiki_node` | `title`、`parent_node_token` | 父节点下的一个带空白 Docx 的 Wiki 节点 |
+| Drive 文件夹中的普通文档 | `create_document` | `content`，可选 `parent_token` | 一个普通 Docx，不创建 Wiki 节点 |
+
+`parent_node_token` 是 Wiki 节点 token；`parent_token` 是 `create_document` 的 Drive 文件夹 token。两者不可混用。创建 Wiki 页面后，用返回的 Docx token/URL 调用 `batch_push` 写入 Markdown，并回读确认正文和层级。
 
 错误为结构化 JSON，包含操作名；批量错误还包含失败索引、文档标识、已完成数量和底层 `cause`。临时载荷清理失败附加到原始错误，不覆盖真正失败原因。
 
