@@ -49,6 +49,8 @@ class SkillScriptsTest(unittest.TestCase):
                 "# A\n\n[go](sub/b(test).md#part \"title\")\n\n"
                 "[[sub/b(test)#part|wiki go]]\n\n"
                 "[reference]: <sub/b(test).md#part>\n\n"
+                "一个断言[^1]。\n\n[^1]: [来源](https://example.com)\n"
+                "    补充说明\n\n`[^literal]`\n\n"
                 "`[literal](sub/b(test).md)`\n\n$$x+y$$\n\n"
                 "```text\n[code](sub/b(test).md)\n$$literal$$\n```\n\n![pixel](pixel.png)\n"
             )
@@ -90,6 +92,8 @@ class SkillScriptsTest(unittest.TestCase):
                 '<p align="center"><latex>x+y</latex></p>',
                 rendered,
             )
+            self.assertIn("一个断言[1]。\n\n> [1] [来源](https://example.com)\n> 补充说明", rendered)
+            self.assertIn("`[^literal]`", rendered)
             self.assertIn("$$literal$$", rendered)
 
             nodes = {"test": "https://example/test", "test/sub": "https://example/sub"}

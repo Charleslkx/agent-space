@@ -118,11 +118,12 @@ python3 scripts/prepare_publish.py \
   <source-directory> --out .lark_publish --url-map .lark_publish/url-map.json
 ```
 
-该步骤将相对 `.md` 链接改为映射中的飞书 URL。随后 `center_display_math.py` 做三项预处理（均跳过代码块）：
+该步骤将相对 `.md` 链接改为映射中的飞书 URL。随后 `center_display_math.py` 做四项确定性预处理（均跳过代码块）：
 
 - 独立 `$$...$$` 转为居中的飞书公式段落 `<p align="center"><latex>...</latex></p>`；行内 `$...$` 保持不变。
 - `\(...\)` LaTeX 行内公式转为 `$...$`。飞书只渲染 `$...$`，`\(...\)` 会被降级为字面括号文本（如 `(\alpha)`），必须在此步改写。
 - 成对 `**...**` 粗体转为 `<b>...</b>`。飞书 Markdown 粗体解析器对 `**词**（` 等 CJK 标点紧邻模式会错位边界，`<b>` 是飞书原生标签，无此问题。
+- GFM 脚注 `[^id]` 与定义 `[^id]: 来源` 分别转为 `[id]` 和飞书引用块 `> [id] 来源`；转换由脚本完成，不交给 AI 重写。
 
 ```bash
 python3 scripts/center_display_math.py \

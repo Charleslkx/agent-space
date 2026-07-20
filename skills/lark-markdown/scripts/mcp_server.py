@@ -215,7 +215,9 @@ WORKDIR = PROJECT_ROOT / ".lark_publish"
 QUIET_ENV = {
     "LARKSUITE_CLI_NO_SKILLS_NOTIFIER": "1",
 }
-AUTH_CACHE_SECONDS = 60
+# A verified Lark session is persisted by lark-cli. Rechecking it for every
+# document call causes unnecessary refresh attempts without making writes safer.
+AUTH_CACHE_SECONDS = 15 * 60
 _auth_cache: tuple[float, dict] | None = None
 
 
