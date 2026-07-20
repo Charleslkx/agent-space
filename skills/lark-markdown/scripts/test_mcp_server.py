@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +44,9 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             tool.meta["securitySchemes"] == SERVER._security_schemes(SERVER.AUTH_MODE)
             for tool in tools
         ))
+        schemas = {tool.name: tool.inputSchema for tool in tools}
+        self.assertIn("concurrency", schemas["batch_pull"]["properties"])
+        self.assertIn("concurrency", schemas["batch_push"]["properties"])
 
     async def test_batch_push_cleans_payload(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
@@ -69,6 +73,26 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error["completed"], 0)
         check.assert_not_called()
         run_cli.assert_not_called()
+
+    def test_batch_push_runs_independent_documents_concurrently(self) -> None:
+        barrier = threading.Barrier(2)
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
+             patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", side_effect=lambda *_: (barrier.wait(timeout=1), {"ok": True})[1]):
+            result = SERVER.batch_push([
+                {"doc": "doc-a", "content": "A"},
+                {"doc": "doc-b", "content": "B"},
+            ], concurrency=2)
+        self.assertEqual([item["doc"] for item in result], ["doc-a", "doc-b"])
+
+    def test_batch_pull_runs_independent_documents_concurrently(self) -> None:
+        barrier = threading.Barrier(2)
+        response = {"data": {"document": {"revision_id": "1", "content": "body"}}}
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", side_effect=lambda *_: (barrier.wait(timeout=1), response)[1]):
+            result = SERVER.batch_pull(["doc-a", "doc-b"], concurrency=2)
+        self.assertEqual([item["doc"] for item in result], ["doc-a", "doc-b"])
 
     def test_lark_cli_success_shape(self) -> None:
         auth = {

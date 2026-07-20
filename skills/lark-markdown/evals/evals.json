@@ -10,7 +10,7 @@
     {
       "id": 2,
       "prompt": "把这个飞书文档中唯一出现的旧术语替换为新术语，保留原格式和链接：https://example.feishu.cn/docx/doc-token",
-      "expected_output": "先用 batch_pull 读取当前正文和 revision，再用 point_update 定点替换，写后再次 batch_pull；核对目标文本、非目标内容、格式、公式和超链接，不进入服务器配置流程。",
+      "expected_output": "用户已给出唯一旧术语时，直接用 point_update 定点替换；不预读或全量回读，不进入服务器配置流程。",
       "files": []
     },
     {
@@ -22,7 +22,7 @@
     {
       "id": 4,
       "prompt": "把一个相互链接的本地 Markdown 文件夹发布到指定飞书 Wiki 节点，保留公式和相对图片。",
-      "expected_output": "先生成引用图和预检报告；以两阶段创建、映射、回写；不修改源文件；给出图片原位插入和验收步骤。",
+      "expected_output": "先用本地脚本生成引用图和预检报告；以两阶段创建、映射、回写；正文通过远程 MCP 的 batch_push 并发写入；不修改源文件；给出图片原位插入和验收步骤。",
       "files": []
     },
     {
