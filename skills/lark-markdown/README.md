@@ -1,6 +1,6 @@
 # Lark-Markdown
 
-可分发的 uv 项目：把 Markdown/Obsidian 内容写入飞书 Docx，支持批量拉取、批量推送、定点修改、创建文档、插入媒体及画板读写。公网部署后可由 ChatGPT、Claude.ai、Claude Desktop 和 Claude Code 通过 OAuth 2.1 连接。
+可分发的 uv 项目：把 Markdown 内容写入飞书 Docx，支持并发批量拉取、并发批量推送、定点修改、创建文档、插入媒体及画板读写。公网部署后可由 ChatGPT、Claude.ai、Claude Desktop 和 Claude Code 通过 OAuth 2.1 连接。
 
 `SKILL.md` 默认指导 Agent 使用已连接的远程 MCP；只有用户明确要求配置或部署服务器时，才读取本 README。
 
@@ -267,7 +267,7 @@ uv run python scripts/test_live_capabilities.py \
 ## 分发检查
 
 ```bash
-rg -n 'lark-obsidian[-]publish|/Users/|\.agents/skills' . --hidden -g '!uv.lock'
+rg -n '/Users/|\.agents/skills' . --hidden -g '!uv.lock'
 uv sync --frozen
 PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s scripts -p 'test_*.py'
 uvx pip-audit --path .venv/lib/python*/site-packages --progress-spinner off

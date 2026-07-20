@@ -1,12 +1,12 @@
-# 本地 Obsidian 目录发布
+# 本地 Markdown 目录发布
 
-仅当用户要求发布、迁移、增量同步或反向拉取本地 Markdown/Obsidian 目录时读取本文件。日常飞书文档阅读和编辑使用 `SKILL.md` 的远程 MCP 工作流，不运行这里的本地脚本。
+仅当用户要求发布、迁移、增量同步或反向拉取本地 Markdown 目录时读取本文件。日常飞书文档阅读和编辑使用 `SKILL.md` 的远程 MCP 工作流，不运行这里的本地脚本。
 
 本地转换只需要 Python 和本目录下的 `scripts/`；飞书读取和写入统一调用已连接的远程 Lark-Markdown MCP，不要求本机安装 `lark-cli`。
 
 ## 标准 SOP
 
-适用于首次把一个本地 Markdown/Obsidian 目录发布到新建或既有飞书 Wiki。增量发布与反向拉取分别按后文对应章节执行。
+适用于首次把一个本地 Markdown 目录发布到新建或既有飞书 Wiki。增量发布与反向拉取分别按后文对应章节执行。
 
 ```mermaid
 flowchart TD
@@ -27,10 +27,10 @@ flowchart TD
 2. 调用 `check_lark_cli`；仅在 `user_status=ready` 且 `verified=true` 时继续。运行 `prepare_publish.py`，处理 `errors` 和重复标题。
 3. 先为每个本地文件夹创建 Wiki Docx 页面，再创建全部 Markdown 页面；每成功一个页面立即写入 `url-map.json`。不要以正文中的链接推断页面创建顺序。
 4. 映射完整后重新运行 `prepare_publish.py --url-map`，将本地文档链接替换为远端 URL；再运行 `center_display_math.py`。源 Markdown 保持不变。
-5. 选取含链接、表格、公式或图片的页面，使用 `batch_push` 覆盖写入并回读 Markdown 与 XML。`partial_success` 必须靠回读判定，不能直接视为成功。
-6. 抽样通过后批量写入其余正文，每批最多 100 项；在正文 URL 全部确定后生成并写入每个文件夹的索引页。
+5. 选取 1 个含链接、表格、公式或图片的页面，使用 `batch_push` 覆盖写入并回读 Markdown 与 XML。`partial_success` 必须靠回读判定，不能直接视为成功。
+6. 抽样通过后批量写入其余正文，每批最多 100 项；成功且非 `partial_success` 的项目不回读全文。在正文 URL 全部确定后生成并写入每个文件夹的索引页。
 7. 对本地媒体保留唯一标记，调用 `insert_media` 在标记位置插入，再用 `point_update` 删除标记。媒体失败时停止该项并保留标记，不得把文件附加到文末。
-8. 验证文档数、目录索引链接、跨文档 URL、公式 XML 和媒体块；写入远端 revision 后运行 `commit_publish_state.py`。最后运行 `cleanup_workspace.py`，只保留状态、URL 映射和报告。
+8. 用本地 manifest、URL 映射和 MCP 写入结果验证文档数、目录索引链接与跨文档 URL；只对抽样页及异常项读取公式 XML 和媒体块。写入结果中的 revision 完整后运行 `commit_publish_state.py`。最后运行 `cleanup_workspace.py`，只保留状态、URL 映射和报告。
 
 恢复规则：创建阶段失败时保留 `url-map.json`，恢复时仅创建未映射页面；本地删除默认不删除远端页面；检测到 `conflicts`、`new_remote` 或 `missing_remote` 时停止，等待用户决定。
 
@@ -64,7 +64,7 @@ python3 scripts/plan_incremental.py \
 
 ## 反向拉取
 
-反向拉取规划不是推送的镜像操作：飞书 Docx 不保存原始 Obsidian 路径、Wiki 链接语法、图片原文件名和部分排版元数据。只对本 skill 创建并已记录在 `state.json` 的受管文档生成安全计划；其他远端节点先列为 `new_remote`，不自动写入本地。
+反向拉取规划不是推送的镜像操作：飞书 Docx 不保存原始本地路径、Wiki 风格链接语法、图片原文件名和部分排版元数据。只对本 skill 创建并已记录在 `state.json` 的受管文档生成安全计划；其他远端节点先列为 `new_remote`，不自动写入本地。
 
 1. 用 MCP `batch_pull` 读取受管文档的 Markdown 与 `revision_id`，将结果写入 `.lark_publish/remote/` 与 `remote-index.json`。
 2. 运行冲突规划：
@@ -133,9 +133,9 @@ python3 scripts/center_display_math.py \
 
 ## 4 写入正文、文件夹索引与图片
 
-将渲染稿读入后交给 MCP `batch_push`，使用 `mode=overwrite` 和 `doc_format=markdown`。单批不超过 100 项。
+将渲染稿读入后交给 MCP `batch_push`，使用 `mode=overwrite`、`doc_format=markdown` 和默认 `concurrency=4`。单批不超过 100 项；仅父子节点或同一文档的顺序操作不可并发。服务端限流时逐步降至 `concurrency=1`。
 
-先抽样读取 1 个含表格/公式/链接的文档验证格式，再写入其余文档。写入完成后用 MCP `batch_pull` 复核。
+先写入并读取 1 个含表格/公式/链接的抽样文档验证格式，再写入其余文档。其余成功且非 `partial_success` 的项目不调用 `batch_pull`；仅回读失败、部分成功或格式敏感项。
 
 在全部 Markdown 页面 URL 已确定后，为每个文件夹生成索引页。索引页只列该文件夹的**直接子文档**和**直接子文件夹**（链接到子文件夹节点），不递归平铺全部后代文档——否则父子页内容重复。链接文字用文档名（不含目录前缀）。
 
@@ -154,14 +154,14 @@ python3 scripts/build_folder_indexes.py \
 
 ## 5 验收
 
-逐篇确认：
+以本地 manifest、URL 映射和 MCP 返回结果确认；远端正文只抽样读取，并对失败、部分成功和格式敏感项读取：
 
 - 远端文档数等于 `manifest.documents` 数量。
 - 每个本地文件夹均有一个飞书 Docx 页面；其索引中的每个链接均指向已创建的 Markdown 页面。
-- 抽取 XML 验证每个原 `$$...$$` 块都变为 `<p align="center"><latex>...</latex></p>`；公式在飞书页面渲染正确。
-- `manifest.edges` 的每条源文档链接目标属于 `url-map.json`，远端 Markdown 中不再出现指向本地 `.md` 的链接。
-- 每个本地图片都已插入到原标记位置。
-- 再次调用 `batch_pull`，把每篇的 URL、doc token 和 `revision_id` 写入 `.lark_publish/remote-index.json`。
+- 抽样 XML 验证原 `$$...$$` 块已变为 `<p align="center"><latex>...</latex></p>`；包含公式或本次转换失败的文档必须读取。
+- 用渲染稿和 `manifest.edges` 验证每条链接目标属于 `url-map.json`；仅抽样检查远端 Markdown，或在写入异常时回读。
+- 用 `insert_media` 成功结果确认每个本地图片已处理；标记不唯一、失败或用户要求位置验收时读取目标文档。
+- 从创建/写入 MCP 返回值写入每篇的 URL、doc token 和 `revision_id` 到 `.lark_publish/remote-index.json`；仅在返回字段缺失时调用 `batch_pull` 补齐。
 
 验收通过后原子提交状态：
 
@@ -175,13 +175,13 @@ python3 scripts/commit_publish_state.py --workdir .lark_publish
 
 ### 5.1 能力矩阵
 
-发布目标是完整保留当前飞书文档转换层支持的 Markdown，并对 Obsidian 本地语义做确定性转换；不要声称支持未定义的“所有 Markdown 方言”。
+发布目标是完整保留当前飞书文档转换层支持的 Markdown，并对本地 Wiki 风格语法做确定性转换；不要声称支持未定义的“所有 Markdown 方言”。
 
 | 输入能力 | 处理方式 |
 |-|-|
 | 段落、H1-H6、粗体、斜体、删除线、行内代码、代码块、引用、分隔线、链接、有序/无序及嵌套列表、GFM 表格、行内公式 | 原样交给 MCP `batch_push` 的 Markdown 模式；内容开头唯一 H1 会成为飞书文档标题 |
 | HTTP(S) 图片 | 保留 Markdown 图片 URL，由飞书下载 |
-| 本地图片、Obsidian `![[image]]` | 标记后用 MCP `insert_media` 原位插入 |
+| 本地图片、Wiki 风格 `![[image]]` | 标记后用 MCP `insert_media` 原位插入 |
 | 相对 `.md` 链接、循环引用 | 两阶段 URL 映射后改写；标题锚点降级为文档 URL |
 | `$$...$$` 展示公式 | 转换为居中的 `<latex>` 段落；不得转换代码块中的字面量 |
 | 下划线、待办、高亮框、分栏、文字色/背景色、书签、@人/@文档 | 在 Markdown 中嵌入 `lark-doc-xml.md` 对应标签；需要 token/ID 的组件只有输入真实标识后才写入 |
@@ -192,7 +192,7 @@ python3 scripts/commit_publish_state.py --workdir .lark_publish
 
 **有序列表内嵌展示公式的编号降级**：飞书把有序列表项之间的独立 `$$...$$` 段落当作列表打断符，后续列表项会被自动重新从 1 编号。`center_display_math.py` 无法规避（公式已在列表项外）。源文件层面规避：把列表项内的展示公式改写为行内 `$...$`，使公式留在列表项内部；或把该步骤的公式拆成独立段落、列表只列非公式步骤。
 
-验收时同时 fetch Markdown 与 XML：Markdown 回读检查文本语义，XML 回读检查飞书原生块类型。画板还要用 `whiteboard +query --output_as code` 验证可读，并至少执行一次更新后再次查询。
+抽样或格式敏感项验收时同时 fetch Markdown 与 XML：Markdown 回读检查文本语义，XML 回读检查飞书原生块类型。画板还要用 `whiteboard +query --output_as code` 验证可读，并至少执行一次更新后再次查询。
 
 ## 6 清理
 

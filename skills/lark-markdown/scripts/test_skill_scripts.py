@@ -26,7 +26,7 @@ class SkillScriptsTest(unittest.TestCase):
         root = SCRIPTS.parent
         skill = (root / "SKILL.md").read_text()
         readme = (root / "README.md").read_text()
-        publish = (root / "references" / "obsidian-publish.md").read_text()
+        publish = (root / "references" / "markdown-publish.md").read_text()
 
         self.assertIn("日常文档模式（默认）", skill)
         self.assertIn("服务器配置模式（仅显式触发）", skill)

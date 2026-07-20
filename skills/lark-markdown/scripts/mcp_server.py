@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import shutil
@@ -36,6 +37,8 @@ CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 CLAUDE_CODE_REDIRECT_URI_PATTERN = "http://localhost:*"
 CLI_TIMEOUT_SECONDS = 60
 MAX_BATCH_ITEMS = 100
+DEFAULT_BATCH_CONCURRENCY = 4
+MAX_BATCH_CONCURRENCY = 8
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -406,6 +409,14 @@ def _validate_batch(items: list, name: str) -> None:
         raise ValueError(f"{name} exceeds {MAX_BATCH_ITEMS} items")
 
 
+def _batch_workers(concurrency: int, item_count: int) -> int:
+    if isinstance(concurrency, bool) or not isinstance(concurrency, int):
+        raise ValueError("concurrency must be an integer")
+    if not 1 <= concurrency <= MAX_BATCH_CONCURRENCY:
+        raise ValueError(f"concurrency must be between 1 and {MAX_BATCH_CONCURRENCY}")
+    return min(concurrency, item_count)
+
+
 def _batch_failure(operation: str, index: int, item: str, completed: int, error: Exception) -> LarkCLIError:
     details = error.details if isinstance(error, LarkCLIError) else {
         "error": type(error).__name__, "message": str(error),
@@ -504,21 +515,22 @@ def batch_pull(
     documents: list[str],
     doc_format: DocFormat = "markdown",
     detail: Literal["simple", "with-ids", "full"] = "simple",
+    concurrency: int = DEFAULT_BATCH_CONCURRENCY,
 ) -> list[dict]:
-    """Fetch multiple Lark Docx or Wiki documents as Markdown or XML."""
+    """Fetch documents concurrently; results remain in input order."""
     _check_lark_cli()
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")
     if detail not in {"simple", "with-ids", "full"}:
         raise ValueError("detail must be simple, with-ids, or full")
     _validate_batch(documents, "documents")
+    workers = _batch_workers(concurrency, len(documents))
     for index, doc in enumerate(documents):
         if not isinstance(doc, str) or not doc.strip():
             raise _batch_failure(
                 "batch_pull", index, "", 0, ValueError("document must not be empty"),
             )
-    pulled = []
-    for index, doc in enumerate(documents):
+    def pull_one(index: int, doc: str) -> dict:
         try:
             result = _run_cli([
                 "docs", "+fetch", "--api-version", "v2", "--as", "user",
@@ -526,26 +538,41 @@ def batch_pull(
                 "--format", "json",
             ], f"batch_pull documents[{index}]")
         except RuntimeError as error:
-            raise _batch_failure("batch_pull", index, doc, len(pulled), error) from error
+            raise _batch_failure("batch_pull", index, doc, 0, error) from error
         try:
             document = result["data"]["document"]
         except (KeyError, TypeError) as error:
             raise _batch_failure(
-                "batch_pull", index, doc, len(pulled),
+                "batch_pull", index, doc, 0,
                 LarkCLIError({"error": "invalid_response", "message": "missing data.document"}),
             ) from error
-        pulled.append({
+        return {
             "doc": doc,
             "revision_id": document.get("revision_id"),
             "content": document.get("content", ""),
-        })
+        }
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(pull_one, index, doc) for index, doc in enumerate(documents)]
+        pulled = []
+        for index, (doc, future) in enumerate(zip(documents, futures)):
+            try:
+                pulled.append(future.result())
+            except RuntimeError as error:
+                failure = _batch_failure("batch_pull", index, doc, len(pulled), error)
+                failure.details["concurrency"] = workers
+                failure.details["other_requests_may_have_completed"] = workers > 1
+                raise failure from error
     return pulled
 
 
 @mcp.tool(title="Batch push Lark documents", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-def batch_push(documents: list[dict[str, str]]) -> list[dict]:
-    """Write documents containing doc, content, optional mode, and optional doc_format."""
+def batch_push(
+    documents: list[dict[str, str]], concurrency: int = DEFAULT_BATCH_CONCURRENCY,
+) -> list[dict]:
+    """Write independent documents concurrently; results remain in input order."""
     _validate_batch(documents, "documents")
+    workers = _batch_workers(concurrency, len(documents))
     prepared = []
     for index, item in enumerate(documents):
         if not isinstance(item, dict):
@@ -570,21 +597,35 @@ def batch_push(documents: list[dict[str, str]]) -> list[dict]:
             )
         prepared.append((doc, content, mode, doc_format))
     _check_lark_cli()
-    results = []
     with _hidden_run() as run:
-        for index, (doc, raw_content, mode, doc_format) in enumerate(prepared):
-            content = _payload(run / f".{index}.content", raw_content)
+        payloads = [
+            _payload(run / f".{index}.content", raw_content)
+            for index, (_, raw_content, _, _) in enumerate(prepared)
+        ]
+
+        def push_one(index: int) -> dict:
+            doc, _, mode, doc_format = prepared[index]
             try:
                 result = _run_cli([
                     "docs", "+update", "--api-version", "v2", "--as", "user",
                     "--doc", doc, "--command", mode,
-                    "--doc-format", doc_format, "--content", content, "--format", "json",
+                    "--doc-format", doc_format, "--content", payloads[index], "--format", "json",
                 ], f"batch_push documents[{index}]")
             except RuntimeError as error:
-                raise _batch_failure(
-                    "batch_push", index, doc, len(results), error
-                ) from error
-            results.append({"doc": doc, "result": result})
+                raise _batch_failure("batch_push", index, doc, 0, error) from error
+            return {"doc": doc, "result": result}
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(push_one, index) for index in range(len(prepared))]
+            results = []
+            for index, ((doc, _, _, _), future) in enumerate(zip(prepared, futures)):
+                try:
+                    results.append(future.result())
+                except RuntimeError as error:
+                    failure = _batch_failure("batch_push", index, doc, len(results), error)
+                    failure.details["concurrency"] = workers
+                    failure.details["other_requests_may_have_completed"] = workers > 1
+                    raise failure from error
     return results
 
 
