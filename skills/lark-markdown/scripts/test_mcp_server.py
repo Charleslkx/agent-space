@@ -108,6 +108,24 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["user_status"], "ready")
         self.assertTrue(status["verified"])
 
+    def test_lark_cli_verification_is_cached_for_fifteen_minutes(self) -> None:
+        auth = {
+            "identity": "user", "verified": True,
+            "identities": {"user": {"status": "ready", "available": True, "verified": True}},
+        }
+        completed = subprocess.CompletedProcess([], 0, "lark-cli version 1.0.69", "")
+        with patch.object(SERVER, "_auth_cache", None), \
+             patch.object(SERVER.shutil, "which", return_value="/bin/lark-cli"), \
+             patch.object(SERVER.subprocess, "run", return_value=completed), \
+             patch.object(SERVER, "_run_cli", return_value=auth) as run_cli:
+            SERVER._check_lark_cli()
+            SERVER._check_lark_cli()
+        self.assertEqual(SERVER.AUTH_CACHE_SECONDS, 15 * 60)
+        run_cli.assert_called_once_with(
+            ["auth", "status", "--json", "--verify"],
+            "check lark-cli user authentication",
+        )
+
     def test_lark_cli_update_notice_is_non_blocking(self) -> None:
         auth = {
             "identity": "user", "verified": True,

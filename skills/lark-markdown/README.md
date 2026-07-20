@@ -26,7 +26,7 @@ lark-cli auth login --domain docs --domain drive --domain wiki --no-wait --json
 lark-cli auth status --json --verify
 ```
 
-授权命令返回验证链接时在浏览器完成授权。缺少 scope 时按 CLI 错误里的 `console_url` 在开发者后台开通，再重新执行最小范围授权。
+授权命令返回验证链接时在浏览器完成授权。缺少 scope 时按 CLI 错误里的 `console_url` 在开发者后台开通，再重新执行最小范围授权。systemd 部署时，必须以服务账户、下文同一组 `HOME`/XDG 路径完成这一次授权；不要以部署账户授权后再切换服务账户。
 
 服务不要求特定 `lark-cli` 版本，也不会自动升级。CLI 在 JSON 中返回 `_notice.update` 时，`check_lark_cli` 会把它作为 `update_notice` 转交客户端；当前操作继续执行，由用户决定是否手动运行 `lark-cli update`。
 
@@ -142,6 +142,8 @@ User=lark-markdown
 WorkingDirectory=/opt/lark-markdown
 EnvironmentFile=/etc/lark-markdown.env
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HOME=/var/lib/lark-markdown
+Environment=XDG_CONFIG_HOME=/var/lib/lark-markdown/config
 Environment=XDG_DATA_HOME=/var/lib/lark-markdown
 StateDirectory=lark-markdown
 ExecStart=/opt/lark-markdown/.venv/bin/python scripts/mcp_server.py --transport http --host 127.0.0.1 --port 8765
@@ -150,7 +152,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ```
 
-该服务账户必须单独完成 `lark-cli auth login`；复制项目不会复制飞书凭据。防火墙只开放 443，不开放 8765。
+该服务账户必须单独完成一次 `lark-cli auth login`；凭据写入 `StateDirectory`，服务重启后继续使用。MCP 仅在冷启动、15 分钟缓存到期或调用方明确要求时执行 `auth status --verify`，不在每次文档操作前刷新授权。飞书撤销授权或刷新令牌失效时才需要再次授权。防火墙只开放 443，不开放 8765。
 
 部署后确认 OAuth 发现文档可访问：
 

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Preprocess Markdown for Lark Docx: center display formulas and harden bold.
+"""Preprocess Markdown for Lark Docx: normalize unsupported Markdown syntax.
 
-Three transforms, all skipping fenced code blocks:
+Four transforms, all skipping fenced code blocks:
 - ``$$...$$`` display formulas -> centered ``<p align="center"><latex>...</latex></p>``.
 - ``\\(...\\)`` LaTeX inline math -> ``$...$``. Lark only renders ``$...$``;
   ``\\(...\\)`` degrades to literal ``(\\alpha)`` text if left in place.
 - ``**...**`` bold -> ``<b>...</b>``. Lark's Markdown bold parser mis-bounds
   ``**词**（`` and similar CJK-punctuation patterns; the native ``<b>`` tag
   has no such ambiguity. Only paired ``**...**`` runs are converted.
+- GFM footnotes -> inline ``[id]`` plus a Lark quote block ``> [id] source``.
 """
 from __future__ import annotations
 
@@ -22,6 +23,9 @@ FENCE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})")
 DISPLAY_FORMULA = re.compile(r"(?ms)^[ \t]*\$\$[ \t]*(?:\n)?(.*?)(?:\n)?[ \t]*\$\$[ \t]*$")
 LATEX_INLINE = re.compile(r"\\\((.+?)\\\)")
 BOLD_PAIR = re.compile(r"\*\*([^*\n]+?)\*\*")
+FOOTNOTE_DEFINITION = re.compile(r"^[ ]{0,3}\[\^([^\]\r\n]+)\]:[ \t]*(.*?)(\r?\n)?$")
+FOOTNOTE_CONTINUATION = re.compile(r"^(?: {4}|\t)(.*?)(\r?\n)?$")
+FOOTNOTE_REFERENCE = re.compile(r"\[\^([^\]\r\n]+)\]")
 
 
 def _convert_inline_latex(text: str) -> str:
@@ -32,6 +36,35 @@ def _convert_inline_latex(text: str) -> str:
 def _convert_bold(text: str) -> str:
     """Rewrite paired **...** to <b>...</b> to avoid Lark bold-boundary bugs."""
     return BOLD_PAIR.sub(lambda m: f"<b>{m.group(1)}</b>", text)
+
+
+def _convert_footnotes(text: str) -> str:
+    """Use Lark quote blocks for defined GFM footnotes without touching literals."""
+    output: list[str] = []
+    defined: set[str] = set()
+    lines = text.splitlines(keepends=True)
+    index = 0
+    while index < len(lines):
+        match = FOOTNOTE_DEFINITION.match(lines[index])
+        if not match:
+            output.append(lines[index])
+            index += 1
+            continue
+        label, body, newline = match.groups()
+        defined.add(label)
+        output.append(f"> [{label}]" + (f" {body}" if body else "") + (newline or ""))
+        index += 1
+        while index < len(lines):
+            continuation = FOOTNOTE_CONTINUATION.match(lines[index])
+            if not continuation:
+                break
+            body, newline = continuation.groups()
+            output.append(f"> {body}" + (newline or ""))
+            index += 1
+    return FOOTNOTE_REFERENCE.sub(
+        lambda match: f"[{match.group(1)}]" if match.group(1) in defined else match.group(0),
+        "".join(output),
+    )
 
 
 def convert_text(content: str) -> tuple[str, int]:
@@ -49,6 +82,7 @@ def convert_text(content: str) -> tuple[str, int]:
 
         chunk = _convert_inline_latex(chunk)
         chunk = _convert_bold(chunk)
+        chunk = _convert_footnotes(chunk)
         return DISPLAY_FORMULA.sub(replace, chunk)
 
     output: list[str] = []
