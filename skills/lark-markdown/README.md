@@ -69,7 +69,8 @@ codex mcp get lark-markdown
 | `LARK_MCP_BASE_URL` | OAuth 必需 | MCP 的公开 HTTPS origin：`https://lark-markdown.nexuszone.link` |
 | `LARK_MCP_GITHUB_CLIENT_ID` | OAuth 必需 | GitHub OAuth App Client ID |
 | `LARK_MCP_GITHUB_CLIENT_SECRET` | OAuth 必需 | GitHub OAuth App Client Secret |
-| `LARK_MCP_GITHUB_USER` | OAuth 必需 | 唯一允许访问的 GitHub 登录名 |
+| `LARK_MCP_GITHUB_USERS` | OAuth 必需 | 允许访问的 GitHub 登录名，逗号分隔且不区分大小写 |
+| `LARK_MCP_GITHUB_USER` | 兼容旧配置 | 单一 GitHub 登录名；不得与 `LARK_MCP_GITHUB_USERS` 同时设置 |
 | `LARK_MCP_JWT_SIGNING_KEY` | OAuth 必需 | 至少 32 字节的独立随机值，用于签发 MCP OAuth Token |
 | `LARK_MCP_AUTH_TOKEN` | `token` 模式必需 | 至少 32 字符；不适用于不接受自定义 Authorization header 的客户端 |
 | `LARK_MCP_AUTH_TOKEN_FILE` | `token` 模式推荐 | 存放 Token 的普通文件；须由服务用户所有且权限为 `0600` 或更严格；不得与 `LARK_MCP_AUTH_TOKEN` 同时设置 |
@@ -81,7 +82,7 @@ codex mcp get lark-markdown
 
 ## ChatGPT 与 Claude 远程部署
 
-客户端不会从服务器“自动安装”MCP。它们连接公开 HTTPS `/mcp` 端点；OAuth 客户端可通过 CIMD 或 DCR 自动登记。当前实现使用 FastMCP 的 GitHub OAuth 代理提供 OAuth 2.1、PKCE、CIMD/DCR 和 protected-resource discovery，并只放行 `LARK_MCP_GITHUB_USER`。
+客户端不会从服务器“自动安装”MCP。它们连接公开 HTTPS `/mcp` 端点；OAuth 客户端可通过 CIMD 或 DCR 自动登记。当前实现使用 FastMCP 的 GitHub OAuth 代理提供 OAuth 2.1、PKCE、CIMD/DCR 和 protected-resource discovery，并只放行 `LARK_MCP_GITHUB_USERS`。
 
 先在 GitHub 创建 OAuth App：
 
@@ -98,7 +99,7 @@ sudo install -m 600 /dev/null /etc/lark-markdown.env
 # LARK_MCP_BASE_URL=https://lark-markdown.nexuszone.link
 # LARK_MCP_GITHUB_CLIENT_ID=...
 # LARK_MCP_GITHUB_CLIENT_SECRET=...
-# LARK_MCP_GITHUB_USER=你的GitHub登录名
+# LARK_MCP_GITHUB_USERS=你的GitHub登录名,另一位允许访问的登录名
 # LARK_MCP_JWT_SIGNING_KEY=<openssl rand -hex 32>
 ```
 
