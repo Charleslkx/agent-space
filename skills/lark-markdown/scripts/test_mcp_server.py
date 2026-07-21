@@ -25,7 +25,7 @@ SPEC.loader.exec_module(SERVER)
 class MCPServerTest(unittest.IsolatedAsyncioTestCase):
     def test_server_name_is_canonical(self) -> None:
         self.assertEqual(SERVER.mcp.name, "Lark-Markdown")
-        self.assertEqual(SERVER.mcp.version, "0.12.0")
+        self.assertEqual(SERVER.mcp.version, "0.12.1")
         self.assertIn("never configure or start a server", SERVER.mcp.instructions.lower())
 
     async def test_tools_are_registered(self) -> None:
@@ -444,7 +444,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             SERVER.GITHUB_CLIENT_ID_ENV: "client",
             SERVER.GITHUB_CLIENT_SECRET_ENV: "secret",
             SERVER.GITHUB_JWT_SIGNING_KEY_ENV: "stable-signing-key",
-            SERVER.GITHUB_USER_ENV: "Charles",
+            SERVER.GITHUB_USERS_ENV: "Charles, AnotherUser",
         }
         with patch.dict(SERVER.os.environ, env, clear=True), \
              patch.object(SERVER, "_OriginCompatibleGitHubProvider", return_value="provider") as provider:
@@ -458,7 +458,11 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             allowed = SERVER._authorized_github_user(SimpleNamespace(token=SimpleNamespace(
                 claims={"login": "charles"},
             )))
-        self.assertTrue(allowed)
+            self.assertTrue(allowed)
+            allowed = SERVER._authorized_github_user(SimpleNamespace(token=SimpleNamespace(
+                claims={"login": "anotheruser"},
+            )))
+            self.assertTrue(allowed)
 
     def test_github_oauth_rejects_non_https_origin(self) -> None:
         env = {
@@ -466,11 +470,21 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             SERVER.GITHUB_CLIENT_ID_ENV: "client",
             SERVER.GITHUB_CLIENT_SECRET_ENV: "secret",
             SERVER.GITHUB_JWT_SIGNING_KEY_ENV: "stable-signing-key",
-            SERVER.GITHUB_USER_ENV: "charles",
+            SERVER.GITHUB_USERS_ENV: "charles",
         }
         with patch.dict(SERVER.os.environ, env, clear=True):
             with self.assertRaisesRegex(RuntimeError, "HTTPS origin"):
                 SERVER._auth_provider("github")
+
+    def test_github_user_list_supports_legacy_setting_without_ambiguity(self) -> None:
+        with patch.dict(SERVER.os.environ, {SERVER.GITHUB_USER_ENV: "Charles"}, clear=True):
+            self.assertEqual(SERVER._github_users(), frozenset({"charles"}))
+        with patch.dict(SERVER.os.environ, {
+            SERVER.GITHUB_USERS_ENV: "Charles, AnotherUser",
+            SERVER.GITHUB_USER_ENV: "LegacyUser",
+        }, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "set only one"):
+                SERVER._github_users()
 
     async def test_claude_code_uses_fixed_local_oauth_client(self) -> None:
         provider = object.__new__(SERVER._OriginCompatibleGitHubProvider)

@@ -31,7 +31,8 @@ AUTH_MODE_ENV = "LARK_MCP_AUTH_MODE"
 BASE_URL_ENV = "LARK_MCP_BASE_URL"
 GITHUB_CLIENT_ID_ENV = "LARK_MCP_GITHUB_CLIENT_ID"
 GITHUB_CLIENT_SECRET_ENV = "LARK_MCP_GITHUB_CLIENT_SECRET"
-GITHUB_USER_ENV = "LARK_MCP_GITHUB_USER"
+GITHUB_USERS_ENV = "LARK_MCP_GITHUB_USERS"
+GITHUB_USER_ENV = "LARK_MCP_GITHUB_USER"  # Backward-compatible single-user setting.
 GITHUB_JWT_SIGNING_KEY_ENV = "LARK_MCP_JWT_SIGNING_KEY"
 CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 CLAUDE_CODE_REDIRECT_URI_PATTERN = "http://localhost:*"
@@ -141,9 +142,11 @@ def _auth_provider(mode: str = AUTH_MODE):
     if mode == "github":
         names = (
             BASE_URL_ENV, GITHUB_CLIENT_ID_ENV,
-            GITHUB_CLIENT_SECRET_ENV, GITHUB_USER_ENV, GITHUB_JWT_SIGNING_KEY_ENV,
+            GITHUB_CLIENT_SECRET_ENV, GITHUB_JWT_SIGNING_KEY_ENV,
         )
         missing = [name for name in names if not os.environ.get(name)]
+        if not os.environ.get(GITHUB_USERS_ENV) and not os.environ.get(GITHUB_USER_ENV):
+            missing.append(f"{GITHUB_USERS_ENV} (or legacy {GITHUB_USER_ENV})")
         if missing:
             raise RuntimeError(f"GitHub OAuth requires: {', '.join(missing)}")
         base_url = os.environ[BASE_URL_ENV].rstrip("/")
@@ -176,12 +179,20 @@ def _auth_provider(mode: str = AUTH_MODE):
     }})
 
 
+def _github_users() -> frozenset[str]:
+    users_value = os.environ.get(GITHUB_USERS_ENV, "").strip()
+    legacy_user = os.environ.get(GITHUB_USER_ENV, "").strip()
+    if users_value and legacy_user:
+        raise RuntimeError(f"set only one of {GITHUB_USERS_ENV} and {GITHUB_USER_ENV}")
+    users = frozenset(user.strip().casefold() for user in (users_value or legacy_user).split(",") if user.strip())
+    if not users:
+        raise RuntimeError(f"set {GITHUB_USERS_ENV} to at least one GitHub login")
+    return users
+
+
 def _authorized_github_user(ctx: AuthContext) -> bool:
-    expected = os.environ.get(GITHUB_USER_ENV)
-    return bool(
-        ctx.token and expected
-        and (ctx.token.claims or {}).get("login", "").casefold() == expected.casefold()
-    )
+    login = ((ctx.token.claims or {}).get("login") if ctx.token else "") or ""
+    return login.casefold() in _github_users()
 
 
 def _security_schemes(mode: str) -> list[dict]:
@@ -196,7 +207,7 @@ TOOL_META = {"securitySchemes": _security_schemes(AUTH_MODE)}
 AUTH_PROVIDER = _auth_provider()
 mcp = FastMCP(
     name="Lark-Markdown",
-    version="0.12.0",
+    version="0.12.1",
     instructions=(
         "For normal document work, use the connected tools and never configure or start a server. "
         "Call check_lark_cli only when connection or user auth is uncertain; use begin_lark_auth "
