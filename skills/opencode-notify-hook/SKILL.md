@@ -15,6 +15,10 @@ description: >
 为 opencode 配置在「需要授权」和「任务完成」时弹出 macOS 系统通知的插件。
 核心是一个 JS 插件文件，监听两个生命周期事件。
 
+### 飞书通知协议
+
+Codex、Claude Code、OpenCode 使用同一协议：读取各自 `feishu-agent.env` 中的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`、`FEISHU_APPROVAL_RECEIVE_ID_TYPE`；自建应用 IM API 为主通道，webhook 为失败回退。卡片无按钮，字段固定为 Agent、Project、Content、时间；完成为蓝色，需注意为橙色。通知链路不调用 `lark-cli`。
+
 ## 与 Claude Code / Codex hook 的对比
 
 | 维度 | Claude Code | Codex | opencode（本 skill） |
@@ -117,7 +121,7 @@ FEISHU_HOME_CHANNEL=oc_xxx           # 或 FEISHU_APPROVAL_RECEIVE_ID
 
 插件读取该文件、用 `app_id/app_secret` 取 `tenant_access_token`，再经 `im/v1/messages` 直接投递飞书**交互卡片**（`msg_type=interactive`）。env 缺失或凭证不全时自动跳过，不影响本地通知。env 路径可用 `FEISHU_ENV` 覆盖。
 
-`permission.asked` 与 `session.idle` 都会发卡片：完成（`session.idle`）绿色标题 `🤖 OpenCode · 任务完成`，需要授权（`permission.asked`）橙色标题 `⚠️ OpenCode · 需要授权`；正文含 `Agent` / `Project` 两个字段、通知内容和时间戳 note。
+`permission.asked` 与 `session.idle` 都会发卡片：完成（`session.idle`）蓝色标题 `🤖 OpenCode · 任务完成`，需要注意（`permission.asked`）橙色标题 `⚠️ OpenCode · 需要注意`；正文含 `Agent` / `Project` 两个字段、通知内容和时间戳 note。
 
 当前行为：只发送飞书通知卡片（**无操作按钮**），不记录选择、不等待结果、不替代 OpenCode 原生审批提示。
 
@@ -155,7 +159,7 @@ brew install terminal-notifier
 
 ```bash
 node --input-type=module <<'EOF'
-import { OpenCodeNotifyPlugin } from "/Users/charles/.config/opencode/plugins/notify.js"
+import { OpenCodeNotifyPlugin } from "./plugins/notify.js"
 const plugin = await OpenCodeNotifyPlugin()
 console.log("plugin hooks:", Object.keys(plugin))
 EOF

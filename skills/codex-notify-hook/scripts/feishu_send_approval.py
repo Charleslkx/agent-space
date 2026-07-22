@@ -4,9 +4,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import urllib.request
 
-from feishu_approval_common import PENDING_DIR, ensure_state_dirs, load_env, now, write_json
+from feishu_approval_common import load_env
 
 
 def post_json(url: str, payload: dict, headers: dict[str, str] | None = None) -> dict:
@@ -32,15 +33,15 @@ def tenant_token(env: dict[str, str]) -> str:
 
 
 def card(args: argparse.Namespace, *, resolved: bool = False, decision: str | None = None) -> dict:
-    status = "待处理" if not resolved else ("已批准" if decision == "allow" else "已拒绝")
-    template = "orange" if not resolved else ("green" if decision == "allow" else "red")
-    footer = f"Approval ID: `{args.approval_id}`"
+    notification = args.notification
+    title = f"🤖 {args.agent} · 任务完成" if notification else f"⚠️ {args.agent} · 需要注意"
+    template = "blue" if notification else "orange"
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     card_body: dict = {
         "schema": "2.0",
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"{args.agent} 权限申请"},
-            "subtitle": {"tag": "plain_text", "content": f"{args.project} · {status}"},
+            "title": {"tag": "plain_text", "content": title},
             "template": template,
         },
         "body": {
@@ -49,59 +50,27 @@ def card(args: argparse.Namespace, *, resolved: bool = False, decision: str | No
             "elements": [
                 {
                     "tag": "markdown",
-                    "content": f"**Project**\\n{args.project}\\n\\n**Content**\\n{args.content}",
+                    "content": f"**Agent**\\n{args.agent}\\n\\n**Project**\\n{args.project}\\n\\n**Content**\\n{args.content}",
                     "text_align": "left",
                     "text_size": "normal_v2",
                 },
                 {
                     "tag": "markdown",
-                    "content": footer,
+                    "content": f"🕒 {timestamp}",
                     "text_align": "left",
                     "text_size": "normal_v2",
                 },
             ],
         },
     }
-    if not resolved:
-        card_body["body"]["elements"].append(
-            {
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "Allow once"},
-                        "type": "primary",
-                        "value": {"approval_id": args.approval_id, "decision": "allow"},
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "Deny"},
-                        "type": "danger",
-                        "value": {"approval_id": args.approval_id, "decision": "deny"},
-                    },
-                ],
-            }
-        )
     return card_body
-
-
-def remember_pending(args: argparse.Namespace, *, receive_id: str, receive_id_type: str, message_id: str) -> None:
-    write_json(PENDING_DIR / f"{args.approval_id}.json", {
-        "approval_id": args.approval_id,
-        "agent": args.agent,
-        "project": args.project,
-        "content": args.content,
-        "receive_id": receive_id,
-        "receive_id_type": receive_id_type,
-        "message_id": message_id,
-        "created_at": now(),
-    })
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--agent", default="Codex")
     parser.add_argument("--approval-id", required=True)
+    parser.add_argument("--notification", action="store_true", help="send a completion card without approval actions")
     parser.add_argument("--project", required=True)
     parser.add_argument("--content", required=True)
     args = parser.parse_args()
@@ -113,7 +82,6 @@ def main() -> int:
         print("FEISHU_APPROVAL_RECEIVE_ID or FEISHU_HOME_CHANNEL is required", file=sys.stderr)
         return 2
 
-    ensure_state_dirs()
     token = tenant_token(env)
     resp = post_json(
         f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}",
@@ -128,8 +96,6 @@ def main() -> int:
     if resp.get("code") != 0:
         raise RuntimeError(f"send message failed: {resp.get('code')} {resp.get('msg')}")
     message_id = str((resp.get("data") or {}).get("message_id") or "")
-    if message_id:
-        remember_pending(args, receive_id=receive_id, receive_id_type=receive_id_type, message_id=message_id)
     print(json.dumps({"approval_id": args.approval_id, "sent": True, "message_id": message_id}, ensure_ascii=False))
     return 0
 

@@ -4,7 +4,7 @@
 //
 // 飞书通道自带 IM API 发送（无 codex 依赖），读取 FEISHU_ENV 指向的 env 文件
 // （默认 ~/.config/opencode/feishu-agent.env）里的 FEISHU_APP_ID/SECRET/HOME_CHANNEL，
-// 取 tenant token 后投递纯通知卡片（无按钮）。kind=done 绿色；kind=approval 橙色。
+// 取 tenant token 后投递纯通知卡片（无按钮）。kind=done 蓝色；kind=approval 橙色。
 // IM API 失败时回退 LARK_WEBHOOK_URL webhook（同款卡片）。
 //
 // 注意: 全部 shell 调用走 node:child_process (stdio ignore/pipe)，不使用 opencode 的 $
@@ -68,11 +68,11 @@ function parseEnv(text) {
   return env
 }
 
-// 绿=完成/橙=授权 的纯通知卡片（无按钮），IM API 与 webhook 共用
+// 蓝=完成/橙=需注意 的纯通知卡片（无按钮），IM API 与 webhook 共用
 function buildCard(agent, project, content, kind) {
   const [title, template] = kind === "approval"
-    ? [`⚠️ ${agent} · 需要授权`, "orange"]
-    : [`🤖 ${agent} · 任务完成`, "green"]
+    ? [`⚠️ ${agent} · 需要注意`, "orange"]
+    : [`🤖 ${agent} · 任务完成`, "blue"]
   const ts = new Date().toLocaleString("sv-SE") // YYYY-MM-DD HH:MM:SS
   return {
     config: { wide_screen_mode: true },
