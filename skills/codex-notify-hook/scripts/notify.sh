@@ -25,8 +25,11 @@ EVENT="${1:-}"
 SOUND="Glass"
 TITLE="Codex"
 DEFAULT_MSG="需要你的关注"
-FEISHU_APPROVAL_SEND="${FEISHU_APPROVAL_SEND:-/Users/charles/.codex/hooks/feishu_send_approval.py}"
-FEISHU_APPROVAL_PYTHON="${FEISHU_APPROVAL_PYTHON:-/Users/charles/Nutstore/agent-space/.venv/bin/python}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+FEISHU_APPROVAL_SEND="${FEISHU_APPROVAL_SEND:-$SCRIPT_DIR/feishu_send_approval.py}"
+FEISHU_APPROVAL_PYTHON="${FEISHU_APPROVAL_PYTHON:-python3}"
+FEISHU_NOTIFICATION_SEND="${FEISHU_NOTIFICATION_SEND:-$FEISHU_APPROVAL_SEND}"
+FEISHU_NOTIFICATION_PYTHON="${FEISHU_NOTIFICATION_PYTHON:-$FEISHU_APPROVAL_PYTHON}"
 FEISHU_WEBHOOK_ENV="${FEISHU_WEBHOOK_ENV:-$HOME/.codex/feishu-webhook.env}"
 
 dbg() { [ "${NOTIFY_DEBUG:-0}" = "1" ] && echo "[notify] $*" >&2; return 0; }
@@ -47,7 +50,15 @@ is_wsl() {
   [ -n "${WSL_INTEROP:-}" ] || grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null
 }
 
+is_codex_desktop() {
+  [ "${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-}" = "Codex Desktop" ] && \
+    [ "${__CFBundleIdentifier:-}" = "com.openai.codex" ]
+}
+
 local_notifications_enabled() {
+  if is_codex_desktop; then
+    return 1
+  fi
   [ "$(uname -s 2>/dev/null)" = "Darwin" ] || is_wsl
 }
 
@@ -105,9 +116,16 @@ approval_id() {
 
 send_feishu_approval() {
   [ -f "$FEISHU_APPROVAL_SEND" ] || { dbg "飞书审批发送脚本不存在: $FEISHU_APPROVAL_SEND"; return 1; }
-  [ -x "$FEISHU_APPROVAL_PYTHON" ] || { dbg "Python 不存在: $FEISHU_APPROVAL_PYTHON"; return 1; }
+  command -v "$FEISHU_APPROVAL_PYTHON" >/dev/null 2>&1 || { dbg "Python 不存在: $FEISHU_APPROVAL_PYTHON"; return 1; }
   local id="$1" project="$2" content="$3"
   "$FEISHU_APPROVAL_PYTHON" "$FEISHU_APPROVAL_SEND" --agent "$TITLE" --approval-id "$id" --project "$project" --content "$content" >/dev/null 2>&1
+}
+
+send_feishu_notification() {
+  [ -f "$FEISHU_NOTIFICATION_SEND" ] || { dbg "飞书发送脚本不存在: $FEISHU_NOTIFICATION_SEND"; return 1; }
+  command -v "$FEISHU_NOTIFICATION_PYTHON" >/dev/null 2>&1 || { dbg "Python 不存在: $FEISHU_NOTIFICATION_PYTHON"; return 1; }
+  local id="$1" project="$2" content="$3"
+  "$FEISHU_NOTIFICATION_PYTHON" "$FEISHU_NOTIFICATION_SEND" --notification --agent "$TITLE" --approval-id "$id" --project "$project" --content "$content" >/dev/null 2>&1
 }
 
 # 确定事件类型：优先用位置参数，其次从 stdin JSON 的 hook_event_name 推断
@@ -180,7 +198,11 @@ deliver() {
   local body="$1" subtitle="$2"
 
   if ! local_notifications_enabled; then
-    dbg "原生 Linux：跳过本地通知，仅发送飞书"
+    if is_codex_desktop; then
+      dbg "Codex App：跳过本地通知，仅发送飞书"
+    else
+      dbg "原生 Linux：跳过本地通知，仅发送飞书"
+    fi
     return 0
   fi
 
@@ -233,8 +255,13 @@ notify() {
   fi
   local project; project="$(project_name)"
   deliver "$1" "$project"
-  ( lark_notify "$TITLE" "$project" "$1" ) &
-  disown 2>/dev/null || true
+  if send_feishu_notification "$(approval_id)" "$project" "$1"; then
+    dbg "飞书完成通知已发送"
+  else
+    dbg "飞书应用通知失败，退回简单 webhook"
+    ( lark_notify "$TITLE" "$project" "$1" ) &
+    disown 2>/dev/null || true
+  fi
 }
 
 approval_notify() {

@@ -30,7 +30,12 @@ is_wsl() {
   [ -n "${WSL_INTEROP:-}" ] || grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null
 }
 
+is_claude_desktop() {
+  [ "${__CFBundleIdentifier:-}" = "com.anthropic.claudefordesktop" ]
+}
+
 local_notifications_enabled() {
+  is_claude_desktop && return 1
   [ "$(uname -s 2>/dev/null)" = "Darwin" ] || is_wsl
 }
 
@@ -56,9 +61,9 @@ lark_notify() {
 import base64, hashlib, hmac, json, os, sys, time, urllib.request
 agent, project, content, kind = sys.argv[1:5]
 if kind == "approval":
-    title, template = f"⚠️ {agent} · 需要授权", "orange"
+    title, template = f"⚠️ {agent} · 需要注意", "orange"
 else:
-    title, template = f"🤖 {agent} · 任务完成", "green"
+    title, template = f"🤖 {agent} · 任务完成", "blue"
 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 card = {
     "config": {"wide_screen_mode": True},
@@ -133,9 +138,9 @@ if tok.get("code") != 0:
     sys.exit(1)
 
 if kind == "approval":
-    title, template = f"⚠️ {agent} · 需要授权", "orange"
+    title, template = f"⚠️ {agent} · 需要注意", "orange"
 else:
-    title, template = f"🤖 {agent} · 任务完成", "green"
+    title, template = f"🤖 {agent} · 任务完成", "blue"
 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 card = {
     "config": {"wide_screen_mode": True},
@@ -196,7 +201,11 @@ deliver() {
   local body="$1" subtitle="$2" owner="${__CFBundleIdentifier:-}"
 
   if ! local_notifications_enabled; then
-    dbg "原生 Linux：跳过本地通知，仅发送飞书"
+    if is_claude_desktop; then
+      dbg "Claude Desktop：跳过本地通知，仅发送飞书"
+    else
+      dbg "原生 Linux：跳过本地通知，仅发送飞书"
+    fi
     return 0
   fi
 

@@ -4,7 +4,7 @@ description: >
   为 Codex 搭建任务完成通知 hook：macOS/WSL 同时发送系统通知和飞书；
   原生 Linux 只发送飞书。
   支持焦点识别（正盯着会话窗口时不打扰）、通知 subtitle 显示项目根目录名称、
-  可选飞书 webhook 通知，以及多依赖缺失时的逐级降级兜底。
+  使用飞书自建应用发送通知，webhook 仅作可选降级。
   当用户提到"完成后通知我""Codex 通知 hook""任务做完弹个通知"
   "后台跑任务想被叫一下"、terminal-notifier 或 osascript 通知时，务必使用本 skill。
 ---
@@ -13,10 +13,14 @@ description: >
 
 为 Codex 配置 `Stop` hook，在一轮回答结束时发送通知。
 
+### 飞书通知协议
+
+三个 agent 使用同一协议：读取各自 `feishu-agent.env` 中的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`、`FEISHU_APPROVAL_RECEIVE_ID_TYPE`；自建应用 IM API 为主通道，webhook 为失败回退。卡片无按钮，字段固定为 Agent、Project、Content、时间；完成为蓝色，需注意为橙色。通知链路不调用 `lark-cli`。
+
 ## 工作原理
 
 ```text
-Codex 结束一轮回答
+Codex CLI 结束一轮回答
   -> Stop hook
   -> notify.sh
   -> macOS 系统通知 / WSL Windows Toast / 飞书
@@ -42,30 +46,35 @@ case "$(uname -s)" in
 esac
 ```
 
-原生 Linux 仍需安装 Stop hook，用它触发飞书；脚本不会尝试 `terminal-notifier`、`osascript` 或终端响铃。
+原生 Linux 仍需安装 Stop hook，用它触发飞书；脚本不会尝试 `terminal-notifier`、`osascript` 或终端响铃。Codex App 会通过 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` 和 `__CFBundleIdentifier=com.openai.codex` 被识别，跳过本地通知，只保留飞书；App 自身负责系统提醒。
 
-### 飞书配置交接规则
+### 飞书配置：一键绑定自建应用
 
-需要飞书时，先给用户生成可编辑脚本，**不要代填、不要运行、不要要求用户在对话中发送密钥**：
+通知不调用 `lark-cli`，也不读取其用户登录态。它使用 `feishu-agent.env` 中的应用凭证，先换取 tenant access token，再调用飞书 IM API 向 `FEISHU_HOME_CHANNEL` 发卡片。
 
-```bash
-cp <skill-dir>/scripts/write_feishu_webhook_env.sh ~/.codex/configure-feishu-webhook.sh
-chmod 700 ~/.codex/configure-feishu-webhook.sh
-```
-
-告知用户编辑脚本中的 `LARK_WEBHOOK_URL`，以及启用签名校验时的 `LARK_WEBHOOK_SECRET`；用户自行运行：
+已有绑定应用时，保留现有 `~/.codex/feishu-agent.env`。需要新建或更新应用时，用户在本机运行：
 
 ```bash
-~/.codex/configure-feishu-webhook.sh
+python3 <skill-dir>/scripts/create_feishu_agent_app.py --live
 ```
 
-用户回复“已运行”后，检查 `~/.codex/feishu-webhook.env` 存在且权限为 `600`，再触发一次 Stop hook 测试。`notify.sh` 会自动读取该文件；无需依赖启动 Codex 的 shell 环境。
+该命令通过 `lark_oapi.register_app` 展示二维码，完成飞书一键绑定；将输出的凭证和接收群 `FEISHU_HOME_CHANNEL` 写入 `~/.codex/feishu-agent.env`（权限 `600`）。不要在对话中发送密钥。
+
+脚本与三个 Python 文件必须一并放入 hook 目录：
+
+```bash
+mkdir -p ~/.codex/hooks
+cp <skill-dir>/scripts/{notify.sh,feishu_send_approval.py,feishu_approval_common.py} ~/.codex/hooks/
+chmod +x ~/.codex/hooks/notify.sh
+```
+
+完成事件会发蓝色完成卡片；授权事件才发带按钮的审批卡片。
 
 ### 1. 放置脚本
 
 ```bash
 mkdir -p ~/.codex/hooks
-cp <skill-dir>/scripts/notify.sh ~/.codex/hooks/notify.sh
+cp <skill-dir>/scripts/{notify.sh,feishu_send_approval.py,feishu_approval_common.py} ~/.codex/hooks/
 chmod +x ~/.codex/hooks/notify.sh
 ```
 
@@ -128,7 +137,7 @@ export LARK_WEBHOOK_URL="https://open.feishu.cn/open-apis/bot/v2/hook/..."
 export LARK_WEBHOOK_SECRET="..."
 ```
 
-飞书消息固定为三行：`Agent: Codex`、`Project: <项目根目录名称>`、`Content: 任务已完成`。
+当自建应用发送失败时，hook 才回退到 webhook。
 
 ## 可选：安装 terminal-notifier
 
@@ -161,4 +170,4 @@ echo '{"hook_event_name":"Stop"}' | NOTIFY_FORCE=1 PATH=/usr/bin:/bin "$SH" stop
 
 ## 平台说明
 
-macOS 使用 `terminal-notifier` / `osascript`；WSL 使用 Windows Toast；原生 Linux 不发本地通知，只走飞书。
+Codex CLI 在 macOS 使用 `terminal-notifier` / `osascript`，WSL 使用 Windows Toast；Codex App 与原生 Linux 不发本地通知，只走飞书。

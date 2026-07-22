@@ -16,6 +16,10 @@ description: >
 
 为 Claude Code 配置在「需要干预」和「任务完成」时弹出 macOS 系统通知的 hook。核心是两个生命周期事件 + 一个带兜底的投递脚本。
 
+### 飞书通知协议
+
+Codex、Claude Code、OpenCode 使用同一协议：读取各自 `feishu-agent.env` 中的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`、`FEISHU_APPROVAL_RECEIVE_ID_TYPE`；自建应用 IM API 为主通道，webhook 为失败回退。卡片无按钮，字段固定为 Agent、Project、Content、时间；完成为蓝色，需注意为橙色。通知链路不调用 `lark-cli`。
+
 ## 工作原理（先理解再动手）
 
 Claude Code 在生命周期里埋了事件点。命中事件时，它**启动一个 shell 子进程**执行你配置的命令，并把一段 **JSON 通过 stdin** 喂给该命令。所以"事件发生时自动通知"只能用 hook 实现，记忆/偏好做不到——是 Claude Code 程序在跑命令，不是模型主动发。
@@ -47,7 +51,7 @@ case "$(uname -s)" in
 esac
 ```
 
-原生 Linux 仍需注册两个 hook，用它们触发飞书；脚本不会尝试本地通知或终端响铃。
+原生 Linux 仍需注册两个 hook，用它们触发飞书；脚本不会尝试本地通知或终端响铃。Claude Desktop 通过 `__CFBundleIdentifier=com.anthropic.claudefordesktop` 被识别，跳过本地通知，避免与 Desktop 自带提醒重复；飞书仍会发送。
 
 ### 飞书配置交接规则
 
@@ -138,7 +142,7 @@ FEISHU_HOME_CHANNEL=oc_xxx           # 或 FEISHU_APPROVAL_RECEIVE_ID
 
 `notify.sh` 会读取该文件、用 `app_id/app_secret` 取 `tenant_access_token`，再经 `im/v1/messages` 直接投递飞书**交互卡片**（`msg_type=interactive`），全程只用 Python 标准库。env 缺失或凭证不全时自动跳过，不影响本地通知。env 路径可用 `FEISHU_ENV` 覆盖（默认 `~/.claude/feishu-agent.env`）。
 
-卡片按事件着色：任务完成（`stop`）绿色标题 `🤖 ClaudeCode · 任务完成`，需要授权（`notification`）橙色标题 `⚠️ ClaudeCode · 需要授权`；正文含 `Agent` / `Project` 两个字段、通知内容和时间戳 note。
+卡片按事件着色：任务完成（`stop`）蓝色标题 `🤖 ClaudeCode · 任务完成`，需要注意（`notification`）橙色标题 `⚠️ ClaudeCode · 需要注意`；正文含 `Agent` / `Project` 两个字段、通知内容和时间戳 note。
 
 当前行为：只发送飞书通知卡片（**无操作按钮**），不记录选择、不等待结果、不替代 Claude Code 原生审批提示。
 
@@ -207,7 +211,7 @@ SH=~/.claude/hooks/notify.sh
 echo '{"message":"Claude needs your permission to use Bash"}' | NOTIFY_DEBUG=1 NOTIFY_FORCE=1 $SH notification
 # 空闲催促 → 应静默
 echo '{"message":"Claude is waiting for your input"}' | NOTIFY_DEBUG=1 $SH notification
-# 任务完成 → 应弹出
+# 任务完成 → CLI 应弹出；Claude Desktop 只发飞书
 echo '{}' | NOTIFY_DEBUG=1 NOTIFY_FORCE=1 $SH stop
 # 飞书格式自测（用无效 URL 也应快速失败且 exit 0）
 echo '{"message":"x","cwd":"/tmp/demo-project"}' | LARK_WEBHOOK_URL=http://127.0.0.1:9 NOTIFY_FORCE=1 $SH notification
@@ -221,4 +225,4 @@ echo '{"message":"x"}' | NOTIFY_FORCE=1 PATH=/bin /bin/bash $SH notification
 
 ## 平台说明
 
-macOS 使用 `osascript`/`lsappinfo`；WSL 使用 Windows Toast；原生 Linux 跳过本地通道，只发送飞书。
+Claude Code CLI 在 macOS 使用 `osascript`/`lsappinfo`，WSL 使用 Windows Toast；Claude Desktop 与原生 Linux 跳过本地通道，只发送飞书。
