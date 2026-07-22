@@ -1,8 +1,8 @@
-# Lark-Markdown
+# Lark-Markdown MCP 配置
 
 可分发的 uv 项目：把 Markdown 内容写入飞书 Docx，支持并发批量拉取、并发批量推送、定点修改、创建文档、插入媒体及画板读写。公网部署后可由 ChatGPT、Claude.ai、Claude Desktop 和 Claude Code 通过 OAuth 2.1 连接。
 
-`SKILL.md` 默认指导 Agent 使用已连接的远程 MCP；只有用户明确要求配置或部署服务器时，才读取本 README。
+`skills/lark-markdown/SKILL.md` 只说明如何使用已连接的远程 MCP；本文件集中说明 MCP 的安装、部署、认证和客户端连接配置。
 
 ## 环境要求
 
@@ -35,7 +35,7 @@ lark-cli auth status --json --verify
 复制整个目录，必须保留 `uv.lock`：
 
 ```bash
-cd lark-markdown
+cd mcp/lark-markdown
 uv sync --frozen
 PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s scripts -p 'test_*.py'
 uv lock --check
@@ -50,16 +50,14 @@ uv run python scripts/mcp_server.py --transport http --host 127.0.0.1 --port 876
 ## Codex 安装
 
 ```bash
-rsync -a --delete --exclude .venv --exclude .lark_publish --exclude __pycache__ \
-  ./ ~/.codex/skills/lark-markdown/
-cd ~/.codex/skills/lark-markdown
+cd mcp/lark-markdown
 uv sync --frozen
 codex mcp remove lark-markdown 2>/dev/null || true
 codex mcp add lark-markdown --url http://127.0.0.1:8765/mcp
 codex mcp get lark-markdown
 ```
 
-重启 Codex，使其重新加载 `SKILL.md`。
+重启 Codex，使其重新加载 MCP 配置。
 
 ## 配置
 
@@ -246,8 +244,9 @@ uv run python scripts/test_live_capabilities.py \
 - `schedule_mcp_restart`：在当前调用完成后延迟重启固定的 MCP 服务；必须传入确认词 `RESTART_LARK_MARKDOWN_MCP`，延迟范围为 5–300 秒。
 - `begin_lark_auth`、`complete_lark_auth`：发起和完成飞书用户授权。
 - `batch_pull`：批量读取 Markdown/XML 与 revision。
+- `find_document_text`：按精确文本返回有限上下文，不向模型返回全文；用于局部编辑前定位句子。
 - `batch_push`：批量覆盖或追加 Markdown/XML。
-- `point_update`：精确替换或删除匹配内容。
+- `point_update`：仅在旧文本唯一命中时精确替换或删除；重复命中时先调用 `find_document_text` 缩小目标。
 - `create_document`：在个人空间或 Drive 文件夹创建普通 Docx。
 - `create_wiki_node`：在指定 Wiki 空间根目录或父节点下创建空白 Docx 页面。
 - `create_wiki_space`：创建 Wiki 空间。

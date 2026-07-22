@@ -42,6 +42,8 @@ DEFAULT_BATCH_CONCURRENCY = 4
 MAX_BATCH_CONCURRENCY = 8
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
+MAX_SNIPPET_CONTEXT_CHARS = 1000
+MAX_SNIPPET_MATCHES = 10
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RESTART_CONFIRMATION = "RESTART_LARK_MARKDOWN_MCP"
 RESTART_WORKER = PROJECT_ROOT / "scripts" / "restart_mcp_worker.py"
@@ -211,9 +213,14 @@ mcp = FastMCP(
     instructions=(
         "For normal document work, use the connected tools and never configure or start a server. "
         "Call check_lark_cli only when connection or user auth is uncertain; use begin_lark_auth "
-        "and complete_lark_auth only to recover missing user authorization. Pull current content "
-        "before every edit, use point_update for one exact change and batch_push for explicit full "
-        "replacements, then pull again to verify formatting, links, formulas, and unaffected content."
+        "and complete_lark_auth only to recover missing user authorization. Before a local edit, use "
+        "find_document_text to return bounded snippets; if it finds multiple targets, refine the query with "
+        "longer exact text and never guess. Use point_update only for one exact target; it rejects non-unique "
+        "patterns. Use batch_pull only when full-document understanding is requested, the target cannot be "
+        "narrowed by snippets, or XML/native-block structure is needed. Use batch_push only for an explicit "
+        "whole-document replacement or append. After point_update, verify with find_document_text using the "
+        "replacement (or the removed text for deletion); use batch_pull only after partial_success, an error, "
+        "a format-sensitive operation, or an explicit verification request."
     ),
     website_url=os.environ.get(BASE_URL_ENV),
     auth=AUTH_PROVIDER,
@@ -517,6 +524,24 @@ def complete_lark_auth(device_code: str) -> dict:
     return _check_lark_cli(use_cache=False)
 
 
+def _fetch_document(
+    doc: str, doc_format: DocFormat, detail: Literal["simple", "with-ids", "full"], operation: str,
+) -> dict:
+    result = _run_cli([
+        "docs", "+fetch", "--api-version", "v2", "--as", "user",
+        "--doc", doc, "--doc-format", doc_format, "--detail", detail,
+        "--format", "json",
+    ], operation)
+    try:
+        return result["data"]["document"]
+    except (KeyError, TypeError) as error:
+        raise LarkCLIError({
+            "operation": operation,
+            "error": "invalid_response",
+            "message": "missing data.document",
+        }) from error
+
+
 @mcp.tool(title="Check Lark CLI", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 def check_lark_cli() -> dict:
     """Check lark-cli and user login; return any optional update notice without blocking."""
@@ -545,20 +570,11 @@ def batch_pull(
             )
     def pull_one(index: int, doc: str) -> dict:
         try:
-            result = _run_cli([
-                "docs", "+fetch", "--api-version", "v2", "--as", "user",
-                "--doc", doc, "--doc-format", doc_format, "--detail", detail,
-                "--format", "json",
-            ], f"batch_pull documents[{index}]")
+            document = _fetch_document(
+                doc, doc_format, detail, f"batch_pull documents[{index}]",
+            )
         except RuntimeError as error:
             raise _batch_failure("batch_pull", index, doc, 0, error) from error
-        try:
-            document = result["data"]["document"]
-        except (KeyError, TypeError) as error:
-            raise _batch_failure(
-                "batch_pull", index, doc, 0,
-                LarkCLIError({"error": "invalid_response", "message": "missing data.document"}),
-            ) from error
         return {
             "doc": doc,
             "revision_id": document.get("revision_id"),
@@ -577,6 +593,62 @@ def batch_pull(
                 failure.details["other_requests_may_have_completed"] = workers > 1
                 raise failure from error
     return pulled
+
+
+@mcp.tool(title="Find document text snippets", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+def find_document_text(
+    doc: str,
+    query: str,
+    context_chars: int = 240,
+    max_matches: int = 3,
+    doc_format: DocFormat = "markdown",
+) -> dict:
+    """Return bounded context around exact text matches without returning the full document."""
+    if not doc.strip():
+        raise ValueError("doc must not be empty")
+    if not query:
+        raise ValueError("query must not be empty")
+    if doc_format not in {"markdown", "xml"}:
+        raise ValueError("doc_format must be markdown or xml")
+    if type(context_chars) is not int or not 0 <= context_chars <= MAX_SNIPPET_CONTEXT_CHARS:
+        raise ValueError(f"context_chars must be an integer between 0 and {MAX_SNIPPET_CONTEXT_CHARS}")
+    if type(max_matches) is not int or not 1 <= max_matches <= MAX_SNIPPET_MATCHES:
+        raise ValueError(f"max_matches must be an integer between 1 and {MAX_SNIPPET_MATCHES}")
+    _check_lark_cli()
+    document = _fetch_document(doc, doc_format, "simple", "find_document_text")
+    content = document.get("content", "")
+    if not isinstance(content, str):
+        raise LarkCLIError({
+            "operation": "find_document_text",
+            "error": "invalid_response",
+            "message": "document content must be a string",
+        })
+    starts = []
+    offset = 0
+    while len(starts) < max_matches:
+        start = content.find(query, offset)
+        if start < 0:
+            break
+        starts.append(start)
+        offset = start + len(query)
+    total_matches = content.count(query)
+    return {
+        "doc": doc,
+        "revision_id": document.get("revision_id"),
+        "query": query,
+        "match_count": total_matches,
+        "matches_truncated": total_matches > len(starts),
+        "matches": [
+            {
+                "start": start,
+                "end": start + len(query),
+                "before": content[max(0, start - context_chars):start],
+                "match": query,
+                "after": content[start + len(query):start + len(query) + context_chars],
+            }
+            for start in starts
+        ],
+    }
 
 
 @mcp.tool(title="Batch push Lark documents", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -649,7 +721,7 @@ def point_update(
     replacement: str,
     doc_format: DocFormat = "markdown",
 ) -> dict:
-    """Replace one exact text target and remove the hidden payload afterward."""
+    """Replace an exact text target only when it occurs once; the full document stays server-side."""
     if not doc.strip():
         raise ValueError("doc must not be empty")
     if not pattern:
@@ -657,6 +729,19 @@ def point_update(
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")
     _check_lark_cli()
+    document = _fetch_document(doc, doc_format, "simple", "point_update preflight")
+    content = document.get("content", "")
+    if not isinstance(content, str):
+        raise LarkCLIError({
+            "operation": "point_update preflight",
+            "error": "invalid_response",
+            "message": "document content must be a string",
+        })
+    matches = content.count(pattern)
+    if matches != 1:
+        raise ValueError(
+            f"pattern must occur exactly once, found {matches}; call find_document_text for bounded context"
+        )
     with _hidden_run() as run:
         content = _payload(run / ".replacement", replacement)
         return _run_cli([
