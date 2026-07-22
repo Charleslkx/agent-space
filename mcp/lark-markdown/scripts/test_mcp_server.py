@@ -25,7 +25,7 @@ SPEC.loader.exec_module(SERVER)
 class MCPServerTest(unittest.IsolatedAsyncioTestCase):
     def test_server_name_is_canonical(self) -> None:
         self.assertEqual(SERVER.mcp.name, "Lark-Markdown")
-        self.assertEqual(SERVER.mcp.version, "0.12.1")
+        self.assertEqual(SERVER.mcp.version, "0.13.0")
         instructions = SERVER.mcp.instructions.lower()
         self.assertIn("never configure or start a server", instructions)
         self.assertIn("if it finds multiple targets", instructions)
@@ -39,7 +39,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             {tool.name for tool in tools},
             {
                 "check_lark_cli", "begin_lark_auth", "complete_lark_auth", "schedule_mcp_restart", "batch_pull", "find_document_text", "batch_push", "point_update",
-                "create_document", "create_wiki_node", "create_wiki_space", "insert_media", "whiteboard_query", "whiteboard_update",
+                "create_document", "create_wiki_node", "create_wiki_space", "scan_document_assets", "insert_media", "whiteboard_query", "whiteboard_update",
             },
         )
         self.assertTrue(all(tool.title for tool in tools))
@@ -344,6 +344,21 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(SERVER, "_check_lark_cli"):
             with self.assertRaisesRegex(ValueError, "plain file name"):
                 SERVER.insert_media("doc", "../secret", "eA==")
+
+    def test_scan_document_assets_returns_bounded_metadata(self) -> None:
+        response = {"data": {"document": {
+            "revision_id": "9",
+            "content": '<doc><img src="https://example/image.png" token="image-token"/>'
+                       '<whiteboard type="mermaid" block-token="board-token">A --&gt; B</whiteboard>'
+                       '<p>private body</p></doc>',
+        }}}
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", return_value=response):
+            result = SERVER.scan_document_assets("doc-a")
+        self.assertEqual(result["counts"], {"images": 1, "whiteboards": 1})
+        self.assertEqual(result["images"][0]["source"], "https://example/image.png")
+        self.assertEqual(result["whiteboards"][0]["token"], "board-token")
+        self.assertNotIn("private body", json.dumps(result))
 
     async def test_whiteboard_update_cleans_payload(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \

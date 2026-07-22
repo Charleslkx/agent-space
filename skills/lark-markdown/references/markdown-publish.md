@@ -90,7 +90,7 @@ python3 scripts/prepare_publish.py \
 检查 `.lark_publish/manifest.json`：
 
 - `errors` 必须为空；控制字符、无法解析的本地图片或链接先修复源文件后重跑。
-- 检查 `documents`、`edges`、`images`；记录入边/出边和所有带 `fragment` 的链接。
+- 检查 `documents`、`edges`、`images`、`whiteboards`；记录入边/出边和所有带 `fragment` 的链接。
 - 报告重复标题；飞书同一节点下标题重复时先要求用户改名或确认。
 
 ## 2 创建文档并生成 URL 映射
