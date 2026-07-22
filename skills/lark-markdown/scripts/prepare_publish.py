@@ -13,6 +13,8 @@ FENCE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})")
 REFERENCE_LINK = re.compile(
     r"(?m)^[ ]{0,3}\[[^\]\n]+\]:[ \t]*(?:<(?P<angle>[^>\n]+)>|(?P<plain>\S+))"
 )
+FENCED_WHITEBOARD = re.compile(r"^[ ]{0,3}(?:`{3,}|~{3,})[ \t]*(mermaid|plantuml)[ \t]*$", re.IGNORECASE)
+XML_WHITEBOARD = re.compile(r'<whiteboard\b[^>]*\btype=(["\'])(?P<format>[^"\']+)\1[^>]*>(?P<source>.*?)</whiteboard\s*>', re.IGNORECASE | re.DOTALL)
 
 def resolve(base: Path, raw: str) -> Path | None:
     raw = unquote(raw.strip().strip('<>'))
@@ -189,7 +191,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     reset_staging(out)
     source_keys = {p.relative_to(root).as_posix(): p for p in files}
-    docs, edges, images, errors = [], [], [], []
+    docs, edges, images, whiteboards, errors = [], [], [], [], []
 
     for p in files:
         rel = p.relative_to(root).as_posix(); text = p.read_text(encoding='utf-8')
@@ -199,6 +201,13 @@ def main() -> int:
         refs = []
         for is_code, prose in prose_chunks(text):
             if is_code:
+                lines = prose.splitlines()
+                match = FENCED_WHITEBOARD.match(lines[0]) if lines else None
+                if match:
+                    whiteboards.append({
+                        'document': rel, 'syntax': 'fence', 'format': match.group(1).lower(),
+                        'source': '\n'.join(lines[1:-1]).strip(),
+                    })
                 continue
             for link in markdown_links(prose):
                 target_raw, fragment = split_dest(link["target"])
@@ -218,6 +227,11 @@ def main() -> int:
                                        'alt': m.group(1) if kind == 'markdown' else '', 'marker': marker})
                     elif not re.match(r'https?://', raw.strip()):
                         errors.append({'file': rel, 'error': f'unresolved image: {raw}'})
+            for match in XML_WHITEBOARD.finditer(prose):
+                whiteboards.append({
+                    'document': rel, 'syntax': 'xml', 'format': match.group('format').lower(),
+                    'source': match.group('source').strip(),
+                })
         docs.append({'path': rel, 'title': p.stem, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest(), 'references': sorted(set(refs))})
 
     title_groups: dict[str, list[str]] = defaultdict(list)
@@ -227,7 +241,7 @@ def main() -> int:
         {'title': title, 'paths': paths}
         for title, paths in title_groups.items() if len(paths) > 1
     ]
-    report = {'documents': docs, 'edges': edges, 'images': images,
+    report = {'documents': docs, 'edges': edges, 'images': images, 'whiteboards': whiteboards,
               'duplicate_titles': duplicate_titles, 'errors': errors,
               'url_map_complete': len(url_map) == len(files) and set(url_map) == set(source_keys)}
     (out/'manifest.json').write_text(json.dumps(report, ensure_ascii=False, indent=2)+'\n')
@@ -263,6 +277,6 @@ def main() -> int:
         staged = transform_prose(staged, lambda prose: MD_IMAGE.sub(lambda m: replace_image(m, 'markdown'), prose))
         staged = transform_prose(staged, lambda prose: WIKI_IMAGE.sub(lambda m: replace_image(m, 'wikilink'), prose))
         dst=out/'markdown'/rel; dst.parent.mkdir(parents=True,exist_ok=True); dst.write_text(staged,encoding='utf-8')
-    print(json.dumps({'staged': len(files), 'images': len(images), 'errors': errors}, ensure_ascii=False))
+    print(json.dumps({'staged': len(files), 'images': len(images), 'whiteboards': len(whiteboards), 'errors': errors}, ensure_ascii=False))
     return 1 if errors else 0
 if __name__ == '__main__': raise SystemExit(main())

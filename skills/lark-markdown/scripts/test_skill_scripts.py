@@ -50,7 +50,8 @@ class SkillScriptsTest(unittest.TestCase):
                 "一个断言[^1]。\n\n[^1]: [来源](https://example.com)\n"
                 "    补充说明\n\n`[^literal]`\n\n"
                 "`[literal](sub/b(test).md)`\n\n$$x+y$$\n\n"
-                "```text\n[code](sub/b(test).md)\n$$literal$$\n```\n\n![pixel](pixel.png)\n"
+                "```text\n[code](sub/b(test).md)\n$$literal$$\n```\n\n![pixel](pixel.png)\n\n"
+                "```mermaid\nflowchart LR\nA --> B\n```\n"
             )
             (root / "pixel.png").write_bytes(
                 bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415408d763f8cfc0f01f00050001ff89993d1d0000000049454e44ae426082")
@@ -62,6 +63,10 @@ class SkillScriptsTest(unittest.TestCase):
             self.assertEqual(len(manifest["documents"]), 3)
             self.assertEqual(len(manifest["edges"]), 3)
             self.assertEqual(len(manifest["images"]), 1)
+            self.assertEqual(manifest["whiteboards"], [{
+                "document": "a.md", "syntax": "fence", "format": "mermaid",
+                "source": "flowchart LR\nA --> B",
+            }])
             self.assertEqual(manifest["duplicate_titles"][0]["title"], "a")
 
             url_map = {

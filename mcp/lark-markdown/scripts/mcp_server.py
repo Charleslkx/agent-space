@@ -8,6 +8,7 @@ import binascii
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,12 @@ MAX_CONTENT_BYTES = 10 * 1024 * 1024
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 MAX_SNIPPET_CONTEXT_CHARS = 1000
 MAX_SNIPPET_MATCHES = 10
+XML_ATTRIBUTE = re.compile(r'([:\w-]+)\s*=\s*(["\'])(.*?)\2', re.DOTALL)
+XML_IMAGE = re.compile(r'<img\b(?P<attrs>[^>]*)/?>', re.IGNORECASE | re.DOTALL)
+XML_WHITEBOARD = re.compile(
+    r'<whiteboard\b(?P<attrs>[^>]*)>(?P<source>.*?)</whiteboard\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RESTART_CONFIRMATION = "RESTART_LARK_MARKDOWN_MCP"
 RESTART_WORKER = PROJECT_ROOT / "scripts" / "restart_mcp_worker.py"
@@ -209,7 +216,7 @@ TOOL_META = {"securitySchemes": _security_schemes(AUTH_MODE)}
 AUTH_PROVIDER = _auth_provider()
 mcp = FastMCP(
     name="Lark-Markdown",
-    version="0.12.1",
+    version="0.13.0",
     instructions=(
         "For normal document work, use the connected tools and never configure or start a server. "
         "Call check_lark_cli only when connection or user auth is uncertain; use begin_lark_auth "
@@ -220,7 +227,8 @@ mcp = FastMCP(
         "narrowed by snippets, or XML/native-block structure is needed. Use batch_push only for an explicit "
         "whole-document replacement or append. After point_update, verify with find_document_text using the "
         "replacement (or the removed text for deletion); use batch_pull only after partial_success, an error, "
-        "a format-sensitive operation, or an explicit verification request."
+        "a format-sensitive operation, or an explicit verification request. Use scan_document_assets to list "
+        "images and whiteboards in a Lark document without returning its full XML."
     ),
     website_url=os.environ.get(BASE_URL_ENV),
     auth=AUTH_PROVIDER,
@@ -542,6 +550,33 @@ def _fetch_document(
         }) from error
 
 
+def _xml_attributes(fragment: str) -> dict[str, str]:
+    return {name: value for name, _, value in XML_ATTRIBUTE.findall(fragment)}
+
+
+def _scan_xml_assets(content: str) -> tuple[list[dict], list[dict]]:
+    images = []
+    for match in XML_IMAGE.finditer(content):
+        attributes = _xml_attributes(match.group("attrs"))
+        images.append({
+            "offset": match.start(),
+            "source": attributes.get("src") or attributes.get("url"),
+            "attributes": attributes,
+        })
+    whiteboards = []
+    for match in XML_WHITEBOARD.finditer(content):
+        attributes = _xml_attributes(match.group("attrs"))
+        whiteboards.append({
+            "offset": match.start(),
+            "token": next((attributes.get(name) for name in (
+                "block-token", "block_token", "block-id", "block_id", "token",
+            ) if attributes.get(name)), None),
+            "format": attributes.get("type"),
+            "attributes": attributes,
+        })
+    return images, whiteboards
+
+
 @mcp.tool(title="Check Lark CLI", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 def check_lark_cli() -> dict:
     """Check lark-cli and user login; return any optional update notice without blocking."""
@@ -805,6 +840,30 @@ def create_wiki_space(name: str, description: str | None = None) -> dict:
     if description:
         args.extend(["--description", description])
     return _run_cli(args, "create_wiki_space")
+
+
+@mcp.tool(title="Scan document images and whiteboards", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+def scan_document_assets(doc: str) -> dict:
+    """Return image and whiteboard metadata from one Lark document without exposing its full XML."""
+    if not doc.strip():
+        raise ValueError("doc must not be empty")
+    _check_lark_cli()
+    document = _fetch_document(doc, "xml", "full", "scan_document_assets")
+    content = document.get("content", "")
+    if not isinstance(content, str):
+        raise LarkCLIError({
+            "operation": "scan_document_assets",
+            "error": "invalid_response",
+            "message": "document content must be a string",
+        })
+    images, whiteboards = _scan_xml_assets(content)
+    return {
+        "doc": doc,
+        "revision_id": document.get("revision_id"),
+        "images": images,
+        "whiteboards": whiteboards,
+        "counts": {"images": len(images), "whiteboards": len(whiteboards)},
+    }
 
 
 @mcp.tool(title="Insert document media", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})

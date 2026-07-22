@@ -57,7 +57,7 @@ async def run(url: str, doc: str) -> None:
         expected = {
             "check_lark_cli", "begin_lark_auth", "complete_lark_auth",
             "batch_pull", "find_document_text", "batch_push", "point_update",
-            "create_document", "create_wiki_node", "create_wiki_space", "insert_media", "whiteboard_query", "whiteboard_update",
+            "create_document", "create_wiki_node", "create_wiki_space", "scan_document_assets", "insert_media", "whiteboard_query", "whiteboard_update", "schedule_mcp_restart",
         }
         assert tools == expected, tools
 
@@ -150,6 +150,9 @@ A[MD] --&gt; B[Feishu]</whiteboard>
         missing_tags = [tag for tag in native_tags if tag not in xml]
         assert not missing_tags, missing_tags
         assert xml.index("<img") < xml.index("plain-updated")
+        assets = (await client.call_tool("scan_document_assets", {"doc": doc})).data
+        assert assets["counts"]["images"] >= 1, assets
+        assert assets["counts"]["whiteboards"] >= 1, assets
         downgrade_markers = {
             "url_preview": "preview-marker",
             "button": "button-marker",

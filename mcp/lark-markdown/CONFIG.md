@@ -160,7 +160,7 @@ curl -fsS https://lark-markdown.nexuszone.link/.well-known/oauth-protected-resou
 curl -fsS https://lark-markdown.nexuszone.link/.well-known/oauth-authorization-server
 ```
 
-在 ChatGPT 的 Settings → Apps & Connectors → Advanced settings 启用 Developer mode，然后到 Settings → Connectors → Create，填写名称 `Lark-Markdown`、用途说明和 `https://lark-markdown.nexuszone.link/mcp`。ChatGPT 完成 OAuth 后会列出十个工具。服务器不能替用户把 connector 写入 ChatGPT 账户；面向其他用户公开分发时还需提交并发布 app 版本。
+在 ChatGPT 的 Settings → Apps & Connectors → Advanced settings 启用 Developer mode，然后到 Settings → Connectors → Create，填写名称 `Lark-Markdown`、用途说明和 `https://lark-markdown.nexuszone.link/mcp`。ChatGPT 完成 OAuth 后会列出服务器注册的工具。服务器不能替用户把 connector 写入 ChatGPT 账户；面向其他用户公开分发时还需提交并发布 app 版本。
 
 Claude.ai、Claude Desktop、移动端和 Cowork 使用 OAuth 回调 `https://claude.ai/api/mcp/auth_callback`。在 Settings → Connectors 添加远程 MCP URL：`https://lark-markdown.nexuszone.link/mcp`。
 
@@ -250,6 +250,7 @@ uv run python scripts/test_live_capabilities.py \
 - `create_document`：在个人空间或 Drive 文件夹创建普通 Docx。
 - `create_wiki_node`：在指定 Wiki 空间根目录或父节点下创建空白 Docx 页面。
 - `create_wiki_space`：创建 Wiki 空间。
+- `scan_document_assets`：在服务器端扫描飞书文档完整 XML，只返回图片和画板元数据、token 与数量。
 - `insert_media`：从 base64 插入图片或附件并删除本地载荷。
 - `whiteboard_query`、`whiteboard_update`：读取和更新飞书画板。
 
