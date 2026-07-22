@@ -1,11 +1,11 @@
 ---
 name: lark-markdown
-description: "使用远程 Lark-Markdown MCP 阅读、创建和编辑飞书 Docx/Wiki 文档，保留 Markdown 格式、公式、超链接、图片和飞书原生块；也支持按明确要求部署或配置该 MCP。用户提到飞书文章阅读、修改、重写、批量处理、本地 Markdown 发布或 Lark-Markdown MCP 配置时必须使用。"
+description: "使用已连接的远程 Lark-Markdown MCP 阅读、创建和编辑飞书 Docx/Wiki 文档，保留 Markdown 格式、公式、超链接、图片和飞书原生块；也支持本地 Markdown 发布。用户提到飞书文章阅读、修改、重写、批量处理或本地 Markdown 发布时必须使用。"
 ---
 
 # Lark-Markdown
 
-默认把本 skill 当作远程 MCP 的日常使用指南。只有用户明确要求安装、部署、启动、迁移、切换域名或配置 Lark-Markdown MCP 时，才进入服务器配置流程。
+本 Skill 只说明如何使用已连接的远程 MCP，不包含 MCP 的安装、部署、认证服务器或客户端连接配置。
 
 ## 路由
 
@@ -18,44 +18,38 @@ description: "使用远程 Lark-Markdown MCP 阅读、创建和编辑飞书 Docx
 - 不因为看到了本项目目录就启动本地 MCP。
 - 本机没有 `lark-cli` 不影响远程 MCP 使用；`lark-cli` 位于服务器端。
 
-### 服务器配置模式（仅显式触发）
-
-只有用户明确要求配置、安装、部署、启动、升级、迁移或修改 MCP 服务器时，读取 [`README.md`](README.md)。日常文档请求不得读取或执行服务器配置步骤。
-
-`scripts/manage_secret_key.py` 仅供用户本人在交互式终端手动执行。Agent 即使正在协助部署，也只能给出命令，不得运行、读取其输出或展示现有密钥。
-
 ### 本地 Markdown 目录发布模式（按需）
 
 用户要求把本地 Markdown 目录发布、增量同步或反向拉取到飞书时，额外读取 [`references/markdown-publish.md`](references/markdown-publish.md)。普通单篇文档编辑不要加载该文件。
 
 ## 连接与认证
 
-当前已知远程配置名为 `lark-markdown`，域名是 `https://lark-markdown.nexuszone.link/mcp`。
-
 按当前操作直接调用所需 MCP 工具；不要为确认工具清单而枚举工具、读取文档或探测所有能力。
 
-- 工具可调用时直接使用，不执行服务器安装。
+- 工具可调用时直接使用。
 - 工具缺失或连接失败时，报告“远程 Lark-Markdown MCP 未连接”，不要自行创建本地服务。
 - 首次使用、认证状态不明或文档工具返回认证错误时调用 `check_lark_cli`。
 - `user_status=ready` 且 `verified=true` 表示服务器端飞书用户认证可用。
 - `update_notice` 只表示存在可选更新；可以转告用户手动运行 `lark-cli update`，不得自动升级或阻断当前操作。
 - 用户明确要求重启服务时才可调用 `schedule_mcp_restart`；`confirmation` 必须为 `RESTART_LARK_MARKDOWN_MCP`，延迟范围为 5–300 秒。工具会在当前调用返回后重启远端 MCP。
 - 只有认证缺失或过期时才调用 `begin_lark_auth`，把授权 URL、device code 或二维码交给用户；用户确认完成页面授权后再调用 `complete_lark_auth`。
-- OAuth 登录恢复属于远程连接认证，不等于服务器部署；不要因此进入服务器配置模式。
+- OAuth 登录恢复属于远程连接认证；只完成工具返回的用户授权步骤。
 
 ## 文档操作
 
 ### 阅读
 
-1. 调用 `batch_pull`，单篇也传一项数组。
-2. 常规阅读用 `doc_format=markdown`、`detail=simple`。
-3. 涉及飞书原生块、块级格式或精确结构时，再用 `doc_format=xml`、`detail=full` 回读。
-4. 基于实际回读内容回答，不根据标题、URL 或旧副本猜测。
+1. 局部编辑前，优先调用 `find_document_text(doc, query)`；它只返回命中内容与有限上下文，不把全文交给模型。
+2. 只有用户需要通读、总结全文、旧文本未知且无法靠片段定位，才调用 `batch_pull`；单篇也传一项数组。
+3. 常规阅读用 `doc_format=markdown`、`detail=simple`。
+4. 涉及飞书原生块、块级格式或精确结构时，再用 `doc_format=xml`、`detail=full` 回读。
+5. 基于实际回读内容回答，不根据标题、URL 或旧副本猜测。
 
 ### 编辑
 
 - 用户提供完整替换正文、明确要求覆盖时，直接使用 `batch_push(mode=overwrite)`，不预读全文。
-- 局部、唯一文本修改且已提供唯一旧文本时，直接使用 `point_update`；旧文本不唯一、未提供或需保留未知上下文时，才先用 Markdown `detail=simple` 读取。
+- 局部、唯一文本修改且已提供唯一旧文本时，直接使用 `point_update`；该工具在服务端验证唯一命中，不回传全文。
+- 用户只指出段落或关键词时，先用 `find_document_text` 获取片段；根据返回的 `match` 形成最小替换，再调用 `point_update`。匹配多处时不得猜测，继续用更长的唯一旧文本定位。
 - 已知包含飞书原生块、或本次操作涉及块级格式/公式/链接保真时，先用 XML `detail=full` 读取。
 - 局部、唯一文本修改：使用 `point_update`。
 - 删除唯一文本：`point_update` 的 `replacement` 传空字符串。

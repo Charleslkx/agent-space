@@ -25,16 +25,14 @@ class SkillScriptsTest(unittest.TestCase):
     def test_skill_routes_daily_use_away_from_server_setup(self) -> None:
         root = SCRIPTS.parent
         skill = (root / "SKILL.md").read_text()
-        readme = (root / "README.md").read_text()
         publish = (root / "references" / "markdown-publish.md").read_text()
 
         self.assertIn("日常文档模式（默认）", skill)
-        self.assertIn("服务器配置模式（仅显式触发）", skill)
         self.assertIn("只调用已连接的 `Lark-Markdown` MCP 工具", skill)
         self.assertNotIn("uv run python scripts/mcp_server.py", skill)
         self.assertNotIn("codex mcp add", skill)
-        self.assertIn("Agent 即使正在协助部署，也只能给出命令，不得运行", skill)
-        self.assertIn("https://lark-markdown.nexuszone.link/mcp", readme)
+        self.assertNotIn("服务器配置模式", skill)
+        self.assertNotIn("manage_secret_key.py", skill)
         self.assertIn("两阶段", publish)
         self.assertIn("循环引用", publish)
 

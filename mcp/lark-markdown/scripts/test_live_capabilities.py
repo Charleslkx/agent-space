@@ -56,7 +56,7 @@ async def run(url: str, doc: str) -> None:
         tools = {tool.name for tool in await client.list_tools()}
         expected = {
             "check_lark_cli", "begin_lark_auth", "complete_lark_auth",
-            "batch_pull", "batch_push", "point_update",
+            "batch_pull", "find_document_text", "batch_push", "point_update",
             "create_document", "create_wiki_node", "create_wiki_space", "insert_media", "whiteboard_query", "whiteboard_update",
         }
         assert tools == expected, tools
@@ -86,6 +86,11 @@ async def run(url: str, doc: str) -> None:
         }
         missing = [name for name, marker in markdown_markers.items() if marker not in markdown]
         assert not missing, missing
+        snippets = (await client.call_tool("find_document_text", {
+            "doc": doc, "query": "plain ", "context_chars": 20,
+        })).data
+        assert snippets["match_count"] == 1
+        assert snippets["matches"][0]["match"] == "plain "
         await client.call_tool("point_update", {
             "doc": doc, "pattern": "plain ", "replacement": "plain-updated ",
         })

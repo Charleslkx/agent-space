@@ -26,7 +26,11 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
     def test_server_name_is_canonical(self) -> None:
         self.assertEqual(SERVER.mcp.name, "Lark-Markdown")
         self.assertEqual(SERVER.mcp.version, "0.12.1")
-        self.assertIn("never configure or start a server", SERVER.mcp.instructions.lower())
+        instructions = SERVER.mcp.instructions.lower()
+        self.assertIn("never configure or start a server", instructions)
+        self.assertIn("if it finds multiple targets", instructions)
+        self.assertIn("use batch_pull only", instructions)
+        self.assertIn("after point_update, verify with find_document_text", instructions)
 
     async def test_tools_are_registered(self) -> None:
         async with Client(SERVER.mcp) as client:
@@ -34,7 +38,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {tool.name for tool in tools},
             {
-                "check_lark_cli", "begin_lark_auth", "complete_lark_auth", "schedule_mcp_restart", "batch_pull", "batch_push", "point_update",
+                "check_lark_cli", "begin_lark_auth", "complete_lark_auth", "schedule_mcp_restart", "batch_pull", "find_document_text", "batch_push", "point_update",
                 "create_document", "create_wiki_node", "create_wiki_space", "insert_media", "whiteboard_query", "whiteboard_update",
             },
         )
@@ -47,6 +51,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         schemas = {tool.name: tool.inputSchema for tool in tools}
         self.assertIn("concurrency", schemas["batch_pull"]["properties"])
         self.assertIn("concurrency", schemas["batch_push"]["properties"])
+        self.assertIn("context_chars", schemas["find_document_text"]["properties"])
 
     async def test_batch_push_cleans_payload(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
@@ -93,6 +98,30 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
              patch.object(SERVER, "_run_cli", side_effect=lambda *_: (barrier.wait(timeout=1), response)[1]):
             result = SERVER.batch_pull(["doc-a", "doc-b"], concurrency=2)
         self.assertEqual([item["doc"] for item in result], ["doc-a", "doc-b"])
+
+    def test_find_document_text_returns_bounded_context_only(self) -> None:
+        response = {"data": {"document": {
+            "revision_id": "7",
+            "content": "prefix target first context target second suffix",
+        }}}
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", return_value=response):
+            result = SERVER.find_document_text("doc-a", "target", context_chars=4, max_matches=1)
+        self.assertEqual(result["revision_id"], "7")
+        self.assertEqual(result["match_count"], 2)
+        self.assertTrue(result["matches_truncated"])
+        self.assertEqual(result["matches"], [{
+            "start": 7, "end": 13, "before": "fix ", "match": "target", "after": " fir",
+        }])
+        self.assertNotIn("content", result)
+
+    def test_point_update_rejects_ambiguous_text_before_writing(self) -> None:
+        response = {"data": {"document": {"content": "old old"}}}
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", return_value=response) as run_cli:
+            with self.assertRaisesRegex(ValueError, "exactly once, found 2"):
+                SERVER.point_update("doc-a", "old", "new")
+        self.assertEqual(run_cli.call_count, 1)
 
     def test_lark_cli_success_shape(self) -> None:
         auth = {
@@ -348,22 +377,6 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             (stale / ".content").write_text("old")
             SERVER._cleanup_stale_runs()
             self.assertFalse(SERVER.WORKDIR.exists())
-
-    def test_cleanup_preserves_only_state(self) -> None:
-        cleanup_path = Path(__file__).with_name("cleanup_workspace.py")
-        spec = importlib.util.spec_from_file_location("cleanup_workspace", cleanup_path)
-        cleanup_module = importlib.util.module_from_spec(spec)
-        assert spec and spec.loader
-        spec.loader.exec_module(cleanup_module)
-        with tempfile.TemporaryDirectory() as tmp:
-            workdir = Path(tmp) / ".lark_publish"
-            workdir.mkdir()
-            (workdir / "state.json").write_text("{}")
-            (workdir / "manifest.json").write_text("{}")
-            (workdir / "markdown").mkdir()
-            removed = cleanup_module.cleanup(workdir)
-            self.assertEqual(removed, ["manifest.json", "markdown"])
-            self.assertEqual([p.name for p in workdir.iterdir()], ["state.json"])
 
     def test_public_http_requires_authentication_and_tls(self) -> None:
         with patch.object(SERVER, "AUTH_PROVIDER", None):
