@@ -50,13 +50,13 @@ def card(args: argparse.Namespace, *, resolved: bool = False, decision: str | No
             "elements": [
                 {
                     "tag": "markdown",
-                    "content": f"**Agent**\\n{args.agent}\\n\\n**Project**\\n{args.project}\\n\\n**Content**\\n{args.content}",
+                    "content": f"**Agent**\n{args.agent}\n\n**Project**\n{args.project}\n\n**Content**\n{args.content}",
                     "text_align": "left",
                     "text_size": "normal_v2",
                 },
                 {
                     "tag": "markdown",
-                    "content": f"🕒 {timestamp}",
+                    "content": f"<font color='grey'>🕒 {timestamp}</font>",
                     "text_align": "left",
                     "text_size": "normal_v2",
                 },
