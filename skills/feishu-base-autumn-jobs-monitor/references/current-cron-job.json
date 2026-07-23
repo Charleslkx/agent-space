@@ -1,0 +1,13 @@
+{
+  "name": "feishu-base-autumn-jobs-daily",
+  "schedule": "0 18 * * *",
+  "script": "feishu_base_autumn_jobs_notify.py",
+  "no_agent": true,
+  "deliver": "local",
+  "base_view": {
+    "url": "https://my.feishu.cn/base/QupsbMixhaDKiqsc1CTcjJlGnGe?table=tblyww7RWoFyBq2I&view=vewlapetfU",
+    "base_token": "QupsbMixhaDKiqsc1CTcjJlGnGe",
+    "table_id": "tblyww7RWoFyBq2I",
+    "view_id": "vewlapetfU"
+  }
+}
