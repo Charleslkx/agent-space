@@ -50,6 +50,7 @@ Expected visible fields are broader, but the monitor only needs:
 This skill bundle ships with:
 - `SKILL.md`
 - `scripts/feishu_base_autumn_jobs_notify.py`
+- `scripts/parse_campus_recruit.py`
 - `scripts/install_to_hermes.sh`
 - `references/current-cron-job.json`
 
@@ -219,3 +220,63 @@ If the monitor stops working:
 - [ ] Historical positive-branch test succeeds
 - [ ] `latest_result.json` contains the expected fields
 - [ ] Cron job exists and points to `feishu_base_autumn_jobs_notify.py`
+
+## Campus Recruit Page Parser
+
+`scripts/parse_campus_recruit.py` fetches and parses the 27届校招信息汇总 page.
+
+### Data Source
+
+Primary URL: `https://campus.sma-wiki.cn/campus/campus_recruit.html?channel=zpdt`
+
+This URL is sourced from the nowcoder jobs page (`https://www.nowcoder.com/jobs/recommend/campus`). On the nowcoder page, the link is embedded in `window.__INITIAL_STATE__` → `app.108.recommandCompany.activitys[]` as a `/jump` redirect URL with `companyId=32020`. The parser can automatically resolve the latest URL from nowcoder when the primary URL is unavailable.
+
+### Recognized Fields (18 fields)
+
+| Field | CN Name | Type |
+|---|---|---|
+| `updateDate` | 更新日期 | str |
+| `fullDate` | 完整日期 | str |
+| `month` | 月份 | str |
+| `company` | 公司名称 | str |
+| `batch` | 批次 | str |
+| `location` | 工作地点 | str |
+| `positions` | 招聘岗位 | str |
+| `sourceLink` | 信息源链接 | str |
+| `linkSource` | 信息来源标签 | str |
+| `appLink` | 网申链接 | str |
+| `isKey` | 是否重点公司 | bool |
+| `evaluation` | 公司简介 | str |
+| `industry` | 行业 | str |
+| `nature` | 公司性质 | str |
+| `deadline` | 截止日期 | str |
+| `isCommercial` | 是否商业推广 | bool |
+| `commercialExpiry` | 商业推广过期 | str |
+| `isFeaturedCard` | 是否精选卡片 | bool |
+
+### Usage
+
+```bash
+python3 scripts/parse_campus_recruit.py                    # fetch live page, field inventory + stats + smoke test
+python3 scripts/parse_campus_recruit.py --json             # output raw JSON records
+python3 scripts/parse_campus_recruit.py --file cached.html # parse a local cached file
+python3 scripts/parse_campus_recruit.py --no-notify        # skip Feishu notification on failure
+```
+
+### Retry & Failover Behaviour
+
+1. **Direct fetch** — attempts the primary URL up to 3 times (1 initial + 2 retries).
+2. **Exponential backoff** — between retries: 5s, then 10s (`base × factor^attempt` = `5 × 2^attempt`).
+3. **Failover** — if all 3 direct attempts fail, fetches the nowcoder page to resolve the latest target URL from `__INITIAL_STATE__`, then retries the new URL with the same 3-attempt strategy.
+4. **Feishu notification** — if both direct and failover paths are exhausted, a failure notification is sent via `hermes send --to feishu` detailing every error (type + message) from each attempt. Suppress with `--no-notify` or `DRY_RUN=1`.
+5. **Parse failure** — if the HTML is fetched but `RAW_DATA` extraction fails, a notification is also sent unless `--file` mode is used.
+
+### Exit Codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Smoke test failed |
+| 2 | `--file` path missing |
+| 3 | Fetch exhausted (all retries + failover failed) |
+| 4 | HTML parsed but data extraction failed |
