@@ -25,7 +25,7 @@ SPEC.loader.exec_module(SERVER)
 class MCPServerTest(unittest.IsolatedAsyncioTestCase):
     def test_server_name_is_canonical(self) -> None:
         self.assertEqual(SERVER.mcp.name, "Lark-Markdown")
-        self.assertEqual(SERVER.mcp.version, "0.13.0")
+        self.assertEqual(SERVER.mcp.version, "0.14.0")
         instructions = SERVER.mcp.instructions.lower()
         self.assertIn("never configure or start a server", instructions)
         self.assertIn("if it finds multiple targets", instructions)
@@ -38,7 +38,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {tool.name for tool in tools},
             {
-                "check_lark_cli", "begin_lark_auth", "complete_lark_auth", "schedule_mcp_restart", "batch_pull", "find_document_text", "batch_push", "point_update",
+                "check_lark_cli", "begin_lark_auth", "complete_lark_auth", "schedule_mcp_restart", "batch_pull", "find_document_text", "search_documents", "batch_push", "point_update",
                 "create_document", "create_wiki_node", "create_wiki_space", "scan_document_assets", "insert_media", "whiteboard_query", "whiteboard_update",
             },
         )
@@ -52,6 +52,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("concurrency", schemas["batch_pull"]["properties"])
         self.assertIn("concurrency", schemas["batch_push"]["properties"])
         self.assertIn("context_chars", schemas["find_document_text"]["properties"])
+        self.assertIn("doc_types", schemas["search_documents"]["properties"])
 
     async def test_batch_push_cleans_payload(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
@@ -114,6 +115,31 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             "start": 7, "end": 13, "before": "fix ", "match": "target", "after": " fir",
         }])
         self.assertNotIn("content", result)
+
+    def test_search_documents_cleans_highlights_and_validates_count(self) -> None:
+        response = {"data": {"results": [{
+            "entity_type": "DOCX",
+            "result_meta": {
+                "token": "doc-a", "url": "https://example.feishu.cn/docx/doc-a",
+                "owner_name": "Alice", "update_time_iso": "2026-07-01T00:00:00+08:00",
+            },
+            "title_highlighted": "<h>RAG</h> design",
+            "summary_highlighted": "retrieval over <h>RAG</h> pipelines",
+        }]}}
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", return_value=response) as run_cli:
+            result = SERVER.search_documents("RAG", doc_types="docx", count=5)
+        self.assertEqual(result, [{
+            "doc": "doc-a", "url": "https://example.feishu.cn/docx/doc-a",
+            "entity_type": "DOCX", "title": "**RAG** design",
+            "snippet": "retrieval over **RAG** pipelines",
+            "owner_name": "Alice", "update_time_iso": "2026-07-01T00:00:00+08:00",
+        }])
+        args = run_cli.call_args[0][0]
+        self.assertIn("--doc-types", args)
+        self.assertIn("docx", args)
+        with self.assertRaisesRegex(ValueError, "count must be"):
+            SERVER.search_documents("RAG", count=21)
 
     def test_point_update_rejects_ambiguous_text_before_writing(self) -> None:
         response = {"data": {"document": {"content": "old old"}}}
