@@ -16,6 +16,8 @@ metadata:
 
 Monitor campus recruitment data from `campus.sma-wiki.cn`, detect whether the top rows' `fullDate` is today in `Asia/Shanghai`, and send a concise notification through Hermes's Feishu channel.
 
+The message should render each company name as a markdown hyperlink, preferring `appLink` and falling back to `sourceLink`.
+
 ## When to Use
 
 Use this skill when the user asks to:
@@ -42,6 +44,8 @@ The page embeds all records in a `const RAW_DATA = [...]` JSON array sorted by `
 **Monitor fields** used:
 - `fullDate` → 开始时间
 - `company` → 公司
+- `appLink` → 网申链接（优先作为公司名超链接）
+- `sourceLink` → 信息源链接（appLink 缺失时回退）
 
 ## Bundled Files
 

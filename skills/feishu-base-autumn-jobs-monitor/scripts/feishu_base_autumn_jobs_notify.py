@@ -26,6 +26,23 @@ OUTPUT_DIR = Path(
 ).expanduser()
 
 
+def _extract_url(value: Any) -> str | None:
+    if not value:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if s.startswith("http://") or s.startswith("https://"):
+            return s
+    return None
+
+
+def _company_markdown(company: str, app_link: Any, source_link: Any) -> str:
+    url = _extract_url(app_link) or _extract_url(source_link)
+    if url:
+        return f"[{company}]({url})"
+    return company
+
+
 def _fetch_html(url: str) -> str:
     import urllib.request
 
@@ -154,7 +171,7 @@ def _today_iso() -> str:
 
 
 def _collect_today_companies(records: list[dict[str, Any]], target_date: str):
-    companies: list[str] = []
+    companies: list[dict[str, str | None]] = []
     scanned_rows = 0
     first_row_date: str | None = None
     for row in records:
@@ -166,14 +183,26 @@ def _collect_today_companies(records: list[dict[str, Any]], target_date: str):
         if row_date != target_date:
             return companies, scanned_rows, first_row_date
         if company:
-            companies.append(str(company).strip())
+            company_name = str(company).strip()
+            app_link = row.get("appLink")
+            source_link = row.get("sourceLink")
+            companies.append(
+                {
+                    "company": company_name,
+                    "company_markdown": _company_markdown(company_name, app_link, source_link),
+                    "app_link": _extract_url(app_link),
+                    "source_link": _extract_url(source_link),
+                }
+            )
     return companies, scanned_rows, first_row_date
 
 
-def _build_message(target_date: str, companies: list[str]) -> str:
+def _build_message(target_date: str, companies: list[dict[str, str | None]]) -> str:
     header = f"秋招监控\n日期：{target_date}\n时区：{TIMEZONE_NAME}"
     if companies:
-        body = "以下公司是当日开始秋招：\n" + "\n".join(f"- {name}" for name in companies)
+        body = "以下公司是当日开始秋招：\n" + "\n".join(
+            f"- {item['company_markdown']}" for item in companies
+        )
     else:
         body = "当日没有新增秋招的公司。"
     return header + "\n" + body
