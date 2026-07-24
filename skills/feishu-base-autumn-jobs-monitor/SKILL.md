@@ -1,49 +1,47 @@
 ---
 name: feishu-base-autumn-jobs-monitor
-description: Use when the user wants to monitor a fixed Feishu Base autumn-jobs view, detect same-day openings from the top contiguous rows, and notify through Hermes/Feishu on demand or by cron.
-version: 1.0.0
+description: Use when the user wants to monitor campus recruitment openings from campus.sma-wiki.cn, detect same-day openings from the top contiguous rows, and notify through Hermes/Feishu on demand or by cron.
+version: 2.0.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 created_by: agent
 metadata:
   hermes:
-    tags: [feishu, lark, base, cron, notifications, hermes-send, autumn-jobs]
+    tags: [feishu, campus, crawl, cron, notifications, hermes-send, autumn-jobs]
     related_skills: [hermes-feishu-automation, scheduled-notification-pipelines]
 ---
 
-# Feishu Base Autumn Jobs Monitor
+# Campus Jobs Monitor
 
-Monitor one fixed Feishu Base view, detect whether the top rows represent companies whose `开始时间` is today in `Asia/Shanghai`, and send a concise notification through Hermes's Feishu channel.
-
-This skill packages the current production 校招 cron as a reusable skill bundle, including the notifier script.
+Monitor campus recruitment data from `campus.sma-wiki.cn`, detect whether the top rows' `fullDate` is today in `Asia/Shanghai`, and send a concise notification through Hermes's Feishu channel.
 
 ## When to Use
 
 Use this skill when the user asks to:
-- check the known Feishu Base autumn-jobs view manually,
-- test a historical date such as `2026-07-11`,
+- check the campus recruitment page for today's new openings,
+- test a historical date such as `2026-07-15`,
 - send the current result to Feishu via `hermes send`,
 - create, verify, or troubleshoot the daily 18:00 scheduled monitor,
-- package or re-install the current 校招 cron on another machine.
+- package or re-install the monitor cron on another machine.
 
 Do not use this skill for:
-- arbitrary Feishu Base exploration outside this fixed view,
-- editing Base records,
+- arbitrary web scraping tasks,
+- editing the campus.sma-wiki.cn data,
 - webhook/card payload design,
 - non-Feishu notification channels.
 
-## Fixed Resource Coordinates
+## Data Source
 
-This workflow is pinned to this Base view:
-- URL: `https://my.feishu.cn/base/REDACTED_FEISHU_BASE_TOKEN?table=REDACTED_TABLE_ID&view=REDACTED_VIEW_ID`
-- `base_token`: `REDACTED_FEISHU_BASE_TOKEN`
-- `table_id`: `REDACTED_TABLE_ID`
-- `view_id`: `REDACTED_VIEW_ID`
+Primary URL: `https://campus.sma-wiki.cn/campus/campus_recruit.html?channel=zpdt`
 
-Expected visible fields are broader, but the monitor only needs:
-- `公司`
-- `开始时间`
+The page embeds all records in a `const RAW_DATA = [...]` JSON array sorted by `fullDate` descending. The notifier reads the top contiguous block of rows matching today's date.
+
+**Failover**: If the primary URL is unavailable, the script resolves the latest URL from `https://www.nowcoder.com/jobs/recommend/campus` (see `window.__INITIAL_STATE__` → `app.108.recommandCompany.activitys[]` → `companyId=32020` → decoded `url` parameter).
+
+**Monitor fields** used:
+- `fullDate` → 开始时间
+- `company` → 公司
 
 ## Bundled Files
 
@@ -58,18 +56,15 @@ This skill bundle ships with:
 
 Required runtime tools:
 - `python3`
-- `lark-cli`
 - `hermes`
 
 Required auth/config:
-- `lark-cli` must be authenticated as a user who can read the Base view
 - Hermes must be able to send to Feishu through `hermes send --to feishu`
 
 Optional env vars:
 - `FORCE_DATE=YYYY-MM-DD` to test a historical date
 - `DRY_RUN=1` to skip live sending
 - `HERMES_AUTUMN_JOBS_OUTPUT_DIR=/custom/path` to override the output artifact directory
-- `AUTUMN_JOBS_BASE_TOKEN`, `AUTUMN_JOBS_TABLE_ID`, `AUTUMN_JOBS_VIEW_ID` if a clone of the workflow needs different coordinates
 
 ## Install on a Machine
 
@@ -103,7 +98,7 @@ Completion criterion:
 ### Historical positive-branch test
 
 ```bash
-FORCE_DATE=2026-07-11 python3 ~/.hermes/scripts/feishu_base_autumn_jobs_notify.py
+FORCE_DATE=2026-07-15 python3 ~/.hermes/scripts/feishu_base_autumn_jobs_notify.py
 ```
 
 Use this to prove the positive branch really sends a company list.
@@ -111,7 +106,7 @@ Use this to prove the positive branch really sends a company list.
 ### Dry-run without sending Feishu message
 
 ```bash
-FORCE_DATE=2026-07-11 DRY_RUN=1 python3 ~/.hermes/scripts/feishu_base_autumn_jobs_notify.py
+FORCE_DATE=2026-07-15 DRY_RUN=1 python3 ~/.hermes/scripts/feishu_base_autumn_jobs_notify.py
 ```
 
 Completion criterion:
@@ -172,7 +167,7 @@ Check:
 - `send_result.success == true` for real send, or `dry_run == true` for dry-run
 
 ### Positive branch
-Run with a known matching date such as `2026-07-11`.
+Run with a known matching date such as `2026-07-15`.
 
 Check:
 - `first_row_date == target_date`
@@ -190,8 +185,10 @@ Verify that it records:
 - `first_row_date`
 - `companies`
 - `company_count`
+- `scanned_rows`
 - `message`
 - `send_result`
+- `source_url`
 
 ## Common Pitfalls
 
@@ -206,18 +203,18 @@ Verify that it records:
 
 If the monitor stops working:
 1. run `hermes status --all` and confirm Feishu is still configured
-2. run `lark-cli auth status` and confirm the Feishu user identity is valid
-3. run the script manually with `DRY_RUN=1` to separate logic from delivery
-4. run the script without `DRY_RUN` to test live delivery
-5. inspect the latest result JSON artifact
-6. if the schedule is suspect, list cron jobs and inspect the `feishu-base-autumn-jobs-daily` job
+2. run the script manually with `DRY_RUN=1` to separate logic from delivery
+3. run the script without `DRY_RUN` to test live delivery
+4. inspect the latest result JSON artifact
+5. if the schedule is suspect, list cron jobs and inspect the `feishu-base-autumn-jobs-daily` job
+6. check if the campus.sma-wiki.cn URL has changed; if so, the script will automatically attempt to resolve the new URL from nowcoder
 
 ## Verification Checklist
 
-- [ ] `lark-cli auth status` shows a valid user identity
 - [ ] `hermes status --all` shows Feishu configured
 - [ ] Manual real-send run succeeds
-- [ ] Historical positive-branch test succeeds
+- [ ] Historical positive-branch test succeeds (e.g. `FORCE_DATE=2026-07-15`)
+- [ ] Negative-branch test succeeds (e.g. `FORCE_DATE=2026-01-01`)
 - [ ] `latest_result.json` contains the expected fields
 - [ ] Cron job exists and points to `feishu_base_autumn_jobs_notify.py`
 
