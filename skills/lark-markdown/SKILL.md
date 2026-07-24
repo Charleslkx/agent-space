@@ -37,6 +37,12 @@ description: "使用已连接的远程 Lark-Markdown MCP 阅读、创建和编�
 
 ## 文档操作
 
+### 检索
+
+- 不知道目标文档、或需要跨文档找线索时，先调用 `search_documents(query, doc_types?, count?)`；它是飞书 Search v2 关键词排序检索（不是向量/语义检索），返回候选文档的 `doc`（token）、`url`、`title`、`snippet`（命中片段已加粗）。
+- 拿到候选 `doc` 后，进入下面「阅读」流程，用 `find_document_text` 或 `batch_pull` 取正文；不要直接基于 `snippet` 回答或编辑。
+- 不得凭标题、`url` 猜测 doc token 去调用其他工具；一律使用 `search_documents` 返回的 `doc` 字段。
+
 ### 阅读
 
 1. 局部编辑前，优先调用 `find_document_text(doc, query)`；它只返回命中内容与有限上下文，不把全文交给模型。

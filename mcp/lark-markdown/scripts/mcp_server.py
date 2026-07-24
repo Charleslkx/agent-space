@@ -45,6 +45,9 @@ MAX_CONTENT_BYTES = 10 * 1024 * 1024
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 MAX_SNIPPET_CONTEXT_CHARS = 1000
 MAX_SNIPPET_MATCHES = 10
+MAX_SEARCH_RESULTS = 20
+SEARCH_HIGHLIGHT_OPEN = re.compile(r'<h>')
+SEARCH_HIGHLIGHT_CLOSE = re.compile(r'</h>')
 XML_ATTRIBUTE = re.compile(r'([:\w-]+)\s*=\s*(["\'])(.*?)\2', re.DOTALL)
 XML_IMAGE = re.compile(r'<img\b(?P<attrs>[^>]*)/?>', re.IGNORECASE | re.DOTALL)
 XML_WHITEBOARD = re.compile(
@@ -216,11 +219,14 @@ TOOL_META = {"securitySchemes": _security_schemes(AUTH_MODE)}
 AUTH_PROVIDER = _auth_provider()
 mcp = FastMCP(
     name="Lark-Markdown",
-    version="0.13.0",
+    version="0.14.0",
     instructions=(
         "For normal document work, use the connected tools and never configure or start a server. "
         "Call check_lark_cli only when connection or user auth is uncertain; use begin_lark_auth "
-        "and complete_lark_auth only to recover missing user authorization. Before a local edit, use "
+        "and complete_lark_auth only to recover missing user authorization. When the target document "
+        "is unknown, call search_documents first to rank candidates by keyword relevance across docs, "
+        "wiki, and sheets, then call find_document_text on the chosen doc; never guess a doc token. "
+        "Before a local edit, use "
         "find_document_text to return bounded snippets; if it finds multiple targets, refine the query with "
         "longer exact text and never guess. Use point_update only for one exact target; it rejects non-unique "
         "patterns. Use batch_pull only when full-document understanding is requested, the target cannot be "
@@ -684,6 +690,57 @@ def find_document_text(
             for start in starts
         ],
     }
+
+
+def _clean_highlight(value: str | None) -> str:
+    if not value:
+        return ""
+    return SEARCH_HIGHLIGHT_CLOSE.sub("**", SEARCH_HIGHLIGHT_OPEN.sub("**", value))
+
+
+@mcp.tool(title="Search Lark docs, wiki, and sheets", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+def search_documents(
+    query: str,
+    doc_types: str | None = None,
+    count: int = 10,
+) -> list[dict]:
+    """Keyword-rank docs/wiki/sheets by relevance (Search v2) and return candidates with highlighted snippets.
+
+    Use to find which document to target before find_document_text or batch_pull;
+    matching is server-side keyword ranking, not semantic/embedding search.
+    """
+    if not query.strip():
+        raise ValueError("query must not be empty")
+    if type(count) is not int or not 1 <= count <= MAX_SEARCH_RESULTS:
+        raise ValueError(f"count must be an integer between 1 and {MAX_SEARCH_RESULTS}")
+    _check_lark_cli()
+    args = [
+        "drive", "+search", "--as", "user", "--query", query,
+        "--page-size", str(count), "--format", "json",
+    ]
+    if doc_types:
+        args.extend(["--doc-types", doc_types])
+    payload = _run_cli(args, "search_documents")
+    results = payload.get("data", {}).get("results")
+    if not isinstance(results, list):
+        raise LarkCLIError({
+            "operation": "search_documents",
+            "error": "invalid_response",
+            "message": "missing data.results",
+        })
+    candidates = []
+    for result in results:
+        meta = result.get("result_meta") or {}
+        candidates.append({
+            "doc": meta.get("token"),
+            "url": meta.get("url"),
+            "entity_type": result.get("entity_type"),
+            "title": _clean_highlight(result.get("title_highlighted")),
+            "snippet": _clean_highlight(result.get("summary_highlighted")),
+            "owner_name": meta.get("owner_name"),
+            "update_time_iso": meta.get("update_time_iso"),
+        })
+    return candidates
 
 
 @mcp.tool(title="Batch push Lark documents", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
