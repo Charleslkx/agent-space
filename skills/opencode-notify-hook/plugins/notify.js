@@ -68,24 +68,34 @@ function parseEnv(text) {
   return env
 }
 
-// 蓝=完成/橙=需注意 的纯通知卡片（无按钮），IM API 与 webhook 共用
+// Card 2.0：完成为蓝色、需注意为橙色；IM API 与 webhook 共用，且不含按钮。
 function buildCard(agent, project, content, kind) {
   const [title, template] = kind === "approval"
     ? [`⚠️ ${agent} · 需要注意`, "orange"]
     : [`🤖 ${agent} · 任务完成`, "blue"]
   const ts = new Date().toLocaleString("sv-SE") // YYYY-MM-DD HH:MM:SS
   return {
+    schema: "2.0",
     config: { wide_screen_mode: true },
     header: { title: { tag: "plain_text", content: title }, template },
-    elements: [
-      { tag: "div", fields: [
-        { is_short: true, text: { tag: "lark_md", content: `**Agent**\n${agent}` } },
-        { is_short: true, text: { tag: "lark_md", content: `**Project**\n${project}` } },
-      ]},
-      { tag: "hr" },
-      { tag: "div", text: { tag: "lark_md", content } },
-      { tag: "note", elements: [{ tag: "plain_text", content: `🕒 ${ts}` }] },
-    ],
+    body: {
+      direction: "vertical",
+      padding: "12px 12px 12px 12px",
+      elements: [
+        {
+          tag: "markdown",
+          content: `**Agent**\n${agent}\n\n**Project**\n${project}\n\n**Content**\n${content}`,
+          text_align: "left",
+          text_size: "normal_v2",
+        },
+        {
+          tag: "markdown",
+          content: `<font color='grey'>🕒 ${ts}</font>`,
+          text_align: "left",
+          text_size: "normal_v2",
+        },
+      ],
+    },
   }
 }
 
