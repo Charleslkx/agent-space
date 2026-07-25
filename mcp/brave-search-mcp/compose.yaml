@@ -11,7 +11,7 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8765:8765"
+      - "127.0.0.1:8766:8765"
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m
