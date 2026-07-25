@@ -131,7 +131,9 @@ mcp = FastMCP(
     version="0.1.0",
     instructions=(
         "Use brave_search_cli to run bx search commands. Pass arguments without the bx binary. "
-        "Use context for grounding by default. The config command and local-file Goggles are unavailable."
+        "当前部署套餐（2026-07-22 实测）仅开放 web/news/images/videos 四个 search 命令，默认用 web；"
+        "context/answers/places/suggest/spellcheck/config 均不可用，调用会返回 OPTION_NOT_IN_PLAN 或被拒绝。"
+        "本地 --goggles @文件 与 --api-key/--config/--base-url 也不可用。详见工具描述。"
     ),
     website_url=_base_url(),
     auth=AUTH_PROVIDER,
@@ -209,7 +211,27 @@ def _child_env() -> dict[str, str]:
     },
 )
 def brave_search_cli(args: list[str], stdin: str | None = None) -> dict:
-    """Pass args and optional stdin to bx; returns its unmodified stdout, stderr, and exit code."""
+    """Pass args and optional stdin to bx; returns its unmodified stdout, stderr, and exit code.
+
+    `args` 是 bx 后的参数数组（不含 "bx" 本身，不用 shell 字符串）。仅需 stdin 时才传，例如 `--goggles @-`。
+
+    当前部署套餐仅开放四个 search 命令，默认用 web：
+
+    | 目标 | args 示例 |
+    |---|---|
+    | 文档、错误、代码模式 | ["web", "Python asyncio gather vs wait", "--count", "5"] |
+    | 传统网页结果 | ["web", "site:docs.rs axum middleware", "--count", "5"] |
+    | 论坛讨论 | ["web", "Rust async runtime", "--result-filter", "discussions"] |
+    | 时效新闻 | ["news", "npm security advisory", "--freshness", "pd"] |
+    | 图片、视频 | ["images", "microservice diagram"] / ["videos", "Rust async tutorial"] |
+
+    不要调用 context/answers/places/suggest/spellcheck/config：均返回 OPTION_NOT_IN_PLAN 或直接被本
+    MCP 拒绝，重试无用。web 用较小的 --count（如 5）控制 token；用 --include-site/--exclude-site 或内联
+    --goggles 控制来源。--api-key/--config/--base-url 和本地 --goggles @文件 不可用（服务端持有凭据）。
+
+    退出码：0 成功；timed_out=true 缩小查询后重试一次；1/2 修正参数；3 服务端凭据或套餐问题，报告 stderr
+    不要改 API Key；4 限流，退避重试；5 网络或 Brave 端错误，退避重试一次。
+    """
     _validate_args(args, stdin)
     try:
         result = subprocess.run(
