@@ -77,7 +77,8 @@ project_name() {
 lark_notify() {
   [ -n "${LARK_WEBHOOK_URL:-}" ] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
-  python3 - "$1" "$2" "$3" <<'PY' >/dev/null 2>&1 || true
+  local agent="$1" project="$2" content="$3" kind="${4:-done}"
+  python3 - "$agent" "$project" "$content" "$kind" <<'PY' >/dev/null 2>&1 || true
 import base64
 import hashlib
 import hmac
@@ -87,11 +88,39 @@ import sys
 import time
 import urllib.request
 
-agent, project, content = sys.argv[1:4]
-payload = {
-    "msg_type": "text",
-    "content": {"text": f"Agent: {agent}\nProject: {project}\nContent: {content}"},
+agent, project, content, kind = sys.argv[1:5]
+if kind == "approval":
+    title, template = f"⚠️ {agent} · 需要注意", "orange"
+else:
+    title, template = f"🤖 {agent} · 任务完成", "blue"
+timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+card = {
+    "schema": "2.0",
+    "config": {"wide_screen_mode": True},
+    "header": {
+        "title": {"tag": "plain_text", "content": title},
+        "template": template,
+    },
+    "body": {
+        "direction": "vertical",
+        "padding": "12px 12px 12px 12px",
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": f"**Agent**\n{agent}\n\n**Project**\n{project}\n\n**Content**\n{content}",
+                "text_align": "left",
+                "text_size": "normal_v2",
+            },
+            {
+                "tag": "markdown",
+                "content": f"<font color='grey'>🕒 {timestamp}</font>",
+                "text_align": "left",
+                "text_size": "normal_v2",
+            },
+        ],
+    },
 }
+payload = {"msg_type": "interactive", "card": card}
 secret = os.environ.get("LARK_WEBHOOK_SECRET", "").strip()
 if secret:
     ts = str(int(time.time()))
@@ -99,7 +128,7 @@ if secret:
     payload["sign"] = base64.b64encode(
         hmac.new(f"{ts}\n{secret}".encode(), digestmod=hashlib.sha256).digest()
     ).decode()
-data = json.dumps(payload).encode()
+data = json.dumps(payload, ensure_ascii=False).encode()
 req = urllib.request.Request(
     os.environ["LARK_WEBHOOK_URL"],
     data=data,
@@ -259,7 +288,7 @@ notify() {
     dbg "飞书完成通知已发送"
   else
     dbg "飞书应用通知失败，退回简单 webhook"
-    ( lark_notify "$TITLE" "$project" "$1" ) &
+    ( lark_notify "$TITLE" "$project" "$1" done ) &
     disown 2>/dev/null || true
   fi
 }
@@ -277,7 +306,7 @@ approval_notify() {
     dbg "飞书通知已发送: $id"
   else
     dbg "飞书审批发送失败，退回简单 webhook"
-    ( lark_notify "$TITLE" "$project" "$1" ) &
+    ( lark_notify "$TITLE" "$project" "$1" approval ) &
     disown 2>/dev/null || true
   fi
 }
