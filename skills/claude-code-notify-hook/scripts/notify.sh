@@ -66,17 +66,27 @@ else:
     title, template = f"🤖 {agent} · 任务完成", "blue"
 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 card = {
+    "schema": "2.0",
     "config": {"wide_screen_mode": True},
     "header": {"title": {"tag": "plain_text", "content": title}, "template": template},
-    "elements": [
-        {"tag": "div", "fields": [
-            {"is_short": True, "text": {"tag": "lark_md", "content": f"**Agent**\n{agent}"}},
-            {"is_short": True, "text": {"tag": "lark_md", "content": f"**Project**\n{project}"}},
-        ]},
-        {"tag": "hr"},
-        {"tag": "div", "text": {"tag": "lark_md", "content": content}},
-        {"tag": "note", "elements": [{"tag": "plain_text", "content": f"🕒 {ts}"}]},
-    ],
+    "body": {
+        "direction": "vertical",
+        "padding": "12px 12px 12px 12px",
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": f"**Agent**\n{agent}\n\n**Project**\n{project}\n\n**Content**\n{content}",
+                "text_align": "left",
+                "text_size": "normal_v2",
+            },
+            {
+                "tag": "markdown",
+                "content": f"<font color='grey'>🕒 {ts}</font>",
+                "text_align": "left",
+                "text_size": "normal_v2",
+            },
+        ],
+    },
 }
 payload = {"msg_type": "interactive", "card": card}
 secret = os.environ.get("LARK_WEBHOOK_SECRET", "").strip()
@@ -143,17 +153,27 @@ else:
     title, template = f"🤖 {agent} · 任务完成", "blue"
 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 card = {
+    "schema": "2.0",
     "config": {"wide_screen_mode": True},
     "header": {"title": {"tag": "plain_text", "content": title}, "template": template},
-    "elements": [
-        {"tag": "div", "fields": [
-            {"is_short": True, "text": {"tag": "lark_md", "content": f"**Agent**\n{agent}"}},
-            {"is_short": True, "text": {"tag": "lark_md", "content": f"**Project**\n{project}"}},
-        ]},
-        {"tag": "hr"},
-        {"tag": "div", "text": {"tag": "lark_md", "content": content}},
-        {"tag": "note", "elements": [{"tag": "plain_text", "content": f"🕒 {ts}"}]},
-    ],
+    "body": {
+        "direction": "vertical",
+        "padding": "12px 12px 12px 12px",
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": f"**Agent**\n{agent}\n\n**Project**\n{project}\n\n**Content**\n{content}",
+                "text_align": "left",
+                "text_size": "normal_v2",
+            },
+            {
+                "tag": "markdown",
+                "content": f"<font color='grey'>🕒 {ts}</font>",
+                "text_align": "left",
+                "text_size": "normal_v2",
+            },
+        ],
+    },
 }
 resp = post(
     f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}",
