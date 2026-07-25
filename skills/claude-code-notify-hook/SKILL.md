@@ -155,7 +155,7 @@ export LARK_WEBHOOK_URL="https://open.feishu.cn/open-apis/bot/v2/hook/..."
 export LARK_WEBHOOK_SECRET="..." # 机器人未启用签名校验时可不填
 ```
 
-webhook 兜底同样发**交互卡片**（`msg_type=interactive`，与 Agent 通道一致的绿/橙配色），仅在 IM API 发送失败或显式配置 `LARK_WEBHOOK_URL` 时使用。
+webhook 兜底同样发**交互卡片**（`msg_type=interactive`，Card 2.0；完成为蓝色、需注意为橙色），仅在 IM API 发送失败或显式配置 `LARK_WEBHOOK_URL` 时使用。
 
 incoming webhook 和 Feishu Agent 当前都只承载通知；卡片为「仅展示」，不加操作按钮（自定义 bot webhook 收不到按钮回调）。
 
