@@ -68,7 +68,7 @@ OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `BRAVE_MC
 
 先执行 `scripts/ubuntu.sh check`。它检查 Ubuntu、架构、DNS、端口、磁盘、内存和所需命令。仅在检查通过后执行 `sudo scripts/ubuntu.sh install` 安装 Docker、Compose、Nginx 和 Certbot。
 
-Compose 只将应用端口绑定到 `127.0.0.1:8765`，Redis 没有宿主机端口。防火墙只开放 80 和 443。先安装 `deploy/brave-search-mcp.bootstrap.nginx.conf` 并通过 `nginx -t`，再运行 `certbot --nginx -d brave.nexuszone.link`；证书签发后替换为 TLS 模板 `deploy/brave-search-mcp.nginx.conf`。
+Compose 只将应用端口绑定到 `127.0.0.1:8766`（容器内仍为 8765），Redis 没有宿主机端口。防火墙只开放 80 和 443。先安装 `deploy/brave-search-mcp.bootstrap.nginx.conf` 并通过 `nginx -t`，再运行 `certbot --nginx -d brave.nexuszone.link`；证书签发后替换为 TLS 模板 `deploy/brave-search-mcp.nginx.conf`。
 
 Compose 的 `redis-init` 仅在启动时把命名卷归属设为官方 Redis 镜像的服务 UID/GID，随后退出；Redis 主容器以该非 root UID/GID 运行，保留只读根文件系统和全部 capability drop。
 
@@ -100,4 +100,4 @@ ChatGPT、Claude.ai 或 Claude Desktop 使用其远程 Connector 界面添加相
 | 登录后被拒绝 | 检查 `BRAVE_MCP_GITHUB_USERS` 的 GitHub login，而非显示名或邮箱 |
 | 重启后要求重新登录 | 检查 Redis 健康、持久卷、JWT 密钥和存储密钥是否改变 |
 | bx 返回 3/4/5 | 分别检查 Brave API Key/套餐、限流和网络；MCP 会保留 bx 的 stderr |
-| 502 | `docker compose ps`、`docker compose logs mcp`、Nginx error log 和宿主机 8765 监听状态 |
+| 502 | `docker compose ps`、`docker compose logs mcp`、Nginx error log 和宿主机 8766 监听状态 |
