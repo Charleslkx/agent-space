@@ -70,7 +70,7 @@ cp <skill-dir>/scripts/{notify.sh,feishu_send_approval.py,feishu_approval_common
 chmod +x ~/.codex/hooks/notify.sh
 ```
 
-完成事件会发蓝色完成卡片；授权事件才发带按钮的审批卡片。
+完成事件发蓝色完成卡片；需要注意事件发橙色通知卡片。两类卡片均不含按钮。
 
 ### 1. 放置脚本
 
