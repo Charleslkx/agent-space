@@ -6,6 +6,7 @@ import argparse
 import base64
 import binascii
 from concurrent.futures import ThreadPoolExecutor
+import html
 import json
 import os
 import re
@@ -54,11 +55,44 @@ XML_WHITEBOARD = re.compile(
     r'<whiteboard\b(?P<attrs>[^>]*)>(?P<source>.*?)</whiteboard\s*>',
     re.IGNORECASE | re.DOTALL,
 )
+MARKDOWN_FENCE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})")
+DISPLAY_FORMULA = re.compile(r"(?ms)^[ \t]*\$\$[ \t]*(?:\n)?(.*?)(?:\n)?[ \t]*\$\$[ \t]*$")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RESTART_CONFIRMATION = "RESTART_LARK_MARKDOWN_MCP"
 RESTART_WORKER = PROJECT_ROOT / "scripts" / "restart_mcp_worker.py"
 
 DocFormat = Literal["markdown", "xml"]
+
+
+def _center_display_math(content: str) -> str:
+    """Convert standalone Markdown display formulas, excluding fenced code blocks."""
+    def convert(prose: str) -> str:
+        def replace(match: re.Match[str]) -> str:
+            formula = html.escape(match.group(1).strip(), quote=False)
+            return f'<p align="center"><latex>{formula}</latex></p>'
+
+        return DISPLAY_FORMULA.sub(replace, prose)
+
+    output: list[str] = []
+    prose: list[str] = []
+    closing: re.Pattern[str] | None = None
+    for line in content.splitlines(keepends=True):
+        if closing:
+            output.append(line)
+            if closing.match(line):
+                closing = None
+            continue
+        match = MARKDOWN_FENCE.match(line)
+        if match:
+            output.append(convert("".join(prose)))
+            prose.clear()
+            marker = match.group(1)
+            closing = re.compile(rf"^[ ]{{0,3}}{re.escape(marker[0])}{{{len(marker)},}}[ \t]*$")
+            output.append(line)
+        else:
+            prose.append(line)
+    output.append(convert("".join(prose)))
+    return "".join(output)
 
 
 def _auth_mode() -> str:
@@ -767,6 +801,8 @@ def batch_push(
             raise _batch_failure("batch_push", index, doc, 0, ValueError("mode must be overwrite or append"))
         if doc_format not in {"markdown", "xml"}:
             raise _batch_failure("batch_push", index, doc, 0, ValueError("doc_format must be markdown or xml"))
+        if doc_format == "markdown":
+            content = _center_display_math(content)
         if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
             raise _batch_failure(
                 "batch_push", index, doc, 0,
@@ -835,7 +871,10 @@ def point_update(
             f"pattern must occur exactly once, found {matches}; call find_document_text for bounded context"
         )
     with _hidden_run() as run:
-        content = _payload(run / ".replacement", replacement)
+        content = _payload(
+            run / ".replacement",
+            _center_display_math(replacement) if doc_format == "markdown" else replacement,
+        )
         return _run_cli([
             "docs", "+update", "--api-version", "v2", "--as", "user",
             "--doc", doc, "--command", "str_replace", "--pattern", pattern,
@@ -854,7 +893,10 @@ def create_document(
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")
     with _hidden_run() as run:
-        payload = _payload(run / ".document", content)
+        payload = _payload(
+            run / ".document",
+            _center_display_math(content) if doc_format == "markdown" else content,
+        )
         args = [
             "docs", "+create", "--api-version", "v2", "--as", "user",
             "--doc-format", doc_format, "--content", payload, "--format", "json",

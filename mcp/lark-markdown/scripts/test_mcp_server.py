@@ -66,6 +66,13 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(run_cli.call_count, 1)
             self.assertFalse(SERVER.WORKDIR.exists())
 
+    def test_center_display_math_skips_fenced_code(self) -> None:
+        content = "$$x < y$$\n\n```text\n$$literal$$\n```\n"
+        self.assertEqual(
+            SERVER._center_display_math(content),
+            '<p align="center"><latex>x &lt; y</latex></p>\n\n```text\n$$literal$$\n```\n',
+        )
+
     def test_batch_push_validates_every_item_before_writing(self) -> None:
         with patch.object(SERVER, "_check_lark_cli") as check, \
              patch.object(SERVER, "_run_cli") as run_cli:
