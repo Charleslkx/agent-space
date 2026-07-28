@@ -38,7 +38,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {tool.name for tool in tools},
             {
-                "check_lark_cli", "begin_lark_auth", "complete_lark_auth", "schedule_mcp_restart", "batch_pull", "find_document_text", "search_documents", "batch_push", "point_update",
+                "check_lark_cli", "begin_lark_auth", "complete_lark_auth", "schedule_mcp_restart", "batch_pull", "find_document_text", "search_documents", "batch_push", "point_update", "batch_point_update",
                 "create_document", "create_wiki_node", "create_wiki_space", "scan_document_assets", "insert_media", "whiteboard_query", "whiteboard_update",
             },
         )
@@ -155,6 +155,27 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "exactly once, found 2"):
                 SERVER.point_update("doc-a", "old", "new")
         self.assertEqual(run_cli.call_count, 1)
+
+    def test_batch_point_update_preserves_order_and_stops_on_failure(self) -> None:
+        calls = []
+        def update(doc, pattern, replacement, doc_format):
+            calls.append((doc, pattern, replacement, doc_format))
+            if pattern == "missing":
+                raise ValueError("pattern must occur exactly once, found 0")
+            return {"ok": True}
+
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_update_exact_text", side_effect=update):
+            with self.assertRaisesRegex(RuntimeError, '"failed_index": 1'):
+                SERVER.batch_point_update("doc-a", [
+                    {"pattern": "first", "replacement": "one"},
+                    {"pattern": "missing", "replacement": "two"},
+                    {"pattern": "third", "replacement": "three"},
+                ])
+        self.assertEqual(calls, [
+            ("doc-a", "first", "one", "markdown"),
+            ("doc-a", "missing", "two", "markdown"),
+        ])
 
     def test_lark_cli_success_shape(self) -> None:
         auth = {

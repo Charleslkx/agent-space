@@ -55,6 +55,7 @@ description: "使用已连接的远程 Lark-Markdown MCP 阅读、创建和编�
 
 - 用户提供完整替换正文、明确要求覆盖时，直接使用 `batch_push(mode=overwrite)`，不预读全文。
 - 局部、唯一文本修改且已提供唯一旧文本时，直接使用 `point_update`；该工具在服务端验证唯一命中，不回传全文。
+- 同一文档有多个已知且唯一的修改时，使用 `batch_point_update(doc, updates)` 一次提交；按输入顺序执行，失败项及其后的修改不会写入，前面成功项保留。
 - 用户只指出段落或关键词时，先用 `find_document_text` 获取片段；根据返回的 `match` 形成最小替换，再调用 `point_update`。匹配多处时不得猜测，继续用更长的唯一旧文本定位。
 - 已知包含飞书原生块、或本次操作涉及块级格式/公式/链接保真时，先用 XML `detail=full` 读取。
 - 局部、唯一文本修改：使用 `point_update`。

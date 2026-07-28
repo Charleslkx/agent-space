@@ -247,6 +247,7 @@ uv run python scripts/test_live_capabilities.py \
 - `find_document_text`：按精确文本返回有限上下文，不向模型返回全文；用于局部编辑前定位句子。
 - `batch_push`：批量覆盖或追加 Markdown/XML；Markdown 中独立 `$$...$$` 公式会自动写为居中的原生公式段落，代码块中的字面量不转换。
 - `point_update`：仅在旧文本唯一命中时精确替换或删除；重复命中时先调用 `find_document_text` 缩小目标。
+- `batch_point_update`：单篇文档内按顺序执行多组唯一文本替换，减少客户端往返；遇到失败项即停止。
 - `create_document`：在个人空间或 Drive 文件夹创建普通 Docx。
 - `create_wiki_node`：在指定 Wiki 空间根目录或父节点下创建空白 Docx 页面。
 - `create_wiki_space`：创建 Wiki 空间。
