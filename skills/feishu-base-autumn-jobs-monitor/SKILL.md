@@ -1,6 +1,6 @@
 ---
 name: feishu-base-autumn-jobs-monitor
-description: Use when the user wants to monitor campus recruitment openings from campus.sma-wiki.cn, detect same-day openings from the top contiguous rows, and notify through Hermes/Feishu on demand or by cron.
+description: Use when the user wants to monitor campus recruitment openings from campus.sma-wiki.cn, query a specific date, exclude internship batches, and notify through Hermes/Feishu on demand or by cron.
 version: 2.0.0
 author: Hermes Agent
 license: MIT
@@ -14,9 +14,9 @@ metadata:
 
 # Campus Jobs Monitor
 
-Monitor campus recruitment data from `campus.sma-wiki.cn`, detect whether the top rows' `fullDate` is today in `Asia/Shanghai`, and send a concise notification through Hermes's Feishu channel.
+Monitor campus recruitment data from `campus.sma-wiki.cn`, query a caller-specified date (or default to today in `Asia/Shanghai`), exclude rows whose `batch` contains `实习`, and send a concise notification through Hermes's Feishu channel.
 
-The message should render each company name as a markdown hyperlink, preferring `appLink` and falling back to `sourceLink`.
+The message begins with a markdown hyperlink to the page-level data source. If the primary URL fails and a new URL is resolved from nowcoder, the message should switch that hyperlink to the new source automatically. Each company line should render the company name as a markdown hyperlink, preferring `appLink` and falling back to `sourceLink`, and should not append a separate source hyperlink.
 
 ## When to Use
 
@@ -37,7 +37,7 @@ Do not use this skill for:
 
 Primary URL: `https://campus.sma-wiki.cn/campus/campus_recruit.html?channel=zpdt`
 
-The page embeds all records in a `const RAW_DATA = [...]` JSON array sorted by `fullDate` descending. The notifier reads the top contiguous block of rows matching today's date.
+The page embeds all records in a `const RAW_DATA = [...]` JSON array sorted by `fullDate` descending. The notifier scans the full dataset for rows whose `fullDate` matches the resolved target date, then excludes rows whose `batch` contains `实习`.
 
 **Failover**: If the primary URL is unavailable, the script resolves the latest URL from `https://www.nowcoder.com/jobs/recommend/campus` (see `window.__INITIAL_STATE__` → `app.108.recommandCompany.activitys[]` → `companyId=32020` → decoded `url` parameter).
 
@@ -66,7 +66,8 @@ Required auth/config:
 - Hermes must be able to send to Feishu through `hermes send --to feishu`
 
 Optional env vars:
-- `FORCE_DATE=YYYY-MM-DD` to test a historical date
+- positional arg supports `2026-07-25`, `2026/7/25`, `20260725`, `7.25`, `7月25日`
+- `FORCE_DATE=...` is a backward-compatible fallback when no CLI date arg is passed and accepts the same tolerant formats
 - `DRY_RUN=1` to skip live sending
 - `HERMES_AUTUMN_JOBS_OUTPUT_DIR=/custom/path` to override the output artifact directory
 
@@ -102,7 +103,7 @@ Completion criterion:
 ### Historical positive-branch test
 
 ```bash
-FORCE_DATE=2026-07-15 python3 ~/.hermes/scripts/feishu_base_autumn_jobs_notify.py
+python3 ~/.hermes/scripts/feishu_base_autumn_jobs_notify.py 2026-07-15
 ```
 
 Use this to prove the positive branch really sends a company list.
@@ -110,40 +111,40 @@ Use this to prove the positive branch really sends a company list.
 ### Dry-run without sending Feishu message
 
 ```bash
-FORCE_DATE=2026-07-15 DRY_RUN=1 python3 ~/.hermes/scripts/feishu_base_autumn_jobs_notify.py
+DRY_RUN=1 python3 ~/.hermes/scripts/feishu_base_autumn_jobs_notify.py 2026-07-15
 ```
 
 Completion criterion:
 - output JSON has `send_result.dry_run: true`
 
+Backward-compatible legacy invocation is still accepted:
+
+```bash
+FORCE_DATE=2026-07-15 python3 ~/.hermes/scripts/feishu_base_autumn_jobs_notify.py
+```
+
 ## Notification Rule
 
 1. Work in `Asia/Shanghai`.
-2. Read the view in its current sort order.
-3. Inspect the first row's `开始时间`.
-4. If that date is not today:
-   - stop scanning immediately
-   - send `当日没有新增秋招的公司。`
-5. If that date is today:
-   - continue reading downward
-   - collect every consecutive row whose `开始时间` is today
-   - stop at the first row whose `开始时间` is not today
-   - send the collected `公司` list
-
-This is intentionally not a full-table scan. It depends on the view already being sorted so that today's openings appear contiguously at the top.
+2. Resolve the target date from CLI arg, then `FORCE_DATE`, then today.
+3. Scan the dataset for rows whose `fullDate == target_date`.
+4. Exclude any row whose `batch` contains `实习`.
+5. Send the remaining `公司` list, with `批次` text and only the company name hyperlinked to the application URL.
+6. If nothing remains after filtering, send `当日没有新增秋招的公司（已过滤批次中包含“实习”的记录）。`
 
 ## Cron Installation Pattern
 
-This workflow is best scheduled as a script-only cron job.
+This workflow is best scheduled as an agent-driven cron job.
 
 Target shape:
 - job name: `feishu-base-autumn-jobs-daily`
 - schedule: `0 18 * * *`
-- script: `feishu_base_autumn_jobs_notify.py`
-- `no_agent: true`
-- CLI sessions should usually keep `deliver=local` because the script itself already sends to Feishu
+- `no_agent: false`
+- enable `terminal` + `file` toolsets
+- have the agent run the notifier in `DRY_RUN=1`, inspect the JSON result, note whether the effective `source_url` changed, and then send the final Feishu message itself
+- CLI sessions should usually keep `deliver=local` because the agent itself already sends to Feishu
 
-When using Hermes's cronjob tool, create/update the job in this shape rather than wrapping the script in an LLM prompt.
+When using Hermes's cronjob tool, create/update the job with a self-contained prompt that explicitly tells the agent to inspect `source_url`, preserve the page-level source hyperlink, and then send via `hermes send --to feishu`.
 
 Reference payload for the current installed job is included in:
 - `references/current-cron-job.json`
@@ -163,7 +164,7 @@ hermes send --to feishu --file - --json
 When changing this monitor, verify both branches.
 
 ### Negative branch
-Run with today's real date when the first row is not today, or choose another date guaranteed not to match the first row.
+Run with a date that has no non-`实习` rows, or a date absent from the dataset.
 
 Check:
 - `company_count == 0`
@@ -171,13 +172,13 @@ Check:
 - `send_result.success == true` for real send, or `dry_run == true` for dry-run
 
 ### Positive branch
-Run with a known matching date such as `2026-07-15`.
+Run with a known matching date such as `2026-07-25`.
 
 Check:
-- `first_row_date == target_date`
 - `company_count > 0`
-- `scanned_rows >= company_count`
+- every returned item has `batch` not containing `实习`
 - message begins with `以下公司是当日开始秋招：`
+- message shows only company-name hyperlinks plus optional `批次` text (no separate `信息源` field)
 - `send_result.success == true` for real send, or `dry_run == true` for dry-run
 
 ### Artifact check
@@ -196,12 +197,11 @@ Verify that it records:
 
 ## Common Pitfalls
 
-1. Do not scan the entire table for matching dates. This monitor is top-of-view only by design.
-2. Do not assume all rows with the same date across the table should be included; only the contiguous top block matters.
-3. Do not claim a send succeeded without checking `send_result.success`.
-4. Do not rewrite the delivery path to webhook unless the user explicitly changes the requirement.
-5. Do not forget the timezone assumption: this workflow is defined in `Asia/Shanghai`.
-6. If the view sort changes, the monitor semantics may break even if the script still runs successfully.
+1. Do not include rows whose `batch` contains `实习`; the monitor intentionally excludes them.
+2. Do not claim a send succeeded without checking `send_result.success`.
+3. Do not rewrite the delivery path to webhook unless the user explicitly changes the requirement.
+4. Do not forget the timezone assumption: this workflow is defined in `Asia/Shanghai`.
+5. Some source/app links arrive as messy concatenated strings; extract the first valid URL before formatting markdown.
 
 ## Recovery Steps
 
@@ -217,10 +217,10 @@ If the monitor stops working:
 
 - [ ] `hermes status --all` shows Feishu configured
 - [ ] Manual real-send run succeeds
-- [ ] Historical positive-branch test succeeds (e.g. `FORCE_DATE=2026-07-15`)
+- [ ] Historical positive-branch test succeeds (e.g. `python3 ~/.hermes/scripts/feishu_base_autumn_jobs_notify.py 2026-07-25`)
 - [ ] Negative-branch test succeeds (e.g. `FORCE_DATE=2026-01-01`)
 - [ ] `latest_result.json` contains the expected fields
-- [ ] Cron job exists and points to `feishu_base_autumn_jobs_notify.py`
+- [ ] Cron job exists and is configured as the agent-driven `feishu-base-autumn-jobs-daily` workflow
 
 ## Campus Recruit Page Parser
 
