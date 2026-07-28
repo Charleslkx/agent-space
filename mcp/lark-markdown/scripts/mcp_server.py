@@ -262,8 +262,8 @@ mcp = FastMCP(
         "wiki, and sheets, then call find_document_text on the chosen doc; never guess a doc token. "
         "Before a local edit, use "
         "find_document_text to return bounded snippets; if it finds multiple targets, refine the query with "
-        "longer exact text and never guess. Use point_update only for one exact target; it rejects non-unique "
-        "patterns. Use batch_pull only when full-document understanding is requested, the target cannot be "
+        "longer exact text and never guess. Use point_update or batch_point_update only for exact targets; "
+        "they reject non-unique patterns. Use batch_pull only when full-document understanding is requested, the target cannot be "
         "narrowed by snippets, or XML/native-block structure is needed. Use batch_push only for an explicit "
         "whole-document replacement or append. After point_update, verify with find_document_text using the "
         "replacement (or the removed text for deletion); use batch_pull only after partial_success, an error, "
@@ -842,21 +842,12 @@ def batch_push(
     return results
 
 
-@mcp.tool(title="Update exact document text", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-def point_update(
+def _update_exact_text(
     doc: str,
     pattern: str,
     replacement: str,
-    doc_format: DocFormat = "markdown",
+    doc_format: DocFormat,
 ) -> dict:
-    """Replace an exact text target only when it occurs once; the full document stays server-side."""
-    if not doc.strip():
-        raise ValueError("doc must not be empty")
-    if not pattern:
-        raise ValueError("pattern must not be empty")
-    if doc_format not in {"markdown", "xml"}:
-        raise ValueError("doc_format must be markdown or xml")
-    _check_lark_cli()
     document = _fetch_document(doc, doc_format, "simple", "point_update preflight")
     content = document.get("content", "")
     if not isinstance(content, str):
@@ -880,6 +871,58 @@ def point_update(
             "--doc", doc, "--command", "str_replace", "--pattern", pattern,
             "--doc-format", doc_format, "--content", content, "--format", "json",
         ], "point_update")
+
+
+@mcp.tool(title="Update exact document text", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+def point_update(
+    doc: str,
+    pattern: str,
+    replacement: str,
+    doc_format: DocFormat = "markdown",
+) -> dict:
+    """Replace an exact text target only when it occurs once; the full document stays server-side."""
+    if not doc.strip():
+        raise ValueError("doc must not be empty")
+    if not pattern:
+        raise ValueError("pattern must not be empty")
+    if doc_format not in {"markdown", "xml"}:
+        raise ValueError("doc_format must be markdown or xml")
+    _check_lark_cli()
+    return _update_exact_text(doc, pattern, replacement, doc_format)
+
+
+@mcp.tool(title="Update multiple exact document texts", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+def batch_point_update(
+    doc: str,
+    updates: list[dict[str, str]],
+    doc_format: DocFormat = "markdown",
+) -> list[dict]:
+    """Apply ordered exact replacements to one document in a single request."""
+    if not doc.strip():
+        raise ValueError("doc must not be empty")
+    if doc_format not in {"markdown", "xml"}:
+        raise ValueError("doc_format must be markdown or xml")
+    _validate_batch(updates, "updates")
+    prepared: list[tuple[str, str]] = []
+    for index, update in enumerate(updates):
+        if not isinstance(update, dict):
+            raise _batch_failure("batch_point_update", index, doc, 0, ValueError("item must be an object"))
+        pattern = update.get("pattern")
+        replacement = update.get("replacement")
+        if not isinstance(pattern, str) or not pattern:
+            raise _batch_failure("batch_point_update", index, doc, 0, ValueError("pattern must not be empty"))
+        if not isinstance(replacement, str):
+            raise _batch_failure("batch_point_update", index, doc, 0, ValueError("replacement must be a string"))
+        prepared.append((pattern, replacement))
+    _check_lark_cli()
+    results = []
+    for index, (pattern, replacement) in enumerate(prepared):
+        try:
+            result = _update_exact_text(doc, pattern, replacement, doc_format)
+        except Exception as error:
+            raise _batch_failure("batch_point_update", index, doc, len(results), error) from error
+        results.append({"pattern": pattern, "result": result})
+    return results
 
 
 @mcp.tool(title="Create a Lark document", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
