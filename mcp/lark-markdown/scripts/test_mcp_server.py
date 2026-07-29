@@ -53,6 +53,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("concurrency", schemas["batch_push"]["properties"])
         self.assertIn("context_chars", schemas["find_document_text"]["properties"])
         self.assertIn("doc_types", schemas["search_documents"]["properties"])
+        self.assertIn("expected_revision_id", schemas["batch_point_update"]["properties"])
 
     async def test_batch_push_cleans_payload(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
@@ -149,33 +150,99 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             SERVER.search_documents("RAG", count=21)
 
     def test_point_update_rejects_ambiguous_text_before_writing(self) -> None:
-        response = {"data": {"document": {"content": "old old"}}}
+        response = {"data": {"document": {"revision_id": 7, "content": "old old"}}}
         with patch.object(SERVER, "_check_lark_cli"), \
              patch.object(SERVER, "_run_cli", return_value=response) as run_cli:
             with self.assertRaisesRegex(ValueError, "exactly once, found 2"):
                 SERVER.point_update("doc-a", "old", "new")
         self.assertEqual(run_cli.call_count, 1)
 
-    def test_batch_point_update_preserves_order_and_stops_on_failure(self) -> None:
-        calls = []
-        def update(doc, pattern, replacement, doc_format):
-            calls.append((doc, pattern, replacement, doc_format))
-            if pattern == "missing":
-                raise ValueError("pattern must occur exactly once, found 0")
-            return {"ok": True}
+    def test_point_update_writes_against_fetched_revision(self) -> None:
+        responses = [
+            {"data": {"document": {"revision_id": 7, "content": "old"}}},
+            {"data": {"document": {"revision_id": 8}}},
+        ]
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
+             patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", side_effect=responses) as run_cli:
+            SERVER.point_update("doc-a", "old", "new")
+        args = run_cli.call_args_list[1].args[0]
+        self.assertEqual(args[args.index("--revision-id") + 1], "7")
 
+    def test_batch_point_update_preflights_all_updates_before_writing(self) -> None:
+        document = {"revision_id": 7, "content": "first missing third"}
         with patch.object(SERVER, "_check_lark_cli"), \
-             patch.object(SERVER, "_update_exact_text", side_effect=update):
-            with self.assertRaisesRegex(RuntimeError, '"failed_index": 1'):
+             patch.object(SERVER, "_fetch_document", return_value=document), \
+             patch.object(SERVER, "_write_exact_text") as write:
+            with self.assertRaises(RuntimeError) as raised:
                 SERVER.batch_point_update("doc-a", [
-                    {"pattern": "first", "replacement": "one"},
+                    {"pattern": "first", "replacement": "missing"},
                     {"pattern": "missing", "replacement": "two"},
                     {"pattern": "third", "replacement": "three"},
                 ])
-        self.assertEqual(calls, [
-            ("doc-a", "first", "one", "markdown"),
-            ("doc-a", "missing", "two", "markdown"),
-        ])
+        error = json.loads(str(raised.exception))
+        self.assertEqual(error["error"], "preflight_conflict")
+        self.assertEqual(error["failed_index"], 1)
+        self.assertEqual(error["completed"], 0)
+        self.assertEqual(error["applied_indexes"], [])
+        write.assert_not_called()
+
+    def test_batch_point_update_chains_revisions(self) -> None:
+        document = {"revision_id": "7", "content": "first second"}
+        writes = [
+            {"data": {"document": {"revision_id": 8}}},
+            {"data": {"document": {"revision_id": 9}}},
+        ]
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_fetch_document", return_value=document) as fetch, \
+             patch.object(SERVER, "_write_exact_text", side_effect=writes) as write:
+            result = SERVER.batch_point_update("doc-a", [
+                {"pattern": "first", "replacement": "one"},
+                {"pattern": "second", "replacement": "two"},
+            ], expected_revision_id=7)
+        fetch.assert_called_once()
+        self.assertEqual(len(result), 2)
+        self.assertEqual(write.call_args_list[0].args[-1], 7)
+        self.assertEqual(write.call_args_list[1].args[-1], 8)
+
+    def test_batch_point_update_stops_on_revision_conflict(self) -> None:
+        document = {"revision_id": 7, "content": "first second third"}
+        conflict = SERVER.LarkCLIError({
+            "error": "lark_cli_failed", "message": "1770021 too old document",
+        })
+        writes = [{"data": {"document": {"revision_id": 8}}}, conflict]
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_fetch_document", return_value=document), \
+             patch.object(SERVER, "_write_exact_text", side_effect=writes) as write:
+            with self.assertRaises(RuntimeError) as raised:
+                SERVER.batch_point_update("doc-a", [
+                    {"pattern": "first", "replacement": "one"},
+                    {"pattern": "second", "replacement": "two"},
+                    {"pattern": "third", "replacement": "three"},
+                ])
+        error = json.loads(str(raised.exception))
+        self.assertEqual(error["error"], "revision_conflict")
+        self.assertEqual(error["failed_index"], 1)
+        self.assertEqual(error["completed"], 1)
+        self.assertEqual(error["expected_revision_id"], 8)
+        self.assertEqual(error["applied_indexes"], [0])
+        self.assertEqual(write.call_count, 2)
+
+    def test_batch_point_update_rejects_stale_expected_revision(self) -> None:
+        document = {"revision_id": 8, "content": "first"}
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_fetch_document", return_value=document), \
+             patch.object(SERVER, "_write_exact_text") as write:
+            with self.assertRaises(RuntimeError) as raised:
+                SERVER.batch_point_update(
+                    "doc-a", [{"pattern": "first", "replacement": "one"}],
+                    expected_revision_id=7,
+                )
+        error = json.loads(str(raised.exception))
+        self.assertEqual(error["error"], "revision_conflict")
+        self.assertEqual(error["actual_revision_id"], 8)
+        write.assert_not_called()
 
     def test_lark_cli_success_shape(self) -> None:
         auth = {

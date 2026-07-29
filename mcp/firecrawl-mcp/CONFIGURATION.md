@@ -32,8 +32,8 @@ Nginx 代理所有路径。`/mcp`、`/.well-known/*`、`/auth/callback` 和 OAut
 | 字段 | 值 |
 |---|---|
 | Application name | Firecrawl CLI MCP |
-| Homepage URL | `https://firecrawl.nexuszone.link` |
-| Authorization callback URL | `https://firecrawl.nexuszone.link/auth/callback` |
+| Homepage URL | `https://{your-domain}` |
+| Authorization callback URL | `https://{your-domain}/auth/callback` |
 
 OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `FIRECRAWL_MCP_GITHUB_USERS` 执行本地白名单检查，未在白名单里的账号即使登录成功也看不到任何工具。
 
@@ -43,7 +43,7 @@ OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `FIRECRAW
 
 | 变量 | 用途 | 生成或来源 | 改动后果 |
 |---|---|---|---|
-| `FIRECRAWL_MCP_BASE_URL` | 公开 HTTPS origin | 固定为 `https://firecrawl.nexuszone.link` | 改了要同步 nginx/OAuth App |
+| `FIRECRAWL_MCP_BASE_URL` | 公开 HTTPS origin | 部署前替换为实际域名，如 `https://{your-domain}` | 改了要同步 nginx/OAuth App |
 | `FIRECRAWL_MCP_GITHUB_CLIENT_ID` / `_SECRET` | GitHub OAuth App | GitHub 开发者设置 | 换 App 后所有会话失效 |
 | `FIRECRAWL_MCP_GITHUB_USERS` | 允许访问的 GitHub login，逗号分隔，不区分大小写 | 自定 | 增删即时生效（下次请求） |
 | `FIRECRAWL_MCP_JWT_SIGNING_KEY` | MCP OAuth JWT 签名密钥 | `openssl rand -hex 32` | 轮换后**所有会话失效**，需重新授权 |
@@ -86,9 +86,9 @@ OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `FIRECRAW
 
 ## 6 Ubuntu 部署与 TLS
 
-先执行 `scripts/ubuntu.sh check`。它检查 Ubuntu、架构、DNS、80/443/8767 端口、磁盘、内存和所需命令。仅在检查通过后执行 `sudo scripts/ubuntu.sh install` 安装 Docker、Compose、Nginx 和 Certbot。
+部署前设置 `DOMAIN` 环境变量（`export DOMAIN=firecrawl.your-domain.com`），然后执行 `scripts/ubuntu.sh check`。它检查 Ubuntu、架构、DNS、80/443/8767 端口、磁盘、内存和所需命令。仅在检查通过后执行 `sudo scripts/ubuntu.sh install` 安装 Docker、Compose、Nginx 和 Certbot。
 
-Compose 只将应用端口绑定到 `127.0.0.1:8767`（容器内仍为 8765），Redis 没有宿主机端口。防火墙只开放 80 和 443。先安装 `deploy/firecrawl-mcp.bootstrap.nginx.conf` 并通过 `nginx -t`，再运行 `certbot --nginx -d firecrawl.nexuszone.link`；证书签发后替换为 TLS 模板 `deploy/firecrawl-mcp.nginx.conf`。
+Compose 只将应用端口绑定到 `127.0.0.1:8767`（容器内仍为 8765），Redis 没有宿主机端口。防火墙只开放 80 和 443。先安装 `deploy/firecrawl-mcp.bootstrap.nginx.conf` 并通过 `nginx -t`，再运行 `certbot --nginx -d {your-domain}`；证书签发后替换为 TLS 模板 `deploy/firecrawl-mcp.nginx.conf`。
 
 Compose 的 `redis-init` 仅在启动时把命名卷归属设为官方 Redis 镜像的服务 UID/GID，随后退出；Redis 主容器以该非 root UID/GID 运行，保留只读根文件系统和全部 capability drop。MCP 容器同样 `read_only: true`，`/tmp` 是 128MiB 的 `noexec,nosuid` tmpfs（比 8766 端口上那套 brave-search-mcp 的 32MiB 大，用来容纳 crawl 的中间数据）。
 
@@ -119,13 +119,13 @@ Codex：
 
 ```toml
 [mcp_servers.firecrawl]
-url = "https://firecrawl.nexuszone.link/mcp"
+url = "https://{your-domain}/mcp"
 ```
 
 Claude Code：
 
 ```bash
-claude mcp add --transport http firecrawl https://firecrawl.nexuszone.link/mcp
+claude mcp add --transport http firecrawl https://{your-domain}/mcp
 ```
 
 ChatGPT、Claude.ai 或 Claude Desktop 使用其远程 Connector 界面添加相同 URL 并完成 GitHub OAuth。不要把远程 HTTP MCP 填入只支持本地 stdio 服务器的配置文件。给 agent 的传参规则和边界见 [AGENTS.md](AGENTS.md)。

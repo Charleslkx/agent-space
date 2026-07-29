@@ -2,7 +2,7 @@
 set -euo pipefail
 
 mode=${1:-check}
-domain=firecrawl.nexuszone.link
+domain=${DOMAIN:?must set DOMAIN env var (e.g. firecrawl.your-domain.com)}
 
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"; }

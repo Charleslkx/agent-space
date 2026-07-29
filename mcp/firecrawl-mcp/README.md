@@ -2,12 +2,14 @@
 
 把 [Firecrawl CLI](https://github.com/firecrawl/cli) 的只读检索命令（`search`/`scrape`/`map`/`crawl`/`agent`/`research`/`credit-usage`）以一个 OAuth 保护的 Streamable HTTP MCP 工具暴露。服务端不解析、筛选或重写 CLI 的 stdout/stderr；`monitor`/`feedback`/`browser`/`download`/`parse`/`config` 等会写本地盘、留持久状态或管理凭据的命令一律拒绝，详见 [CONFIGURATION.md](CONFIGURATION.md)。
 
-端点：`https://firecrawl.nexuszone.link/mcp`。
+> **域名配置**：本文档所有 `{your-domain}` 需替换为实际部署域名。运行 `scripts/ubuntu.sh` 前必须设置 `DOMAIN` 环境变量：`export DOMAIN=firecrawl.your-domain.com`。
+
+端点：`https://{your-domain}/mcp`。
 
 ## 前置条件
 
 - 一台 Ubuntu 22.04+ 服务器，有 root/sudo
-- `firecrawl.nexuszone.link` 已解析到这台服务器
+- `{your-domain}` 已解析到这台服务器
 - 一个 [Firecrawl API Key](https://www.firecrawl.dev/app/api-keys)
 - 一个专属的 GitHub OAuth App（不要和其他 MCP 共用，见下）
 
@@ -19,7 +21,7 @@ scripts/ubuntu.sh check
 sudo scripts/ubuntu.sh install
 ```
 
-在 GitHub Developer Settings 建一个新 OAuth App：Homepage `https://firecrawl.nexuszone.link`，Authorization callback URL `https://firecrawl.nexuszone.link/auth/callback`。拿到 Client ID/Secret 后：
+在 GitHub Developer Settings 建一个新 OAuth App：Homepage `https://{your-domain}`，Authorization callback URL `https://{your-domain}/auth/callback`。拿到 Client ID/Secret 后：
 
 ```bash
 sudo install -m 600 .env.example /etc/firecrawl-mcp.env
@@ -33,7 +35,7 @@ docker compose up -d --build
 sudo install -m 644 deploy/firecrawl-mcp.bootstrap.nginx.conf /etc/nginx/sites-available/firecrawl-mcp
 sudo ln -s /etc/nginx/sites-available/firecrawl-mcp /etc/nginx/sites-enabled/firecrawl-mcp
 sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d firecrawl.nexuszone.link
+sudo certbot --nginx -d {your-domain}
 sudo install -m 644 deploy/firecrawl-mcp.nginx.conf /etc/nginx/sites-available/firecrawl-mcp
 sudo nginx -t && sudo systemctl reload nginx
 ```
@@ -41,9 +43,9 @@ sudo nginx -t && sudo systemctl reload nginx
 完成后验证：
 
 ```bash
-curl -i https://firecrawl.nexuszone.link/mcp
-curl -fsS https://firecrawl.nexuszone.link/.well-known/oauth-protected-resource/mcp
-curl -fsS https://firecrawl.nexuszone.link/.well-known/oauth-authorization-server
+curl -i https://{your-domain}/mcp
+curl -fsS https://{your-domain}/.well-known/oauth-protected-resource/mcp
+curl -fsS https://{your-domain}/.well-known/oauth-authorization-server
 ```
 
 未授权 `/mcp` 应返回 `401`。
@@ -51,7 +53,7 @@ curl -fsS https://firecrawl.nexuszone.link/.well-known/oauth-authorization-serve
 ## 客户端接入
 
 ```bash
-claude mcp add --transport http firecrawl https://firecrawl.nexuszone.link/mcp
+claude mcp add --transport http firecrawl https://{your-domain}/mcp
 ```
 
 Codex、ChatGPT、Claude.ai 的接入方式和给 agent 的传参/边界说明见 [AGENTS.md](AGENTS.md)；完整架构、环境变量、故障排查见 [CONFIGURATION.md](CONFIGURATION.md)。

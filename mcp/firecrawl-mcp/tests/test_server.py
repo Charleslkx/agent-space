@@ -15,7 +15,7 @@ MODULE_PATH = ROOT / "server.py"
 
 def load_server():
     environment = {
-        "FIRECRAWL_MCP_BASE_URL": "https://firecrawl.nexuszone.link",
+        "FIRECRAWL_MCP_BASE_URL": os.environ.get("FIRECRAWL_MCP_BASE_URL", "https://firecrawl.example.com"),
         "FIRECRAWL_MCP_GITHUB_CLIENT_ID": "client",
         "FIRECRAWL_MCP_GITHUB_CLIENT_SECRET": "secret",
         "FIRECRAWL_MCP_GITHUB_USERS": "Charles, AnotherUser",
