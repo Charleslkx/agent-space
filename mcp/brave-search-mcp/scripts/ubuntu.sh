@@ -2,7 +2,7 @@
 set -euo pipefail
 
 mode=${1:-check}
-domain=brave.nexuszone.link
+domain=${DOMAIN:?must set DOMAIN env var (e.g. brave.your-domain.com)}
 
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"; }

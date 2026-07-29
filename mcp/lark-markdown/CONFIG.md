@@ -2,6 +2,8 @@
 
 可分发的 uv 项目：把 Markdown 内容写入飞书 Docx，支持并发批量拉取、并发批量推送、定点修改、创建文档、插入媒体及画板读写。公网部署后可由 ChatGPT、Claude.ai、Claude Desktop 和 Claude Code 通过 OAuth 2.1 连接。
 
+> **域名配置**：本文档所有 `{your-domain}` 需替换为实际部署域名（如 `lark-markdown.example.com`）。
+
 `skills/lark-markdown/SKILL.md` 只说明如何使用已连接的远程 MCP；本文件集中说明 MCP 的安装、部署、认证和客户端连接配置。
 
 ## 环境要求
@@ -64,7 +66,7 @@ codex mcp get lark-markdown
 | 配置 | 必需 | 说明 |
 |-|-|-|
 | `LARK_MCP_AUTH_MODE` | 公网必需 | ChatGPT/Claude 使用 `github`；支持自定义 Bearer 的客户端可使用 `token` |
-| `LARK_MCP_BASE_URL` | OAuth 必需 | MCP 的公开 HTTPS origin：`https://lark-markdown.nexuszone.link` |
+| `LARK_MCP_BASE_URL` | OAuth 必需 | MCP 的公开 HTTPS origin，部署前将 `{your-domain}` 替换为实际域名 |
 | `LARK_MCP_GITHUB_CLIENT_ID` | OAuth 必需 | GitHub OAuth App Client ID |
 | `LARK_MCP_GITHUB_CLIENT_SECRET` | OAuth 必需 | GitHub OAuth App Client Secret |
 | `LARK_MCP_GITHUB_USERS` | OAuth 必需 | 允许访问的 GitHub 登录名，逗号分隔且不区分大小写 |
@@ -84,8 +86,8 @@ codex mcp get lark-markdown
 
 先在 GitHub 创建 OAuth App：
 
-- Homepage URL：`https://lark-markdown.nexuszone.link`
-- Authorization callback URL：`https://lark-markdown.nexuszone.link/auth/callback`
+- Homepage URL：`https://{your-domain}`
+- Authorization callback URL：`https://{your-domain}/auth/callback`
 
 创建仅服务账户可读的环境文件：
 
@@ -94,7 +96,7 @@ umask 077
 sudo install -m 600 /dev/null /etc/lark-markdown.env
 # 写入：
 # LARK_MCP_AUTH_MODE=github
-# LARK_MCP_BASE_URL=https://lark-markdown.nexuszone.link
+# LARK_MCP_BASE_URL=https://{your-domain}
 # LARK_MCP_GITHUB_CLIENT_ID=...
 # LARK_MCP_GITHUB_CLIENT_SECRET=...
 # LARK_MCP_GITHUB_USERS=你的GitHub登录名,另一位允许访问的登录名
@@ -115,9 +117,9 @@ Nginx 站点配置的关键项：
 ```nginx
 server {
     listen 443 ssl http2;
-    server_name lark-markdown.nexuszone.link;
-    ssl_certificate /etc/letsencrypt/live/lark-markdown.nexuszone.link/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/lark-markdown.nexuszone.link/privkey.pem;
+    server_name {your-domain};
+    ssl_certificate /etc/letsencrypt/live/{your-domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{your-domain}/privkey.pem;
     client_max_body_size 22m;
 
     # OAuth discovery、DCR、callback 与 /mcp 都必须转发。
@@ -156,18 +158,18 @@ PrivateTmp=true
 部署后确认 OAuth 发现文档可访问：
 
 ```bash
-curl -fsS https://lark-markdown.nexuszone.link/.well-known/oauth-protected-resource/mcp
-curl -fsS https://lark-markdown.nexuszone.link/.well-known/oauth-authorization-server
+curl -fsS https://{your-domain}/.well-known/oauth-protected-resource/mcp
+curl -fsS https://{your-domain}/.well-known/oauth-authorization-server
 ```
 
-在 ChatGPT 的 Settings → Apps & Connectors → Advanced settings 启用 Developer mode，然后到 Settings → Connectors → Create，填写名称 `Lark-Markdown`、用途说明和 `https://lark-markdown.nexuszone.link/mcp`。ChatGPT 完成 OAuth 后会列出服务器注册的工具。服务器不能替用户把 connector 写入 ChatGPT 账户；面向其他用户公开分发时还需提交并发布 app 版本。
+在 ChatGPT 的 Settings → Apps & Connectors → Advanced settings 启用 Developer mode，然后到 Settings → Connectors → Create，填写名称 `Lark-Markdown`、用途说明和 `https://{your-domain}/mcp`。ChatGPT 完成 OAuth 后会列出服务器注册的工具。服务器不能替用户把 connector 写入 ChatGPT 账户；面向其他用户公开分发时还需提交并发布 app 版本。
 
-Claude.ai、Claude Desktop、移动端和 Cowork 使用 OAuth 回调 `https://claude.ai/api/mcp/auth_callback`。在 Settings → Connectors 添加远程 MCP URL：`https://lark-markdown.nexuszone.link/mcp`。
+Claude.ai、Claude Desktop、移动端和 Cowork 使用 OAuth 回调 `https://claude.ai/api/mcp/auth_callback`。在 Settings → Connectors 添加远程 MCP URL：`https://{your-domain}/mcp`。
 
 Claude Code 直接添加远程 HTTP MCP；它会发现 OAuth 并在 `/mcp` 中引导认证：
 
 ```bash
-claude mcp add --transport http lark-markdown https://lark-markdown.nexuszone.link/mcp
+claude mcp add --transport http lark-markdown https://{your-domain}/mcp
 ```
 
 Claude Code 使用动态 localhost 回调端口；服务器已允许 `localhost` 和 `127.0.0.1` 回环地址。
@@ -176,7 +178,7 @@ Claude Code 使用动态 localhost 回调端口；服务器已允许 `localhost`
 
 没有反向代理时可直接监听公网；缺少认证、证书或私钥时服务拒绝启动：
 
-`LARK_MCP_BASE_URL` 必须与外部地址完全一致；下例监听 8765 时应设为 `https://lark-markdown.nexuszone.link:8765`。
+`LARK_MCP_BASE_URL` 必须与外部地址完全一致；下例监听 8765 时应设为 `https://{your-domain}:8765`。
 
 ```bash
 set -a
@@ -184,8 +186,8 @@ set -a
 set +a
 uv run python scripts/mcp_server.py \
   --transport http --host 0.0.0.0 --port 8765 \
-  --tls-cert /etc/letsencrypt/live/lark-markdown.nexuszone.link/fullchain.pem \
-  --tls-key /etc/letsencrypt/live/lark-markdown.nexuszone.link/privkey.pem
+  --tls-cert /etc/letsencrypt/live/{your-domain}/fullchain.pem \
+  --tls-key /etc/letsencrypt/live/{your-domain}/privkey.pem
 ```
 
 ## 静态 Token 模式
@@ -215,7 +217,7 @@ export LARK_MCP_AUTH_MODE=token
 export LARK_MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
 codex mcp remove lark-markdown 2>/dev/null || true
 codex mcp add lark-markdown \
-  --url https://lark-markdown.nexuszone.link/mcp \
+  --url https://{your-domain}/mcp \
   --bearer-token-env-var LARK_MCP_AUTH_TOKEN
 ```
 
@@ -225,7 +227,7 @@ codex mcp add lark-markdown \
 
 ```bash
 uv run python scripts/test_https_mcp.py \
-  --url https://lark-markdown.nexuszone.link/mcp \
+  --url https://{your-domain}/mcp \
   --token-env LARK_MCP_AUTH_TOKEN
 ```
 
@@ -247,7 +249,7 @@ uv run python scripts/test_live_capabilities.py \
 - `find_document_text`：按精确文本返回有限上下文，不向模型返回全文；用于局部编辑前定位句子。
 - `batch_push`：批量覆盖或追加 Markdown/XML；Markdown 中独立 `$$...$$` 公式会自动写为居中的原生公式段落，代码块中的字面量不转换。
 - `point_update`：仅在旧文本唯一命中时精确替换或删除；重复命中时先调用 `find_document_text` 缩小目标。
-- `batch_point_update`：单篇文档内按顺序执行多组唯一文本替换，减少客户端往返；遇到失败项即停止。
+- `batch_point_update`：单篇文档内先预演全部唯一文本替换，再以 `revision_id` 串行写入；可传 `expected_revision_id` 拒绝过期定位，冲突时停止并报告已完成项。
 - `create_document`：在个人空间或 Drive 文件夹创建普通 Docx。
 - `create_wiki_node`：在指定 Wiki 空间根目录或父节点下创建空白 Docx 页面。
 - `create_wiki_space`：创建 Wiki 空间。

@@ -14,7 +14,7 @@ MODULE_PATH = ROOT / "server.py"
 
 def load_server():
     environment = {
-        "BRAVE_MCP_BASE_URL": "https://brave.nexuszone.link",
+        "BRAVE_MCP_BASE_URL": os.environ.get("BRAVE_MCP_BASE_URL", "https://brave.example.com"),
         "BRAVE_MCP_GITHUB_CLIENT_ID": "client",
         "BRAVE_MCP_GITHUB_CLIENT_SECRET": "secret",
         "BRAVE_MCP_GITHUB_USERS": "Charles, AnotherUser",

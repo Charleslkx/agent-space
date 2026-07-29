@@ -5,14 +5,14 @@ Everything an agent needs to connect and call this MCP correctly, without readin
 ## 1. Connect
 
 ```bash
-claude mcp add --transport http firecrawl https://firecrawl.nexuszone.link/mcp
+claude mcp add --transport http firecrawl https://{your-domain}/mcp
 ```
 
 Codex (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.firecrawl]
-url = "https://firecrawl.nexuszone.link/mcp"
+url = "https://{your-domain}/mcp"
 ```
 
 ChatGPT / Claude.ai / Claude Desktop: add the same URL via their remote-connector UI.

@@ -498,6 +498,31 @@ def _batch_failure(operation: str, index: int, item: str, completed: int, error:
     })
 
 
+def _revision_id(document: dict, operation: str) -> int:
+    value = document.get("revision_id")
+    try:
+        revision_id = int(value)
+    except (TypeError, ValueError) as error:
+        raise LarkCLIError({
+            "operation": operation,
+            "error": "invalid_response",
+            "message": "document revision_id must be an integer",
+        }) from error
+    if revision_id < 0:
+        raise LarkCLIError({
+            "operation": operation,
+            "error": "invalid_response",
+            "message": "document revision_id must not be negative",
+        })
+    return revision_id
+
+
+def _is_revision_conflict(error: Exception) -> bool:
+    details = error.details if isinstance(error, LarkCLIError) else str(error)
+    message = json.dumps(details, ensure_ascii=False).casefold()
+    return "1770021" in message or "too old document" in message
+
+
 def _find_auth_value(payload: object, names: tuple[str, ...]) -> str | None:
     if isinstance(payload, dict):
         for name in names:
@@ -842,25 +867,13 @@ def batch_push(
     return results
 
 
-def _update_exact_text(
+def _write_exact_text(
     doc: str,
     pattern: str,
     replacement: str,
     doc_format: DocFormat,
+    revision_id: int,
 ) -> dict:
-    document = _fetch_document(doc, doc_format, "simple", "point_update preflight")
-    content = document.get("content", "")
-    if not isinstance(content, str):
-        raise LarkCLIError({
-            "operation": "point_update preflight",
-            "error": "invalid_response",
-            "message": "document content must be a string",
-        })
-    matches = content.count(pattern)
-    if matches != 1:
-        raise ValueError(
-            f"pattern must occur exactly once, found {matches}; call find_document_text for bounded context"
-        )
     with _hidden_run() as run:
         content = _payload(
             run / ".replacement",
@@ -869,8 +882,20 @@ def _update_exact_text(
         return _run_cli([
             "docs", "+update", "--api-version", "v2", "--as", "user",
             "--doc", doc, "--command", "str_replace", "--pattern", pattern,
+            "--revision-id", str(revision_id),
             "--doc-format", doc_format, "--content", content, "--format", "json",
         ], "point_update")
+
+
+def _preflight_content(document: dict, operation: str) -> tuple[str, int]:
+    content = document.get("content", "")
+    if not isinstance(content, str):
+        raise LarkCLIError({
+            "operation": operation,
+            "error": "invalid_response",
+            "message": "document content must be a string",
+        })
+    return content, _revision_id(document, operation)
 
 
 @mcp.tool(title="Update exact document text", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -888,7 +913,14 @@ def point_update(
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")
     _check_lark_cli()
-    return _update_exact_text(doc, pattern, replacement, doc_format)
+    document = _fetch_document(doc, doc_format, "simple", "point_update preflight")
+    content, revision_id = _preflight_content(document, "point_update preflight")
+    matches = content.count(pattern)
+    if matches != 1:
+        raise ValueError(
+            f"pattern must occur exactly once, found {matches}; call find_document_text for bounded context"
+        )
+    return _write_exact_text(doc, pattern, replacement, doc_format, revision_id)
 
 
 @mcp.tool(title="Update multiple exact document texts", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -896,12 +928,18 @@ def batch_point_update(
     doc: str,
     updates: list[dict[str, str]],
     doc_format: DocFormat = "markdown",
+    expected_revision_id: int | None = None,
 ) -> list[dict]:
-    """Apply ordered exact replacements to one document in a single request."""
+    """Preflight and apply ordered exact replacements with revision guards."""
     if not doc.strip():
         raise ValueError("doc must not be empty")
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")
+    if expected_revision_id is not None and (
+        isinstance(expected_revision_id, bool) or not isinstance(expected_revision_id, int)
+        or expected_revision_id < 0
+    ):
+        raise ValueError("expected_revision_id must be a non-negative integer")
     _validate_batch(updates, "updates")
     prepared: list[tuple[str, str]] = []
     for index, update in enumerate(updates):
@@ -915,13 +953,58 @@ def batch_point_update(
             raise _batch_failure("batch_point_update", index, doc, 0, ValueError("replacement must be a string"))
         prepared.append((pattern, replacement))
     _check_lark_cli()
+    document = _fetch_document(doc, doc_format, "simple", "batch_point_update preflight")
+    content, revision_id = _preflight_content(document, "batch_point_update preflight")
+    if expected_revision_id is not None and revision_id != expected_revision_id:
+        failure = _batch_failure(
+            "batch_point_update", 0, doc, 0,
+            ValueError(f"expected revision {expected_revision_id}, found {revision_id}"),
+        )
+        failure.details.update({
+            "error": "revision_conflict",
+            "expected_revision_id": expected_revision_id,
+            "actual_revision_id": revision_id,
+            "applied_indexes": [],
+        })
+        raise failure
+    simulated = content
+    for index, (pattern, replacement) in enumerate(prepared):
+        matches = simulated.count(pattern)
+        if matches != 1:
+            failure = _batch_failure(
+                "batch_point_update", index, doc, 0,
+                ValueError(f"pattern must occur exactly once, found {matches}"),
+            )
+            failure.details.update({
+                "error": "preflight_conflict",
+                "expected_revision_id": revision_id,
+                "applied_indexes": [],
+            })
+            raise failure
+        simulated = simulated.replace(pattern, replacement, 1)
     results = []
     for index, (pattern, replacement) in enumerate(prepared):
         try:
-            result = _update_exact_text(doc, pattern, replacement, doc_format)
+            result = _write_exact_text(doc, pattern, replacement, doc_format, revision_id)
         except Exception as error:
-            raise _batch_failure("batch_point_update", index, doc, len(results), error) from error
+            failure = _batch_failure("batch_point_update", index, doc, len(results), error)
+            failure.details.update({
+                "error": "revision_conflict" if _is_revision_conflict(error) else "remote_error",
+                "expected_revision_id": revision_id,
+                "applied_indexes": list(range(len(results))),
+            })
+            raise failure from error
         results.append({"pattern": pattern, "result": result})
+        try:
+            revision_id = _revision_id(result.get("data", {}).get("document", {}), "batch_point_update")
+        except Exception as error:
+            failure = _batch_failure("batch_point_update", index, doc, len(results), error)
+            failure.details.update({
+                "error": "remote_error",
+                "expected_revision_id": revision_id,
+                "applied_indexes": list(range(len(results))),
+            })
+            raise failure from error
     return results
 
 
