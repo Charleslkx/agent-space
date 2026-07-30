@@ -217,6 +217,9 @@ class ServerTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "HTTPS origin"):
                 SERVER._base_url()
 
+    def test_workbuddy_callback_is_allowlisted(self):
+        self.assertIn(SERVER.WORKBUDDY_REDIRECT_URI, SERVER.ALLOWED_CLIENT_REDIRECT_URIS)
+
     def test_update_available_reported_only_when_newer(self):
         SERVER._INSTALLED_VERSION = "1.19.27"
         try:

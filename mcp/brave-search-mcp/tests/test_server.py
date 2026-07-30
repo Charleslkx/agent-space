@@ -94,6 +94,9 @@ class ServerTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "HTTPS origin"):
                 SERVER._base_url()
 
+    def test_workbuddy_callback_is_allowlisted(self):
+        self.assertIn(SERVER.WORKBUDDY_REDIRECT_URI, SERVER.ALLOWED_CLIENT_REDIRECT_URIS)
+
 
 if __name__ == "__main__":
     unittest.main()
