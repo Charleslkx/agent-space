@@ -30,7 +30,7 @@ The target project must provide a `daily_job.py` wrapper that:
 - supports webhook sending when `FEISHU_WEBHOOK_URL` or `LARK_WEBHOOK_URL` exists
 - has a dedicated `online_enrichment.py` script for NewsNow-first online source collection with cache reuse and retention pruning
 - uses the local NewsNow service on `http://127.0.0.1:4444` as the preferred path because it bypasses the public basic-auth front door and directly accesses the same backend on this machine
-- treats the public URL `https://newsnow.tencent.nexuszone.link` as a secondary/manual path only when local access is unavailable
+- treats the public URL (`https://newsnow.tencent.{your-domain}` — replace `{your-domain}` with the actual deployment domain) as a secondary/manual path only when local access is unavailable
 - requires an AI synthesis step after NewsNow retrieval (and optional Exa fallback): the agent must read the technical summary plus the collected sources, judge whether the industry/theme is overheated, whether there are sudden catalysts or risks, and then rewrite `outputs/notifications/online_enrichment.json` before final sending
 
 ## When to Use
@@ -165,7 +165,7 @@ The minimum high-quality source set is:
 
 Interpretation rules:
 1. Prefer `http://127.0.0.1:4444` on this host. It reaches the local backend directly and avoids the basic-auth gate configured on the public Caddy URL.
-2. Use the public `https://newsnow.tencent.nexuszone.link` only as a fallback/manual inspection path when local access fails and credentials are available.
+2. Use the public `https://newsnow.tencent.{your-domain}` only as a fallback/manual inspection path when local access fails and credentials are available.
 3. Treat NewsNow titles as recent signal evidence about the ETF's industry/theme; the downstream AI rewrite step must convert them into a coherent judgment about heat, catalysts, divergence risk, and recommendation tone.
 4. If NewsNow yields too few relevant hits, supplement with Exa using industry-level news queries rather than generic fund-profile queries.
 

@@ -14,7 +14,7 @@ MODULE_PATH = ROOT / "server.py"
 
 def load_server():
     environment = {
-        "BRAVE_MCP_BASE_URL": "https://brave.nexuszone.link",
+        "BRAVE_MCP_BASE_URL": os.environ.get("BRAVE_MCP_BASE_URL", "https://brave.example.com"),
         "BRAVE_MCP_GITHUB_CLIENT_ID": "client",
         "BRAVE_MCP_GITHUB_CLIENT_SECRET": "secret",
         "BRAVE_MCP_GITHUB_USERS": "Charles, AnotherUser",
@@ -93,6 +93,9 @@ class ServerTest(unittest.TestCase):
         with patch.dict(os.environ, {SERVER.BASE_URL_ENV: "http://bad.example/path"}, clear=False):
             with self.assertRaisesRegex(RuntimeError, "HTTPS origin"):
                 SERVER._base_url()
+
+    def test_workbuddy_callback_is_allowlisted(self):
+        self.assertIn(SERVER.WORKBUDDY_REDIRECT_URI, SERVER.ALLOWED_CLIENT_REDIRECT_URIS)
 
 
 if __name__ == "__main__":

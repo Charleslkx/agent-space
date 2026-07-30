@@ -1,0 +1,81 @@
+services:
+  mcp:
+    # FIRECRAWL_VERSION is set once, in the Dockerfile's ARG default.
+    # scripts/update-cli.sh edits it there; nothing to override here.
+    build: .
+    env_file: ${FIRECRAWL_MCP_ENV_FILE:-/etc/firecrawl-mcp.env}
+    environment:
+      FIRECRAWL_MCP_REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8767:8765"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: 512m
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8765), 2).close()"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7.4-alpine
+    user: "999:1000"
+    env_file: ${FIRECRAWL_MCP_REDIS_ENV_FILE:-/etc/firecrawl-mcp.redis.env}
+    depends_on:
+      redis-init:
+        condition: service_completed_successfully
+    command: ["sh", "-ec", "exec redis-server --appendonly yes --requirepass \"$$FIRECRAWL_MCP_REDIS_PASSWORD\""]
+    volumes:
+      - redis-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    mem_limit: 256m
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$FIRECRAWL_MCP_REDIS_PASSWORD\" ping | grep -qx PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  redis-init:
+    image: redis:7.4-alpine
+    user: "0:0"
+    command: ["sh", "-ec", "chown -R 999:1000 /data"]
+    volumes:
+      - redis-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    restart: "no"
+
+volumes:
+  redis-data:

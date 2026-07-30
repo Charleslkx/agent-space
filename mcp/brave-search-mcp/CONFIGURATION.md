@@ -32,8 +32,8 @@ Nginx 代理所有路径。`/mcp`、`/.well-known/*`、`/auth/callback` 和 OAut
 | 字段 | 值 |
 |---|---|
 | Application name | Brave Search MCP |
-| Homepage URL | `https://brave.nexuszone.link` |
-| Authorization callback URL | `https://brave.nexuszone.link/auth/callback` |
+| Homepage URL | `https://{your-domain}` |
+| Authorization callback URL | `https://{your-domain}/auth/callback` |
 
 OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `BRAVE_MCP_GITHUB_USERS` 执行本地白名单检查。
 
@@ -43,7 +43,7 @@ OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `BRAVE_MC
 
 | 变量 | 用途 | 生成或来源 |
 |---|---|---|
-| `BRAVE_MCP_BASE_URL` | 公开 HTTPS origin | 固定为 `https://brave.nexuszone.link` |
+| `BRAVE_MCP_BASE_URL` | 公开 HTTPS origin | 部署前替换为实际域名，如 `https://{your-domain}` |
 | `BRAVE_MCP_GITHUB_CLIENT_ID` | GitHub OAuth App ID | GitHub 开发者设置 |
 | `BRAVE_MCP_GITHUB_CLIENT_SECRET` | GitHub OAuth App Secret | GitHub 开发者设置 |
 | `BRAVE_MCP_GITHUB_USERS` | 允许访问的 GitHub login | 逗号分隔，不区分大小写 |
@@ -66,9 +66,9 @@ OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `BRAVE_MC
 
 ## 5 Ubuntu 部署与 TLS
 
-先执行 `scripts/ubuntu.sh check`。它检查 Ubuntu、架构、DNS、端口、磁盘、内存和所需命令。仅在检查通过后执行 `sudo scripts/ubuntu.sh install` 安装 Docker、Compose、Nginx 和 Certbot。
+部署前设置 `DOMAIN` 环境变量（`export DOMAIN=brave.your-domain.com`），然后执行 `scripts/ubuntu.sh check`。它检查 Ubuntu、架构、DNS、端口、磁盘、内存和所需命令。仅在检查通过后执行 `sudo scripts/ubuntu.sh install` 安装 Docker、Compose、Nginx 和 Certbot。
 
-Compose 只将应用端口绑定到 `127.0.0.1:8766`（容器内仍为 8765），Redis 没有宿主机端口。防火墙只开放 80 和 443。先安装 `deploy/brave-search-mcp.bootstrap.nginx.conf` 并通过 `nginx -t`，再运行 `certbot --nginx -d brave.nexuszone.link`；证书签发后替换为 TLS 模板 `deploy/brave-search-mcp.nginx.conf`。
+Compose 只将应用端口绑定到 `127.0.0.1:8766`（容器内仍为 8765），Redis 没有宿主机端口。防火墙只开放 80 和 443。先安装 `deploy/brave-search-mcp.bootstrap.nginx.conf` 并通过 `nginx -t`，再运行 `certbot --nginx -d {your-domain}`；证书签发后替换为 TLS 模板 `deploy/brave-search-mcp.nginx.conf`。
 
 Compose 的 `redis-init` 仅在启动时把命名卷归属设为官方 Redis 镜像的服务 UID/GID，随后退出；Redis 主容器以该非 root UID/GID 运行，保留只读根文件系统和全部 capability drop。
 
@@ -80,16 +80,18 @@ Codex：
 
 ```toml
 [mcp_servers.brave-search]
-url = "https://brave.nexuszone.link/mcp"
+url = "https://{your-domain}/mcp"
 ```
 
 Claude Code：
 
 ```bash
-claude mcp add --transport http brave-search https://brave.nexuszone.link/mcp
+claude mcp add --transport http brave-search https://{your-domain}/mcp
 ```
 
 ChatGPT、Claude.ai 或 Claude Desktop 使用其远程 Connector 界面添加相同 URL 并完成 GitHub OAuth。不要把远程 HTTP MCP 填入只支持本地 stdio 服务器的配置文件。
+
+WorkBuddy Custom MCP 使用固定回调 URI `workbuddy://workbuddy/mcp/custom-mcp%3Abrave-search/oauth/callback`；服务已将该精确 URI 加入 OAuth 白名单。
 
 ## 7 故障处理
 

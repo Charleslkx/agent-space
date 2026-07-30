@@ -6,6 +6,7 @@ import argparse
 import base64
 import binascii
 from concurrent.futures import ThreadPoolExecutor
+import html
 import json
 import os
 import re
@@ -37,6 +38,15 @@ GITHUB_USER_ENV = "LARK_MCP_GITHUB_USER"  # Backward-compatible single-user sett
 GITHUB_JWT_SIGNING_KEY_ENV = "LARK_MCP_JWT_SIGNING_KEY"
 CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 CLAUDE_CODE_REDIRECT_URI_PATTERN = "http://localhost:*"
+WORKBUDDY_REDIRECT_URI = "workbuddy://workbuddy/mcp/custom-mcp%3Alark-markdown/oauth/callback"
+ALLOWED_CLIENT_REDIRECT_URIS = [
+    "https://chatgpt.com/connector/oauth/*",
+    "https://chatgpt.com/connector_platform_oauth_redirect",
+    "https://claude.ai/api/mcp/auth_callback",
+    WORKBUDDY_REDIRECT_URI,
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+]
 CLI_TIMEOUT_SECONDS = 60
 MAX_BATCH_ITEMS = 100
 DEFAULT_BATCH_CONCURRENCY = 4
@@ -54,11 +64,44 @@ XML_WHITEBOARD = re.compile(
     r'<whiteboard\b(?P<attrs>[^>]*)>(?P<source>.*?)</whiteboard\s*>',
     re.IGNORECASE | re.DOTALL,
 )
+MARKDOWN_FENCE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})")
+DISPLAY_FORMULA = re.compile(r"(?ms)^[ \t]*\$\$[ \t]*(?:\n)?(.*?)(?:\n)?[ \t]*\$\$[ \t]*$")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RESTART_CONFIRMATION = "RESTART_LARK_MARKDOWN_MCP"
 RESTART_WORKER = PROJECT_ROOT / "scripts" / "restart_mcp_worker.py"
 
 DocFormat = Literal["markdown", "xml"]
+
+
+def _center_display_math(content: str) -> str:
+    """Convert standalone Markdown display formulas, excluding fenced code blocks."""
+    def convert(prose: str) -> str:
+        def replace(match: re.Match[str]) -> str:
+            formula = html.escape(match.group(1).strip(), quote=False)
+            return f'<p align="center"><latex>{formula}</latex></p>'
+
+        return DISPLAY_FORMULA.sub(replace, prose)
+
+    output: list[str] = []
+    prose: list[str] = []
+    closing: re.Pattern[str] | None = None
+    for line in content.splitlines(keepends=True):
+        if closing:
+            output.append(line)
+            if closing.match(line):
+                closing = None
+            continue
+        match = MARKDOWN_FENCE.match(line)
+        if match:
+            output.append(convert("".join(prose)))
+            prose.clear()
+            marker = match.group(1)
+            closing = re.compile(rf"^[ ]{{0,3}}{re.escape(marker[0])}{{{len(marker)},}}[ \t]*$")
+            output.append(line)
+        else:
+            prose.append(line)
+    output.append(convert("".join(prose)))
+    return "".join(output)
 
 
 def _auth_mode() -> str:
@@ -172,13 +215,7 @@ def _auth_provider(mode: str = AUTH_MODE):
             base_url=base_url,
             resource_base_url=base_url,
             required_scopes=["read:user"],
-            allowed_client_redirect_uris=[
-                "https://chatgpt.com/connector/oauth/*",
-                "https://chatgpt.com/connector_platform_oauth_redirect",
-                "https://claude.ai/api/mcp/auth_callback",
-                "http://localhost:*",
-                "http://127.0.0.1:*",
-            ],
+            allowed_client_redirect_uris=ALLOWED_CLIENT_REDIRECT_URIS,
         )
     if mode == "none":
         return None
@@ -228,8 +265,8 @@ mcp = FastMCP(
         "wiki, and sheets, then call find_document_text on the chosen doc; never guess a doc token. "
         "Before a local edit, use "
         "find_document_text to return bounded snippets; if it finds multiple targets, refine the query with "
-        "longer exact text and never guess. Use point_update only for one exact target; it rejects non-unique "
-        "patterns. Use batch_pull only when full-document understanding is requested, the target cannot be "
+        "longer exact text and never guess. Use point_update or batch_point_update only for exact targets; "
+        "they reject non-unique patterns. Use batch_pull only when full-document understanding is requested, the target cannot be "
         "narrowed by snippets, or XML/native-block structure is needed. Use batch_push only for an explicit "
         "whole-document replacement or append. After point_update, verify with find_document_text using the "
         "replacement (or the removed text for deletion); use batch_pull only after partial_success, an error, "
@@ -462,6 +499,31 @@ def _batch_failure(operation: str, index: int, item: str, completed: int, error:
         "completed": completed,
         "cause": details,
     })
+
+
+def _revision_id(document: dict, operation: str) -> int:
+    value = document.get("revision_id")
+    try:
+        revision_id = int(value)
+    except (TypeError, ValueError) as error:
+        raise LarkCLIError({
+            "operation": operation,
+            "error": "invalid_response",
+            "message": "document revision_id must be an integer",
+        }) from error
+    if revision_id < 0:
+        raise LarkCLIError({
+            "operation": operation,
+            "error": "invalid_response",
+            "message": "document revision_id must not be negative",
+        })
+    return revision_id
+
+
+def _is_revision_conflict(error: Exception) -> bool:
+    details = error.details if isinstance(error, LarkCLIError) else str(error)
+    message = json.dumps(details, ensure_ascii=False).casefold()
+    return "1770021" in message or "too old document" in message
 
 
 def _find_auth_value(payload: object, names: tuple[str, ...]) -> str | None:
@@ -767,6 +829,8 @@ def batch_push(
             raise _batch_failure("batch_push", index, doc, 0, ValueError("mode must be overwrite or append"))
         if doc_format not in {"markdown", "xml"}:
             raise _batch_failure("batch_push", index, doc, 0, ValueError("doc_format must be markdown or xml"))
+        if doc_format == "markdown":
+            content = _center_display_math(content)
         if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
             raise _batch_failure(
                 "batch_push", index, doc, 0,
@@ -806,6 +870,37 @@ def batch_push(
     return results
 
 
+def _write_exact_text(
+    doc: str,
+    pattern: str,
+    replacement: str,
+    doc_format: DocFormat,
+    revision_id: int,
+) -> dict:
+    with _hidden_run() as run:
+        content = _payload(
+            run / ".replacement",
+            _center_display_math(replacement) if doc_format == "markdown" else replacement,
+        )
+        return _run_cli([
+            "docs", "+update", "--api-version", "v2", "--as", "user",
+            "--doc", doc, "--command", "str_replace", "--pattern", pattern,
+            "--revision-id", str(revision_id),
+            "--doc-format", doc_format, "--content", content, "--format", "json",
+        ], "point_update")
+
+
+def _preflight_content(document: dict, operation: str) -> tuple[str, int]:
+    content = document.get("content", "")
+    if not isinstance(content, str):
+        raise LarkCLIError({
+            "operation": operation,
+            "error": "invalid_response",
+            "message": "document content must be a string",
+        })
+    return content, _revision_id(document, operation)
+
+
 @mcp.tool(title="Update exact document text", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
 def point_update(
     doc: str,
@@ -822,25 +917,98 @@ def point_update(
         raise ValueError("doc_format must be markdown or xml")
     _check_lark_cli()
     document = _fetch_document(doc, doc_format, "simple", "point_update preflight")
-    content = document.get("content", "")
-    if not isinstance(content, str):
-        raise LarkCLIError({
-            "operation": "point_update preflight",
-            "error": "invalid_response",
-            "message": "document content must be a string",
-        })
+    content, revision_id = _preflight_content(document, "point_update preflight")
     matches = content.count(pattern)
     if matches != 1:
         raise ValueError(
             f"pattern must occur exactly once, found {matches}; call find_document_text for bounded context"
         )
-    with _hidden_run() as run:
-        content = _payload(run / ".replacement", replacement)
-        return _run_cli([
-            "docs", "+update", "--api-version", "v2", "--as", "user",
-            "--doc", doc, "--command", "str_replace", "--pattern", pattern,
-            "--doc-format", doc_format, "--content", content, "--format", "json",
-        ], "point_update")
+    return _write_exact_text(doc, pattern, replacement, doc_format, revision_id)
+
+
+@mcp.tool(title="Update multiple exact document texts", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+def batch_point_update(
+    doc: str,
+    updates: list[dict[str, str]],
+    doc_format: DocFormat = "markdown",
+    expected_revision_id: int | None = None,
+) -> list[dict]:
+    """Preflight and apply ordered exact replacements with revision guards."""
+    if not doc.strip():
+        raise ValueError("doc must not be empty")
+    if doc_format not in {"markdown", "xml"}:
+        raise ValueError("doc_format must be markdown or xml")
+    if expected_revision_id is not None and (
+        isinstance(expected_revision_id, bool) or not isinstance(expected_revision_id, int)
+        or expected_revision_id < 0
+    ):
+        raise ValueError("expected_revision_id must be a non-negative integer")
+    _validate_batch(updates, "updates")
+    prepared: list[tuple[str, str]] = []
+    for index, update in enumerate(updates):
+        if not isinstance(update, dict):
+            raise _batch_failure("batch_point_update", index, doc, 0, ValueError("item must be an object"))
+        pattern = update.get("pattern")
+        replacement = update.get("replacement")
+        if not isinstance(pattern, str) or not pattern:
+            raise _batch_failure("batch_point_update", index, doc, 0, ValueError("pattern must not be empty"))
+        if not isinstance(replacement, str):
+            raise _batch_failure("batch_point_update", index, doc, 0, ValueError("replacement must be a string"))
+        prepared.append((pattern, replacement))
+    _check_lark_cli()
+    document = _fetch_document(doc, doc_format, "simple", "batch_point_update preflight")
+    content, revision_id = _preflight_content(document, "batch_point_update preflight")
+    if expected_revision_id is not None and revision_id != expected_revision_id:
+        failure = _batch_failure(
+            "batch_point_update", 0, doc, 0,
+            ValueError(f"expected revision {expected_revision_id}, found {revision_id}"),
+        )
+        failure.details.update({
+            "error": "revision_conflict",
+            "expected_revision_id": expected_revision_id,
+            "actual_revision_id": revision_id,
+            "applied_indexes": [],
+        })
+        raise failure
+    simulated = content
+    for index, (pattern, replacement) in enumerate(prepared):
+        matches = simulated.count(pattern)
+        if matches != 1:
+            failure = _batch_failure(
+                "batch_point_update", index, doc, 0,
+                ValueError(f"pattern must occur exactly once, found {matches}"),
+            )
+            failure.details.update({
+                "error": "preflight_conflict",
+                "expected_revision_id": revision_id,
+                "applied_indexes": [],
+            })
+            raise failure
+        simulated = simulated.replace(pattern, replacement, 1)
+    results = []
+    for index, (pattern, replacement) in enumerate(prepared):
+        try:
+            result = _write_exact_text(doc, pattern, replacement, doc_format, revision_id)
+        except Exception as error:
+            failure = _batch_failure("batch_point_update", index, doc, len(results), error)
+            failure.details.update({
+                "error": "revision_conflict" if _is_revision_conflict(error) else "remote_error",
+                "expected_revision_id": revision_id,
+                "applied_indexes": list(range(len(results))),
+            })
+            raise failure from error
+        results.append({"pattern": pattern, "result": result})
+        try:
+            revision_id = _revision_id(result.get("data", {}).get("document", {}), "batch_point_update")
+        except Exception as error:
+            failure = _batch_failure("batch_point_update", index, doc, len(results), error)
+            failure.details.update({
+                "error": "remote_error",
+                "expected_revision_id": revision_id,
+                "applied_indexes": list(range(len(results))),
+            })
+            raise failure from error
+    return results
 
 
 @mcp.tool(title="Create a Lark document", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
@@ -854,7 +1022,10 @@ def create_document(
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")
     with _hidden_run() as run:
-        payload = _payload(run / ".document", content)
+        payload = _payload(
+            run / ".document",
+            _center_display_math(content) if doc_format == "markdown" else content,
+        )
         args = [
             "docs", "+create", "--api-version", "v2", "--as", "user",
             "--doc-format", doc_format, "--content", payload, "--format", "json",

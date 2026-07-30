@@ -2,7 +2,7 @@
 set -euo pipefail
 
 mode=${1:-check}
-domain=${DOMAIN:?must set DOMAIN env var (e.g. brave.your-domain.com)}
+domain=${DOMAIN:?must set DOMAIN env var (e.g. firecrawl.your-domain.com)}
 
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"; }
@@ -19,6 +19,7 @@ preflight() {
   for port in 80 443; do
     ss -ltn "sport = :$port" | grep -q LISTEN && fail "TCP $port is already in use"
   done
+  ss -ltn "sport = :8767" | grep -q LISTEN && fail "TCP 8767 is already in use (another service on this host port?)"
   df -Pm / | awk 'NR==2 { exit ($4 < 2048) }' || fail "at least 2 GiB free disk is required"
   awk '/MemTotal/ { exit ($2 < 1048576) }' /proc/meminfo || fail "at least 1 GiB RAM is required"
 }

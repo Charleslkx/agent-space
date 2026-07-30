@@ -30,6 +30,15 @@ CLI_ENV = "BRAVE_MCP_BX_PATH"
 
 CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 CLAUDE_CODE_REDIRECT_URI_PATTERN = "http://localhost:*"
+WORKBUDDY_REDIRECT_URI = "workbuddy://workbuddy/mcp/custom-mcp%3Abrave-search/oauth/callback"
+ALLOWED_CLIENT_REDIRECT_URIS = [
+    "https://chatgpt.com/connector/oauth/*",
+    "https://chatgpt.com/connector_platform_oauth_redirect",
+    "https://claude.ai/api/mcp/auth_callback",
+    WORKBUDDY_REDIRECT_URI,
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+]
 MAX_ARGS = 128
 MAX_ARG_BYTES = 16 * 1024
 MAX_STDIN_BYTES = 1024 * 1024
@@ -109,13 +118,7 @@ def _auth_provider() -> GitHubProvider:
         base_url=_base_url(),
         resource_base_url=_base_url(),
         required_scopes=["read:user"],
-        allowed_client_redirect_uris=[
-            "https://chatgpt.com/connector/oauth/*",
-            "https://chatgpt.com/connector_platform_oauth_redirect",
-            "https://claude.ai/api/mcp/auth_callback",
-            "http://localhost:*",
-            "http://127.0.0.1:*",
-        ],
+        allowed_client_redirect_uris=ALLOWED_CLIENT_REDIRECT_URIS,
     )
 
 
