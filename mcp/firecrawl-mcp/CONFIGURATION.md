@@ -130,6 +130,8 @@ claude mcp add --transport http firecrawl https://{your-domain}/mcp
 
 ChatGPT、Claude.ai 或 Claude Desktop 使用其远程 Connector 界面添加相同 URL 并完成 GitHub OAuth。不要把远程 HTTP MCP 填入只支持本地 stdio 服务器的配置文件。给 agent 的传参规则和边界见 [AGENTS.md](AGENTS.md)。
 
+WorkBuddy Custom MCP 使用固定回调 URI `workbuddy://workbuddy/mcp/custom-mcp%3Afirecrawl/oauth/callback`；服务已将该精确 URI 加入 OAuth 白名单。
+
 ## 10 故障处理
 
 | 现象 | 检查项 |

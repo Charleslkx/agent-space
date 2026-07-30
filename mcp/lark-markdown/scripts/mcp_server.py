@@ -38,6 +38,15 @@ GITHUB_USER_ENV = "LARK_MCP_GITHUB_USER"  # Backward-compatible single-user sett
 GITHUB_JWT_SIGNING_KEY_ENV = "LARK_MCP_JWT_SIGNING_KEY"
 CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 CLAUDE_CODE_REDIRECT_URI_PATTERN = "http://localhost:*"
+WORKBUDDY_REDIRECT_URI = "workbuddy://workbuddy/mcp/custom-mcp%3Alark-markdown/oauth/callback"
+ALLOWED_CLIENT_REDIRECT_URIS = [
+    "https://chatgpt.com/connector/oauth/*",
+    "https://chatgpt.com/connector_platform_oauth_redirect",
+    "https://claude.ai/api/mcp/auth_callback",
+    WORKBUDDY_REDIRECT_URI,
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+]
 CLI_TIMEOUT_SECONDS = 60
 MAX_BATCH_ITEMS = 100
 DEFAULT_BATCH_CONCURRENCY = 4
@@ -206,13 +215,7 @@ def _auth_provider(mode: str = AUTH_MODE):
             base_url=base_url,
             resource_base_url=base_url,
             required_scopes=["read:user"],
-            allowed_client_redirect_uris=[
-                "https://chatgpt.com/connector/oauth/*",
-                "https://chatgpt.com/connector_platform_oauth_redirect",
-                "https://claude.ai/api/mcp/auth_callback",
-                "http://localhost:*",
-                "http://127.0.0.1:*",
-            ],
+            allowed_client_redirect_uris=ALLOWED_CLIENT_REDIRECT_URIS,
         )
     if mode == "none":
         return None

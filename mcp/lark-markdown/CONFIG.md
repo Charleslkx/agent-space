@@ -166,6 +166,8 @@ curl -fsS https://{your-domain}/.well-known/oauth-authorization-server
 
 Claude.ai、Claude Desktop、移动端和 Cowork 使用 OAuth 回调 `https://claude.ai/api/mcp/auth_callback`。在 Settings → Connectors 添加远程 MCP URL：`https://{your-domain}/mcp`。
 
+WorkBuddy 的 Custom MCP 使用固定回调 URI `workbuddy://workbuddy/mcp/custom-mcp%3Alark-markdown/oauth/callback`；服务已将该精确 URI 加入 OAuth 白名单。添加连接器后按 WorkBuddy 的 GitHub 授权流程完成登录。
+
 Claude Code 直接添加远程 HTTP MCP；它会发现 OAuth 并在 `/mcp` 中引导认证：
 
 ```bash
