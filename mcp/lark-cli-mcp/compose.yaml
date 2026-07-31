@@ -1,0 +1,100 @@
+services:
+  state-init:
+    image: busybox:1.37
+    user: "0:0"
+    command: ["sh", "-c", "chown -R 10001:10001 /state"]
+    volumes:
+      - lark-state:/state
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    restart: "no"
+
+  mcp:
+    build:
+      context: .
+      args:
+        LARK_CLI_VERSION: "1.0.81"
+    env_file: ${LARK_CLI_MCP_ENV_FILE:-/etc/lark-cli-mcp.env}
+    environment:
+      LARK_CLI_MCP_REDIS_HOST: redis
+      LARK_CLI_MCP_STATE_DIR: /var/lib/lark-cli
+      HOME: /var/lib/lark-cli
+      XDG_CONFIG_HOME: /var/lib/lark-cli/config
+      XDG_DATA_HOME: /var/lib/lark-cli/data
+    depends_on:
+      state-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8768:8765"
+    volumes:
+      - lark-state:/var/lib/lark-cli
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: 512m
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8765), 2).close()"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+  redis-init:
+    image: redis:7.4-alpine
+    user: "0:0"
+    command: ["sh", "-c", "chown -R 999:1000 /data"]
+    volumes:
+      - redis-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    restart: "no"
+
+  redis:
+    image: redis:7.4-alpine
+    user: "999:1000"
+    env_file: ${LARK_CLI_MCP_REDIS_ENV_FILE:-/etc/lark-cli-mcp.redis.env}
+    depends_on:
+      redis-init:
+        condition: service_completed_successfully
+    command: ["sh", "-ec", "exec redis-server --appendonly yes --requirepass \"$$LARK_CLI_MCP_REDIS_PASSWORD\""]
+    volumes:
+      - redis-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    mem_limit: 256m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$LARK_CLI_MCP_REDIS_PASSWORD\" ping | grep -qx PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  lark-state:
+  redis-data:
