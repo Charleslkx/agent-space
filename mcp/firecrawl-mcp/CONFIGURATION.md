@@ -49,8 +49,9 @@ OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `FIRECRAW
 | `FIRECRAWL_MCP_JWT_SIGNING_KEY` | MCP OAuth JWT 签名密钥 | `openssl rand -hex 32` | 轮换后**所有会话失效**，需重新授权 |
 | `FIRECRAWL_MCP_STORAGE_KEY` | Redis 中 OAuth 内容的 Fernet 密钥 | `openssl rand -base64 32` | 轮换后**所有会话失效**；备份 Redis 卷时必须同时备份这个密钥，否则无法解密恢复 |
 | `FIRECRAWL_MCP_REDIS_PASSWORD` | 内部 Redis 密码，两个 env 文件都要有且必须相同 | `openssl rand -hex 32` | 两边不一致会导致 MCP 容器连不上 Redis |
-| `FIRECRAWL_API_KEY` | Firecrawl API Key | [firecrawl.dev API Keys](https://www.firecrawl.dev/app/api-keys) | 缺失或失效时**每次工具调用**都会报明确错误，不会静默降级到 keyless 免费额度 |
-| `FIRECRAWL_MCP_UPDATE_CHECK` | 可选，设为 `0` 关闭后台版本检测 | 默认开启 | 关闭后 `update_available` 字段永不出现 |
+| `FIRECRAWL_API_KEY` | Firecrawl API Key | [firecrawl.dev API Keys](https://www.firecrawl.dev/app/api-keys) | 缺失时进程**启动即失败**；失效时每次调用报明确错误，不会静默降级到 keyless 免费额度 |
+| `FIRECRAWL_MCP_UPDATE_CHECK` | 可选，设为 `0` 关闭后台版本检测 | 默认开启 | 关闭后 `update_available` 字段永不出现，本地 `--version` 探测也不再执行 |
+| `FIRECRAWL_MCP_MAX_CONCURRENCY` | 可选，同时运行的 firecrawl 子进程上限，默认 8 | 自定 | 只在同步调大 compose 的 `mem_limit` / `pids_limit` 后才提高 |
 
 日常改 Key 用 `scripts/apikey.sh`，不要手改这个文件（见 §8）。
 
@@ -59,6 +60,8 @@ OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `FIRECRAW
 工具名 `firecrawl_cli(args, stdin?)`。`args` 是 `firecrawl` 后的参数数组，不能传 shell 字符串。
 
 **允许的命令**：`search`、`scrape`、`map`、`crawl`、`agent`、`research`（含其 `search-papers`/`inspect-paper`/`related-papers`/`read-paper`/`search-github` 子命令）、`credit-usage`；不带子命令时只允许 `--help`/`--version`/`--status`。
+
+命令必须是 `args[0]`，标志不能出现在它之前。这是结构性约束而非风格要求：如果靠扫描第一个非标志 token 来推断命令，那么任何接受值的根级选项都会吞掉这个 token，校验器看到的是 `search`、而 CLI 实际执行的是下一个——被拦命令就这样绕过白名单。把命令固定在 `args[0]`，两边看到的第一个 token 必然相同，与 CLI 有哪些根选项无关。
 
 **拒绝的命令及理由**：
 
@@ -78,9 +81,13 @@ OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `FIRECRAW
 
 每次调用在独立的 tmpfs 临时目录（`HOME`/`TMPDIR`/`cwd` 均指向它）中运行，调用结束（正常、非零退出或超时）后立即删除，不残留任何 `.firecrawl/` 或凭据缓存文件。
 
+**并发**：同时运行的 firecrawl 子进程上限为 `FIRECRAWL_MCP_MAX_CONCURRENCY`（默认 8），超出的调用排队最多 5 秒，之后返回 `server is at capacity`——该错误表示**本次没有执行任何请求**，可安全重试。这个上限管的是子进程数（内存、pid 和 tmpfs 的实际消耗方），不是请求数：FastMCP 的工作线程池仍会接纳 40 个并发调用，它们在这里排队。默认值配合 `mem_limit: 512m` / `pids_limit: 128` 留了余量，两者要一起调。
+
 ## 5 CLI 版本检测
 
-服务端每 6 小时后台异步查一次 GitHub Releases API（无认证，60 次/小时/IP 配额），发现新版本时给该次工具响应加一个 `update_available` 字段，不阻塞、不影响调用结果；查询失败静默重试，不抛出。CLI 自带的更新检查（会打 npm registry、写 `~/.firecrawl`、往 stderr 打通知）已通过 `FIRECRAWL_NO_UPDATE_CHECK=1` 关闭。设 `FIRECRAWL_MCP_UPDATE_CHECK=0` 可整体关闭本服务端的检测（离线部署）。
+服务端每 6 小时后台异步查一次 GitHub Releases API（无认证，60 次/小时/IP 配额），发现新版本时给该次工具响应加一个 `update_available` 字段，不阻塞、不影响调用结果；查询失败静默重试，不抛出。CLI 自带的更新检查（会打 npm registry、写 `~/.firecrawl`、往 stderr 打通知）已通过 `FIRECRAWL_NO_UPDATE_CHECK=1` 关闭。设 `FIRECRAWL_MCP_UPDATE_CHECK=0` 可整体关闭本服务端的检测（离线部署），包括本地版本探测。
+
+本地已装版本靠一次 `firecrawl --version` 子进程读取，结果进程内缓存，**整个进程生命周期最多跑一次**，冷启动的并发调用也只会触发一次。探测只在已经拿到 GitHub 侧版本号（有可比对象）时才发生；`FIRECRAWL_MCP_UPDATE_CHECK=0` 时完全不跑。探测失败会被记住而非反复重试——代价是该进程此后不再报告 `update_available`，重启即恢复。
 
 看到 `update_available` 后用 `scripts/update-cli.sh` 升级，见 §7。
 
@@ -140,7 +147,10 @@ WorkBuddy Custom MCP 使用固定回调 URI `workbuddy://workbuddy/mcp/custom-mc
 | GitHub 回调 404 | OAuth App callback、`FIRECRAWL_MCP_BASE_URL`、Nginx 全路径代理必须完全一致 |
 | 登录后被拒绝 | 检查 `FIRECRAWL_MCP_GITHUB_USERS` 的 GitHub login，而非显示名或邮箱 |
 | 重启后要求重新登录 | 检查 Redis 健康、持久卷、`FIRECRAWL_MCP_JWT_SIGNING_KEY`/`FIRECRAWL_MCP_STORAGE_KEY` 是否改变 |
-| `missing required environment variable: FIRECRAWL_API_KEY` | 用 `scripts/apikey.sh show` 确认 key 是否被删除或 env 文件没挂对 |
+| `missing required environment variable: FIRECRAWL_API_KEY` | 容器**启动**时就会报这条并退出（不再是每次调用才报）。用 `scripts/apikey.sh show` 确认 key 是否被删除或 env 文件没挂对；`restart: unless-stopped` 会让它反复重启，`docker compose logs mcp` 看第一条 |
+| `server is at capacity` | 并发子进程已满（`FIRECRAWL_MCP_MAX_CONCURRENCY`，默认 8）。**本次没有执行任何请求**，客户端直接重试即可；持续出现说明调用方并发过高或单次 crawl 过慢 |
+| 首次连接时 `/register` 返回 429 | nginx 对 DCR 注册端点限流（每 IP 10 次/分，可突发 6 次）。正常客户端每次安装只注册一次；等一分钟重试。多人同时从同一出口 IP 首次接入才可能撞上，需要时调大 `deploy/*.nginx.conf` 里的 `rate` |
+| `nginx: [emerg] limit_req_zone "..." is already bound` | 同机多个 MCP 的站点配置用了相同的 zone 名。每个服务必须用自己的 `map` 变量名和 zone 名（`brave_register` / `firecrawl_register` / `lark_register`），否则整台机器上所有站点一起起不来 |
 | stderr 出现 401/403 或 "unauthorized" | 服务端 Key 无效或权限不足，`scripts/apikey.sh verify` 排查 |
 | stderr 出现 402 或 "credit" | 账号额度用尽，去 Firecrawl 控制台充值/等待重置 |
 | stderr 出现 429 或 "rate limit" | 触发限流，客户端退避重试 |

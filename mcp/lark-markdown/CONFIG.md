@@ -43,11 +43,13 @@ PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s scripts -p 'test
 uv lock --check
 ```
 
-本地 HTTP 服务只监听回环地址，因此可以不设 MCP Token：
+HTTP 传输在没有配置认证时拒绝启动。回环绑定不构成安全边界 —— 服务器部署正是 nginx 反代 `127.0.0.1:8765`，漏配 `LARK_MCP_AUTH_MODE` 就等于把可读写全部飞书文档的服务暴露到公网。本机跑一次冒烟测试可以显式豁免：
 
 ```bash
-uv run python scripts/mcp_server.py --transport http --host 127.0.0.1 --port 8765
+uv run python scripts/mcp_server.py --transport http --host 127.0.0.1 --port 8765 --allow-unauthenticated
 ```
+
+`--allow-unauthenticated` 仅限没有任何反向代理的开发机，绝不写进服务器的 systemd `ExecStart`。
 
 ## Codex 安装
 
@@ -74,9 +76,10 @@ codex mcp get lark-markdown
 | `LARK_MCP_JWT_SIGNING_KEY` | OAuth 必需 | 至少 32 字节的独立随机值，用于签发 MCP OAuth Token |
 | `LARK_MCP_AUTH_TOKEN` | `token` 模式必需 | 至少 32 字符；不适用于不接受自定义 Authorization header 的客户端 |
 | `LARK_MCP_AUTH_TOKEN_FILE` | `token` 模式推荐 | 存放 Token 的普通文件；须由服务用户所有且权限为 `0600` 或更严格；不得与 `LARK_MCP_AUTH_TOKEN` 同时设置 |
-| 工作目录 | 必需 | 服务固定在项目根目录创建 `.lark_publish/.run-*`，每次调用后删除 |
+| 工作目录 | 必需 | 服务固定在项目根目录创建 `.lark_publish/.run-*`；每次调用后删除 `.run-*`，`.lark_publish` 本身保留（并发下删空目录会与其他调用抢占） |
 | TCP 8765 | 可改 | `--port` 设置；公网只开放反向代理的 443 |
 | TLS 证书与私钥 | 直接公网模式必需 | 通过 `--tls-cert`、`--tls-key` 传入 |
+| `--allow-unauthenticated` | 仅本地开发 | HTTP 传输未配置认证时默认拒绝启动；该开关是唯一的豁免，不要用于任何被反向代理的实例 |
 
 固定边界：单批 100 项、正文 10 MiB、媒体 20 MiB、每次 `lark-cli` 60 秒。更大的文件应先拆分；不要提高限制来绕过反向代理或飞书 API 的约束。
 
@@ -115,6 +118,19 @@ uv run python scripts/mcp_server.py --transport http --host 127.0.0.1 --port 876
 Nginx 站点配置的关键项：
 
 ```nginx
+# DCR 注册端点按协议不需要认证，而 FastMCP 存客户端注册时不设 TTL（它写的其他条目都设了）。
+# 不限流的话，单台主机就能把 Redis 撑满，最终锁死白名单里的合法用户。合法客户端每次安装
+# 只注册一次，这个额度足够宽松。
+# map 的空值是关键：limit_req 的 key 为空时 nginx 不计数，因此其他路径完全不受影响，
+# 也不必把 proxy 块复制成第二个 location。
+# 变量名和 zone 名带服务前缀是必须的 —— 同机的 brave/firecrawl/lark 共用一个 nginx，
+# zone 重名会让 `nginx -t` 直接失败，一次性拖垮该主机上所有站点。
+map $request_uri $lark_register_key {
+    default      "";
+    ~^/register  $binary_remote_addr;
+}
+limit_req_zone $lark_register_key zone=lark_register:1m rate=10r/m;
+
 server {
     listen 443 ssl http2;
     server_name {your-domain};
@@ -124,6 +140,8 @@ server {
 
     # OAuth discovery、DCR、callback 与 /mcp 都必须转发。
     location / {
+        limit_req zone=lark_register burst=5 nodelay;
+        limit_req_status 429;
         proxy_pass http://127.0.0.1:8765;
         proxy_http_version 1.1;
         proxy_buffering off;
@@ -149,8 +167,28 @@ Environment=XDG_DATA_HOME=/var/lib/lark-markdown
 StateDirectory=lark-markdown
 ExecStart=/opt/lark-markdown/.venv/bin/python scripts/mcp_server.py --transport http --host 127.0.0.1 --port 8765
 Restart=on-failure
+RestartSec=2
+StartLimitIntervalSec=60
+StartLimitBurst=3
 NoNewPrivileges=true
 PrivateTmp=true
+```
+
+`ExecStart` 里**不得**出现 `--allow-unauthenticated`。认证配置缺失时进程会拒绝启动，`StartLimitBurst` 让它在 3 次失败后停在 `failed` 而不是无限重启（systemd 默认是 10 秒内 5 次）。排查：
+
+```bash
+systemctl status lark-markdown-mcp.service
+journalctl -u lark-markdown-mcp.service -n 30 --no-pager
+```
+
+看到 `HTTP transport requires configured authentication` 就是 `EnvironmentFile` 没被读到或 `LARK_MCP_AUTH_MODE` 拼错 —— 这是设计内的 fail-closed，修配置后 `systemctl reset-failed` 再启动。
+
+`WorkingDirectory` 必须对服务账户可写：运行期载荷写在 `/opt/lark-markdown/.lark_publish/.run-*`，调用结束即删，父目录常驻。若后续加 `ProtectSystem=strict` 之类的加固，必须同时 `ReadWritePaths=/opt/lark-markdown/.lark_publish`。
+
+`schedule_mcp_restart` 工具依赖服务账户能免密执行重启，否则该工具会失败（其他功能不受影响）：
+
+```
+lark-markdown ALL=(root) NOPASSWD: /usr/bin/systemctl restart lark-markdown-mcp.service
 ```
 
 该服务账户必须单独完成一次 `lark-cli auth login`；凭据写入 `StateDirectory`，服务重启后继续使用。MCP 仅在冷启动、15 分钟缓存到期或调用方明确要求时执行 `auth status --verify`，不在每次文档操作前刷新授权。飞书撤销授权或刷新令牌失效时才需要再次授权。防火墙只开放 443，不开放 8765。
@@ -161,6 +199,23 @@ PrivateTmp=true
 curl -fsS https://{your-domain}/.well-known/oauth-protected-resource/mcp
 curl -fsS https://{your-domain}/.well-known/oauth-authorization-server
 ```
+
+### 升级已部署的实例
+
+服务无状态可重建：飞书凭据在 `StateDirectory`，认证配置在 `EnvironmentFile`，两者都不在代码目录里，所以升级只是替换代码目录再重启。在服务器上执行：
+
+```bash
+cd /opt/lark-markdown
+sudo -u lark-markdown git pull            # 或 rsync -a --delete 排除 .venv/.lark_publish
+sudo -u lark-markdown uv sync --frozen
+sudo -u lark-markdown env PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s scripts -p 'test_*.py'
+sudo systemctl restart lark-markdown-mcp.service
+systemctl is-active lark-markdown-mcp.service
+```
+
+测试必须在服务器上跑一遍：其中的并发用例会在 `WorkingDirectory` 里做真实文件读写，能同时验证目录权限和临时载荷回收。测试全绿再重启。
+
+重启后残留的 `.run-*` 由下一次启动清理（只清超过 `2 × CLI_TIMEOUT_SECONDS` 的目录，避免误删另一实例正在写的载荷），无需手工删除。
 
 在 ChatGPT 的 Settings → Apps & Connectors → Advanced settings 启用 Developer mode，然后到 Settings → Connectors → Create，填写名称 `Lark-Markdown`、用途说明和 `https://{your-domain}/mcp`。ChatGPT 完成 OAuth 后会列出服务器注册的工具。服务器不能替用户把 connector 写入 ChatGPT 账户；面向其他用户公开分发时还需提交并发布 app 版本。
 

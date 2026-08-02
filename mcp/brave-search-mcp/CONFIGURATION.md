@@ -51,18 +51,23 @@ OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `BRAVE_MC
 | `BRAVE_MCP_STORAGE_KEY` | Redis 中 OAuth 内容的 Fernet 密钥 | `openssl rand -base64 32` |
 | `BRAVE_MCP_REDIS_PASSWORD` | 内部 Redis 密码 | `openssl rand -hex 32` |
 | `BRAVE_SEARCH_API_KEY` | Brave Search API Key | Brave API Dashboard |
+| `BRAVE_MCP_MAX_CONCURRENCY` | 可选，同时运行的 bx 子进程上限，默认 16 | 只在同步调大 compose 的 `mem_limit` / `pids_limit` 后才提高 |
 
 签名密钥或存储密钥轮换会使现有 OAuth 会话失效；先通知用户，再轮换并重启 Compose。Redis 卷保存加密状态，备份时同时保管这两个密钥，否则无法恢复。
+
+`BRAVE_SEARCH_API_KEY` 缺失或 `bx` 不在 PATH 时，进程**启动即失败**并打印原因，不会带着一个每次调用都报错的服务通过健康检查（健康检查只探测端口）。
 
 ## 4 CLI 透传规则
 
 工具名为 `brave_search_cli(args, stdin?)`。`args` 是 `bx` 后的参数列表，不能传入 shell 字符串。
 
-允许 `context`、`answers`、`web`、`news`、`images`、`videos`、`places`、`suggest`、`spellcheck`、`pois`、`descriptions`、`--extra`、`--endpoint`、`--goggles @-` 和 HTTPS Goggles。`answers -` 可通过 `stdin` 传入完整 JSON。
+`args[0]` 必须是子命令，且只允许 `web`、`news`、`images`、`videos` 四个（本部署套餐 2026-07-22 实测的开放范围）；此外只接受形如 `["--help"]`、`["--version"]` 的纯标志调用。标志不能出现在子命令之前——扫描第一个非标志 token 来推断命令，会让本校验器和 clap 对「哪个 token 是命令」产生分歧，白名单正是这样被绕过的。裸查询 `["关键词"]` 也会被拒，因为 bx 会把它路由到不可用的 `context`。
 
-服务拒绝 `config`、`--api-key`、`--config`、`--base-url` 和本地 `--goggles @文件`。这些选项会修改服务器配置、替换服务端凭据或读取容器文件，不属于搜索面透传。
+被拒绝的还有 `config`、`--api-key`、`--config`、`--base-url` 和本地 `--goggles @文件`：它们会修改服务器配置、替换服务端凭据或读取容器内文件。`--goggles @-`（stdin）和 HTTPS Goggles 仍然可用。
 
-单次调用最多 128 个参数、stdin 1 MiB、stdout/stderr 各 10 MiB，超时为 180 秒。CLI 的非零退出码照常返回；只有 MCP 输入边界、缺少二进制和输出超限会成为 MCP 工具错误。
+单次调用最多 128 个参数、stdin 1 MiB，超时 180 秒。stdout/stderr 超过 10 MiB 时**截断保留**并附带 `truncated`、`original_bytes`、`hint` 字段，不再整体丢弃。CLI 的非零退出码照常返回；只有 MCP 输入边界、缺少二进制和并发满载会成为 MCP 工具错误。
+
+并发上限为 `BRAVE_MCP_MAX_CONCURRENCY`（默认 16）个同时运行的 bx 进程，超出的调用排队最多 5 秒，之后返回 `server is at capacity`——该错误表示**本次没有执行任何请求**，可安全重试。这个上限管的是子进程数（内存和 pid 的实际消耗方），不是请求数：FastMCP 的工作线程池仍会接纳 40 个并发调用，它们在这里排队。
 
 ## 5 Ubuntu 部署与 TLS
 
@@ -102,4 +107,8 @@ WorkBuddy Custom MCP 使用固定回调 URI `workbuddy://workbuddy/mcp/custom-mc
 | 登录后被拒绝 | 检查 `BRAVE_MCP_GITHUB_USERS` 的 GitHub login，而非显示名或邮箱 |
 | 重启后要求重新登录 | 检查 Redis 健康、持久卷、JWT 密钥和存储密钥是否改变 |
 | bx 返回 3/4/5 | 分别检查 Brave API Key/套餐、限流和网络；MCP 会保留 bx 的 stderr |
+| 容器反复重启且日志第一条是 `missing required environment variable` 或 `bx is not installed` | 启动前置检查失败。补齐 env 文件或镜像里的 bx，不要靠健康检查发现——它只探测端口 |
+| `server is at capacity` | 并发子进程已满（`BRAVE_MCP_MAX_CONCURRENCY`，默认 16）。**本次没有执行任何请求**，直接重试即可 |
+| 首次连接时 `/register` 返回 429 | nginx 对 DCR 注册端点限流（每 IP 10 次/分，可突发 6 次）。正常客户端每次安装只注册一次；等一分钟重试。多人同时从同一出口 IP 首次接入才可能撞上，需要时调大 `deploy/*.nginx.conf` 里的 `rate` |
+| `args[0] must be ...` / 命令被拒 | 标志不能放在子命令前面；`context`/`answers`/`places`/`suggest`/`spellcheck` 不在套餐内，已在本地拒绝 |
 | 502 | `docker compose ps`、`docker compose logs mcp`、Nginx error log 和宿主机 8766 监听状态 |

@@ -56,6 +56,12 @@ MAX_STDIN_BYTES = 1024 * 1024
 MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 TIMEOUT_SECONDS = 180
 
+# ponytail: caps concurrent firecrawl processes, not requests -- the anyio
+# worker pool still admits 40 callers, they just queue here. Kept well under the
+# container's mem_limit/pids_limit; raise both together or not at all.
+MAX_CONCURRENT_CALLS = max(1, int(os.environ.get("FIRECRAWL_MCP_MAX_CONCURRENCY", "8")))
+ACQUIRE_TIMEOUT_SECONDS = 5
+
 # Subcommands that reach the CLI. Everything else either manages local
 # credentials/config, writes to local disk, opens a persistent remote
 # browser session, or builds standing infrastructure (scheduled jobs,
@@ -199,7 +205,8 @@ mcp = FastMCP(
     version="0.1.0",
     instructions=(
         "Use firecrawl_cli to run search/scrape/map/crawl/agent/research/credit-usage through the "
-        "Firecrawl CLI; other subcommands are unavailable (see tool description). "
+        "Firecrawl CLI; other subcommands are unavailable (see tool description). The subcommand "
+        "must be args[0] -- flags may not precede it. "
         "Use firecrawl_skill(name) for deeper reference docs when the compact tool description isn't enough."
     ),
     website_url=_base_url(),
@@ -221,8 +228,6 @@ def _validate_args(args: list[str], stdin: str | None) -> None:
     if stdin is not None and len(stdin.encode()) > MAX_STDIN_BYTES:
         raise ValueError(f"stdin exceeds {MAX_STDIN_BYTES} bytes")
 
-    positional_seen = False
-    command = None
     for arg in args:
         if not isinstance(arg, str):
             raise ValueError("every argument must be a string")
@@ -236,27 +241,23 @@ def _validate_args(args: list[str], stdin: str | None) -> None:
         if arg in BLOCKED_BOOLEAN_FLAGS:
             raise ValueError(f"{arg} is unavailable through this MCP: {BLOCKED_BOOLEAN_FLAGS[arg]}")
 
-        if positional_seen:
-            continue
-        if arg.startswith("-"):
-            continue
+    if args and all(arg in NO_COMMAND_FLAGS for arg in args):
+        return
 
-        positional_seen = True
-        command = arg
-        if command in BLOCKED_COMMAND_REASONS:
-            raise ValueError(f"'{command}' is unavailable through this MCP: {BLOCKED_COMMAND_REASONS[command]}")
-        if command not in ALLOWED_COMMANDS:
-            raise ValueError(
-                f"'{command}' is not an allowed command. Allowed: {sorted(ALLOWED_COMMANDS)}. "
-                "See the tool description for the full list of blocked commands and why."
-            )
-
-    if not positional_seen:
-        if not args or not all(arg in NO_COMMAND_FLAGS for arg in args):
-            raise ValueError(
-                "no recognized subcommand; args must start with one of "
-                f"{sorted(ALLOWED_COMMANDS)}, or be exactly one of {sorted(NO_COMMAND_FLAGS)}"
-            )
+    # The command must be args[0]. Scanning for the first non-flag token instead
+    # would let this validator and the CLI's own parser disagree about which one
+    # it is -- any root-level option taking a value would swallow the token this
+    # sees as the command, and the CLI would run the *next* one.
+    command = args[0] if args else None
+    if command in BLOCKED_COMMAND_REASONS:
+        raise ValueError(f"'{command}' is unavailable through this MCP: {BLOCKED_COMMAND_REASONS[command]}")
+    if command not in ALLOWED_COMMANDS:
+        raise ValueError(
+            f"args[0] must be the subcommand, but got {command!r}. Allowed: {sorted(ALLOWED_COMMANDS)}, "
+            f"or exactly one of {sorted(NO_COMMAND_FLAGS)}. Flags may not precede the subcommand -- "
+            "move them after it, e.g. [\"search\", \"query\", \"--limit\", \"5\"]. "
+            "See the tool description for the full list of blocked commands and why."
+        )
 
 
 def _cli_path() -> str:
@@ -284,8 +285,13 @@ def _child_env(workdir: str) -> dict[str, str]:
 # Background, best-effort CLI version check. Never blocks or fails a tool
 # call: any network/parse error is swallowed and simply retried later.
 # ---------------------------------------------------------------------------
+_CALL_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_CALLS)
 _VERSION_LOCK = threading.Lock()
-_INSTALLED_VERSION: str | None = None
+_PROBE_LOCK = threading.Lock()
+_UNPROBED = "<unprobed>"
+# _UNPROBED vs None matters: None means "probed, could not tell", and caching it
+# is what stops the probe from re-running on every single tool call.
+_INSTALLED_VERSION: str | None = _UNPROBED
 _LATEST_STATE = {"version": None, "checked_at": 0.0, "checking": False}
 _UPDATE_CHECK_INTERVAL_SECONDS = 6 * 60 * 60
 _LATEST_RELEASE_URL = "https://api.github.com/repos/firecrawl/cli/releases/latest"
@@ -296,24 +302,30 @@ def _installed_version() -> str | None:
     # own update-notice check before Commander prints the version and exits, so this must go
     # through the same disposable-HOME + FIRECRAWL_NO_UPDATE_CHECK path as a real tool call.
     global _INSTALLED_VERSION
-    if _INSTALLED_VERSION is not None:
+    if _INSTALLED_VERSION is not _UNPROBED:
         return _INSTALLED_VERSION
-    try:
-        with tempfile.TemporaryDirectory(dir="/tmp") as workdir:
-            result = subprocess.run(
-                [_cli_path(), "--version"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                cwd=workdir,
-                env=_child_env(workdir),
-                check=False,
-            )
-        version = result.stdout.strip() or result.stderr.strip()
-        _INSTALLED_VERSION = version or None
-    except Exception:  # noqa: BLE001 - version probing must never break the server
-        _INSTALLED_VERSION = None
-    return _INSTALLED_VERSION
+    # ponytail: the lock serialises a cold start's concurrent callers onto one
+    # probe instead of one each. It is held across a subprocess, which is fine
+    # because it runs at most once per process.
+    with _PROBE_LOCK:
+        if _INSTALLED_VERSION is not _UNPROBED:
+            return _INSTALLED_VERSION
+        try:
+            with tempfile.TemporaryDirectory(dir="/tmp") as workdir:
+                result = subprocess.run(
+                    [_cli_path(), "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    cwd=workdir,
+                    env=_child_env(workdir),
+                    check=False,
+                )
+            version = result.stdout.strip() or result.stderr.strip()
+            _INSTALLED_VERSION = version or None
+        except Exception:  # noqa: BLE001 - version probing must never break the server
+            _INSTALLED_VERSION = None
+        return _INSTALLED_VERSION
 
 
 def _parse_version(text: str) -> tuple[int, ...] | None:
@@ -346,22 +358,32 @@ def _refresh_latest_version() -> None:
 
 
 def _maybe_start_update_check() -> None:
-    if os.environ.get(UPDATE_CHECK_ENV, "1") == "0":
-        return
     with _VERSION_LOCK:
         stale = (time.time() - _LATEST_STATE["checked_at"]) > _UPDATE_CHECK_INTERVAL_SECONDS
         if not stale or _LATEST_STATE["checking"]:
             return
         _LATEST_STATE["checking"] = True
-    threading.Thread(target=_refresh_latest_version, daemon=True).start()
+    try:
+        threading.Thread(target=_refresh_latest_version, daemon=True).start()
+    except RuntimeError:
+        # Could not spawn the thread; clear the flag so a later call retries
+        # instead of leaving the check wedged as "in progress" forever.
+        with _VERSION_LOCK:
+            _LATEST_STATE["checking"] = False
 
 
 def _update_available() -> str | None:
+    if os.environ.get(UPDATE_CHECK_ENV, "1") == "0":
+        return None
     _maybe_start_update_check()
-    installed = _installed_version()
     with _VERSION_LOCK:
         latest = _LATEST_STATE["version"]
-    if not installed or not latest:
+    # Probe the local CLI only when there is something to compare it against.
+    # The probe is a subprocess on the critical path of every tool call.
+    if not latest:
+        return None
+    installed = _installed_version()
+    if not installed:
         return None
     installed_parsed = _parse_version(installed)
     latest_parsed = _parse_version(latest)
@@ -386,7 +408,8 @@ def firecrawl_cli(args: list[str], stdin: str | None = None) -> dict:
     """Pass args to the firecrawl CLI; returns its stdout, stderr, and exit code unmodified.
 
     `args` is the argument array after "firecrawl" (not a shell string, don't include "firecrawl"
-    itself). Pass URLs as a single element, unquoted. `stdin` is rarely needed by these commands.
+    itself). **args[0] must be the subcommand** -- flags may not precede it. Pass URLs as a single
+    element, unquoted. `stdin` is rarely needed by these commands.
 
     ## Allowed commands, key flags, and a ready-to-use example
 
@@ -430,7 +453,7 @@ def firecrawl_cli(args: list[str], stdin: str | None = None) -> dict:
     is NOT discarded, just cut off — narrow with `--limit` or a single `--format` and retry);
     `hint` on truncation or timeout with a concrete next step; `update_available` with the latest
     version string when a newer firecrawl CLI release exists (mention it to the user, do not try to
-    upgrade yourself).
+    upgrade yourself). A "server is at capacity" error means nothing ran -- retry in a few seconds.
 
     ## Reading stderr
 
@@ -448,33 +471,43 @@ def firecrawl_cli(args: list[str], stdin: str | None = None) -> dict:
     _validate_args(args, stdin)
     update_available = _update_available()
 
-    with tempfile.TemporaryDirectory(dir="/tmp") as workdir:
-        try:
-            result = subprocess.run(
-                [_cli_path(), *args],
-                input=stdin,
-                text=True,
-                capture_output=True,
-                timeout=TIMEOUT_SECONDS,
-                cwd=workdir,
-                env=_child_env(workdir),
-                check=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            response = {
-                "exit_code": None,
-                "stdout": error.stdout or "",
-                "stderr": error.stderr or "",
-                "timed_out": True,
-                "hint": (
-                    "Timed out after "
-                    f"{TIMEOUT_SECONDS}s. For crawl/agent, drop --wait and poll with "
-                    "[\"crawl\", \"<jobId>\", \"--status\"] instead."
-                ),
-            }
-            if update_available:
-                response["update_available"] = update_available
-            return response
+    if not _CALL_SLOTS.acquire(timeout=ACQUIRE_TIMEOUT_SECONDS):
+        raise RuntimeError(
+            f"server is at capacity ({MAX_CONCURRENT_CALLS} concurrent firecrawl calls); "
+            "nothing ran, retry in a few seconds"
+        )
+    try:
+        with tempfile.TemporaryDirectory(dir="/tmp") as workdir:
+            try:
+                result = subprocess.run(
+                    [_cli_path(), *args],
+                    input=stdin,
+                    text=True,
+                    capture_output=True,
+                    timeout=TIMEOUT_SECONDS,
+                    cwd=workdir,
+                    env=_child_env(workdir),
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as error:
+                response = {
+                    "exit_code": None,
+                    "stdout": error.stdout or "",
+                    "stderr": error.stderr or "",
+                    "timed_out": True,
+                    "hint": (
+                        "Timed out after "
+                        f"{TIMEOUT_SECONDS}s. For crawl/agent, drop --wait and poll with "
+                        "[\"crawl\", \"<jobId>\", \"--status\"] instead."
+                    ),
+                }
+                if update_available:
+                    response["update_available"] = update_available
+                return response
+            except OSError as error:
+                raise RuntimeError(f"could not run firecrawl: {error}") from error
+    finally:
+        _CALL_SLOTS.release()
 
     response: dict = {
         "exit_code": result.returncode,
@@ -483,7 +516,13 @@ def firecrawl_cli(args: list[str], stdin: str | None = None) -> dict:
         "timed_out": False,
     }
     for key in ("stdout", "stderr"):
-        encoded = response[key].encode()
+        text = response[key]
+        # 4 bytes is UTF-8's per-character ceiling, so anything shorter than a
+        # quarter of the cap cannot be oversized -- skip the encode, which is a
+        # full second copy of the output and is paid on every single call.
+        if len(text) <= MAX_OUTPUT_BYTES // 4:
+            continue
+        encoded = text.encode()
         if len(encoded) > MAX_OUTPUT_BYTES:
             response[key] = encoded[:MAX_OUTPUT_BYTES].decode(errors="ignore")
             response["truncated"] = True
@@ -530,6 +569,11 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
+    # Fail at boot rather than on every call: otherwise a missing key or a
+    # missing CLI leaves the container healthy (the healthcheck only opens a
+    # socket) while every tool call fails.
+    _required("FIRECRAWL_API_KEY")
+    _cli_path()
     mcp.run(transport="http", host=args.host, port=args.port)
 
 

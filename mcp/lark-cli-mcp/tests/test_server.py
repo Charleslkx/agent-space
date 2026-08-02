@@ -44,7 +44,7 @@ def write_fake_cli(directory: str, body: str) -> Path:
 
 class ServerTest(unittest.TestCase):
     def setUp(self):
-        SERVER._INSTALLED_VERSION = None
+        SERVER._INSTALLED_VERSION = SERVER._UNPROBED
 
     def test_tools_are_registered(self):
         import asyncio
@@ -168,6 +168,101 @@ class ServerTest(unittest.TestCase):
             SERVER.lark_cli_skill("read")
         with self.assertRaises(ValueError):
             SERVER.lark_cli_skill("dump", "lark-doc")
+
+    def test_skill_path_cannot_smuggle_a_flag_into_argv(self):
+        # lark_cli_skill builds argv directly and never routes through
+        # _validate_args, so a path that looks like a flag would reintroduce
+        # exactly the options _validate_args exists to block.
+        for path in ("--profile=other", "-o", "--output=/tmp/x", "-", "@/etc/passwd"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                SERVER._validate_skill_path(path, required=True)
+        # a dash inside a segment is a legitimate skill path and stays allowed
+        self.assertEqual(SERVER._validate_skill_path("lark-doc/references/a-b.md"),
+                         "lark-doc/references/a-b.md")
+
+    def test_at_file_is_blocked_in_the_equals_form_too(self):
+        # lark-cli expands @file from the parsed flag value, so both spellings
+        # reach the same code path inside the CLI.
+        for args in (
+            ["api", "POST", "/x", "--data=@payload.json"],
+            ["docs", "+update", "--content=@/etc/passwd"],
+        ):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                SERVER._validate_args(args, None)
+        SERVER._validate_args(["api", "POST", "/x", "--data=@-"], "{}")
+
+    def test_event_timeout_ceiling_cannot_be_dodged(self):
+        for args in (
+            # a flag value standing in for the subcommand used to skip the check
+            ["event", "--timeout", "99h", "consume", "im.message.receive_v1"],
+            # Cobra keeps the last --timeout; reading only the first missed this
+            ["event", "consume", "im.message.receive_v1", "--timeout", "1s", "--timeout", "99h"],
+            ["event", "consume", "im.message.receive_v1", "--timeout=99h"],
+        ):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                SERVER._validate_args(args, None)
+        SERVER._validate_args(["event", "consume", "im.message.receive_v1", "--timeout", "150s"], None)
+
+    def test_command_and_subcommand_must_lead_the_args(self):
+        for args in (["--as", "user", "calendar", "+agenda"], ["-q", ".x", "docs", "+fetch"]):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                SERVER._validate_args(args, None)
+
+    def test_concurrent_calls_are_capped_and_slots_are_returned(self):
+        import threading as _threading
+        with tempfile.TemporaryDirectory() as directory:
+            fake = write_fake_cli(directory, "echo ok")
+            environment = {
+                SERVER.CLI_ENV: str(fake), SERVER.UPDATE_CHECK_ENV: "0", SERVER.STATE_DIR_ENV: directory,
+            }
+            with patch.object(SERVER, "_CALL_SLOTS", _threading.BoundedSemaphore(1)), \
+                 patch.object(SERVER, "ACQUIRE_TIMEOUT_SECONDS", 0.05), \
+                 patch.dict(os.environ, environment, clear=False):
+                SERVER._CALL_SLOTS.acquire()
+                with self.assertRaisesRegex(RuntimeError, "at capacity"):
+                    SERVER.lark_cli(["calendar", "+agenda"])
+                SERVER._CALL_SLOTS.release()
+                # the slot is released even though the call raised
+                self.assertEqual(SERVER.lark_cli(["calendar"])["stdout"], "ok\n")
+                self.assertEqual(SERVER.lark_cli(["calendar"])["stdout"], "ok\n")
+
+    def test_version_is_probed_once_even_when_the_cli_reports_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "invocations"
+            log.write_text("")
+            fake = write_fake_cli(directory, f'echo "$*" >> {log}\n[ "$1" = "--version" ] && exit 0\necho ok')
+            with patch.dict(os.environ, {
+                SERVER.CLI_ENV: str(fake), SERVER.UPDATE_CHECK_ENV: "1", SERVER.STATE_DIR_ENV: directory,
+            }, clear=False), patch.dict(
+                SERVER._LATEST_STATE, {"version": "9.9.9", "checked_at": time.time(), "checking": False}
+            ):
+                for _ in range(4):
+                    SERVER.lark_cli(["calendar"])
+            probes = [line for line in log.read_text().splitlines() if line.strip() == "--version"]
+        self.assertEqual(len(probes), 1)
+
+    def test_disabled_update_check_also_skips_the_version_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "invocations"
+            log.write_text("")
+            fake = write_fake_cli(directory, f'echo "$*" >> {log}\necho ok')
+            with patch.dict(os.environ, {
+                SERVER.CLI_ENV: str(fake), SERVER.UPDATE_CHECK_ENV: "0", SERVER.STATE_DIR_ENV: directory,
+            }, clear=False):
+                SERVER.lark_cli(["calendar"])
+            invocations = [line for line in log.read_text().splitlines() if line]
+        self.assertEqual(invocations, ["calendar"])
+
+    def test_unspawnable_argv_becomes_a_clear_error(self):
+        oversized = ["calendar", *(["x" * SERVER.MAX_ARG_BYTES] * (SERVER.MAX_ARGS - 1))]
+        SERVER._validate_args(oversized, None)  # within the documented limits
+        with tempfile.TemporaryDirectory() as directory:
+            fake = write_fake_cli(directory, "echo ok")
+            with patch.dict(os.environ, {
+                SERVER.CLI_ENV: str(fake), SERVER.UPDATE_CHECK_ENV: "0", SERVER.STATE_DIR_ENV: directory,
+            }, clear=False):
+                with self.assertRaisesRegex(RuntimeError, "could not run lark-cli"):
+                    SERVER.lark_cli(oversized)
 
     def test_update_info_only_when_newer(self):
         SERVER._INSTALLED_VERSION = "1.0.81"

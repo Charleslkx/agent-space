@@ -38,6 +38,8 @@ Full flag tables live in the `firecrawl_cli` tool description itself (call `tool
 ## 3. Parameter rules
 
 - `args` is the argument array **after** `firecrawl` — not a shell string, don't include `firecrawl` itself. `firecrawl_cli(["search", "my query", "--limit", "5"])`.
+- **The subcommand must be `args[0]`** — flags may not precede it. `["--limit", "5", "search", "q"]` is rejected; write `["search", "q", "--limit", "5"]`.
+- A `server is at capacity` error means nothing ran — retry in a few seconds.
 - Pass URLs as their own array element, unquoted — the array boundary already does what shell-quoting would.
 - Inline JSON, not files: `--schema`, `--actions`, `--scrape-options` take inline JSON strings (`--schema '{"type":"object",...}'`). Their `*-file` counterparts (`--schema-file` etc.) are blocked — there's no shared filesystem between you and this server.
 - Results come back in the tool response's `stdout` field, not written anywhere. `-o/--output` is blocked for the same reason.

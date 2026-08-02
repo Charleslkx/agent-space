@@ -47,7 +47,13 @@ LARK_CLI_MCP_JWT_SIGNING_KEY=64位十六进制值
 LARK_CLI_MCP_STORAGE_KEY=Fernet URL-safe base64值
 LARK_CLI_MCP_REDIS_PASSWORD=Redis密码
 LARK_CLI_MCP_UPDATE_CHECK=1
+# 可选：同时运行的 lark-cli 子进程上限，默认 8
+# LARK_CLI_MCP_MAX_CONCURRENCY=8
 ```
+
+`LARK_CLI_MCP_MAX_CONCURRENCY` 限制的是子进程数而不是请求数：FastMCP 的工作线程池仍会接纳 40 个并发调用，超出上限的在服务端排队最多 5 秒，之后返回 `server is at capacity`（该错误表示本次没有执行任何请求，可安全重试）。因为所有 lark-cli 进程共用 `lark-state` 卷里的同一份凭据存储，这个上限同时也限制了并发触碰凭据的进程数。要调大必须同步调大 compose 的 `mem_limit` 和 `pids_limit`。
+
+`lark-cli` 不在 PATH、或 `LARK_CLI_MCP_STATE_DIR` 不存在/不可读写时，进程**启动即失败**并打印原因，不会带着一个每次调用都失败的服务通过健康检查（健康检查只探测端口）。
 
 创建 `/etc/lark-cli-mcp.redis.env`，权限 0600，只包含同一份 Redis 密码：
 
@@ -176,6 +182,11 @@ sudo scripts/update-cli.sh 1.0.82
 | 飞书 403/scope 错误 | 根据身份检查后台 bot scope 或用户授权，使用错误中的 `console_url` |
 | 退出码 10 | 高风险写操作等待用户确认；确认后原 argv 末尾追加 `--yes` |
 | 502 | `sudo docker compose ps`、`sudo docker compose logs mcp`、Nginx error log、宿主 8768 |
+| 容器反复重启，日志第一条是 `lark-cli is not installed` 或 `must exist and be readable/writable` | 启动前置检查失败。补齐镜像里的 lark-cli，或检查 `lark-state` 卷的属主（`state-init` 应已 chown 到 10001） |
+| `server is at capacity` | 并发子进程已满（`LARK_CLI_MCP_MAX_CONCURRENCY`，默认 8）。**本次没有执行任何请求**，直接重试 |
+| 参数被拒且提示 `args[0]` / `args[1]` | 命令和子命令必须分别是 args[0]、args[1]，标志不能前置。这不是风格要求：标志的值会顶替命令位置，让校验器和 Cobra 对「哪个 token 是命令」产生分歧 |
+| 首次连接时 `/register` 返回 429 | nginx 对 DCR 注册端点限流（每 IP 10 次/分，可突发 6 次）。正常客户端每次安装只注册一次，等一分钟重试 |
+| `nginx: [emerg] limit_req_zone "..." is already bound` | 同机多个 MCP 用了相同 zone 名。本服务用 `lark_cli_register`，注意不要和 lark-markdown 的 `lark_register` 重名 |
 | `update_available` 长时间不出现 | 检查开关、GitHub 出网和缓存周期；不影响业务调用 |
 
 部署完成后按 [USAGE.md](USAGE.md) 验证两个工具。

@@ -4,10 +4,12 @@ from __future__ import annotations
 import importlib.util
 import base64
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,7 +67,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
                     "doc": "doc-token", "content": "# title", "mode": "overwrite"
                 }]})
             self.assertEqual(run_cli.call_count, 1)
-            self.assertFalse(SERVER.WORKDIR.exists())
+            self.assertEqual(list(SERVER.WORKDIR.glob(".run-*")), [])
 
     def test_center_display_math_skips_fenced_code(self) -> None:
         content = "$$x < y$$\n\n```text\n$$literal$$\n```\n"
@@ -205,6 +207,56 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result), 2)
         self.assertEqual(write.call_args_list[0].args[-1], 7)
         self.assertEqual(write.call_args_list[1].args[-1], 8)
+
+    def test_batch_point_update_simulates_the_rendered_replacement(self) -> None:
+        # Display math is rewritten on the way out, so a later pattern must be
+        # preflighted against the rendered text, not the raw "$$...$$" input.
+        document = {"revision_id": 7, "content": "PLACEHOLDER\ntail"}
+        writes = [
+            {"data": {"document": {"revision_id": 8}}},
+            {"data": {"document": {"revision_id": 9}}},
+        ]
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_fetch_document", return_value=document), \
+             patch.object(SERVER, "_write_exact_text", side_effect=writes) as write:
+            SERVER.batch_point_update("doc-a", [
+                {"pattern": "PLACEHOLDER", "replacement": "$$E=mc^2$$"},
+                {"pattern": "<latex>E=mc^2</latex>", "replacement": "done"},
+            ])
+        self.assertEqual(write.call_count, 2)
+        rendered = write.call_args_list[0].args[2]
+        self.assertEqual(rendered, '<p align="center"><latex>E=mc^2</latex></p>')
+
+    def test_point_update_writes_the_rendered_replacement(self) -> None:
+        responses = [
+            {"data": {"document": {"revision_id": 7, "content": "old"}}},
+            {"data": {"document": {"revision_id": 8}}},
+        ]
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
+             patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", side_effect=responses), \
+             patch.object(SERVER, "_payload", return_value="@./payload") as payload:
+            SERVER.point_update("doc-a", "old", "$$E=mc^2$$")
+        self.assertEqual(payload.call_args.args[1], '<p align="center"><latex>E=mc^2</latex></p>')
+
+    def test_point_update_rejects_oversized_pattern(self) -> None:
+        with self.assertRaisesRegex(ValueError, "pattern exceeds"):
+            SERVER.point_update("doc-a", "x" * (SERVER.MAX_PATTERN_BYTES + 1), "new")
+
+    def test_batch_push_rejects_duplicate_documents(self) -> None:
+        with patch.object(SERVER, "_check_lark_cli") as check, \
+             patch.object(SERVER, "_run_cli") as run_cli:
+            with self.assertRaises(RuntimeError) as raised:
+                SERVER.batch_push([
+                    {"doc": "doc-a", "content": "one"},
+                    {"doc": "doc-a", "content": "two"},
+                ])
+        error = json.loads(str(raised.exception))
+        self.assertEqual(error["failed_index"], 1)
+        self.assertIn("more than once", error["cause"]["message"])
+        check.assert_not_called()
+        run_cli.assert_not_called()
 
     def test_batch_point_update_stops_on_revision_conflict(self) -> None:
         document = {"revision_id": 7, "content": "first second third"}
@@ -369,7 +421,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
                 with SERVER._hidden_run() as run:
                     SERVER._payload(run / ".content", "text")
                     raise RuntimeError("boom")
-            self.assertFalse(SERVER.WORKDIR.exists())
+            self.assertEqual(list(SERVER.WORKDIR.glob(".run-*")), [])
 
     def test_cli_timeout_is_actionable(self) -> None:
         with patch.object(
@@ -381,6 +433,9 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         error = json.loads(str(raised.exception))
         self.assertEqual(error["operation"], "pull test")
         self.assertEqual(error["error"], "timeout")
+        # The write may already have applied, so never advise a blind retry.
+        self.assertIn("verify with find_document_text", error["next_step"])
+        self.assertNotIn("retry once", error["next_step"])
 
     def test_schedule_mcp_restart_requires_confirmation_and_valid_delay(self) -> None:
         with self.assertRaisesRegex(ValueError, "confirmation"):
@@ -437,7 +492,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             media_path = media_args[media_args.index("--file") + 1]
             self.assertTrue(media_path.startswith("./"))
             self.assertFalse(Path(media_path).is_absolute())
-            self.assertFalse(SERVER.WORKDIR.exists())
+            self.assertEqual(list(SERVER.WORKDIR.glob(".run-*")), [])
 
     def test_create_wiki_node_uses_explicit_parent_or_space(self) -> None:
         with patch.object(SERVER, "_check_lark_cli"), \
@@ -492,7 +547,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
                     "source": "flowchart LR\nA --> B",
                 })
             self.assertIn("--overwrite", run_cli.call_args.args[0])
-            self.assertFalse(SERVER.WORKDIR.exists())
+            self.assertEqual(list(SERVER.WORKDIR.glob(".run-*")), [])
 
     async def test_whiteboard_query_retries_not_ready(self) -> None:
         with patch.object(SERVER, "_check_lark_cli"), \
@@ -511,17 +566,61 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             stale = SERVER.WORKDIR / ".run-stale"
             stale.mkdir(parents=True)
             (stale / ".content").write_text("old")
+            aged = time.time() - SERVER.CLI_TIMEOUT_SECONDS * 3
+            os.utime(stale, (aged, aged))
             SERVER._cleanup_stale_runs()
             self.assertFalse(SERVER.WORKDIR.exists())
 
+    def test_server_start_keeps_another_instances_live_payload(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"):
+            live = SERVER.WORKDIR / ".run-live"
+            live.mkdir(parents=True)
+            (live / ".content").write_text("in flight")
+            SERVER._cleanup_stale_runs()
+            self.assertTrue(live.is_dir())
+
+    def test_hidden_run_survives_concurrent_use(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"):
+            failures: list[str] = []
+
+            def churn() -> None:
+                for _ in range(200):
+                    try:
+                        with SERVER._hidden_run() as run:
+                            SERVER._payload(run / ".content", "body")
+                    except Exception as error:  # noqa: BLE001 - report any failure
+                        failures.append(f"{type(error).__name__}: {error}")
+                        return
+
+            threads = [threading.Thread(target=churn) for _ in range(6)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(failures, [])
+            self.assertEqual(list(SERVER.WORKDIR.glob(".run-*")), [])
+
+    def test_successful_operation_survives_cleanup_failure(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
+             patch.object(SERVER.shutil, "rmtree", side_effect=OSError("busy")):
+            with SERVER._hidden_run() as run:
+                SERVER._payload(run / ".content", "body")
+
     def test_public_http_requires_authentication_and_tls(self) -> None:
         with patch.object(SERVER, "AUTH_PROVIDER", None):
-            with self.assertRaisesRegex(RuntimeError, "configured authentication"):
+            with self.assertRaisesRegex(RuntimeError, "requires configured authentication"):
                 SERVER._https_config("0.0.0.0", None, None)
 
-    def test_local_http_allows_no_tls(self) -> None:
-        with patch.dict(SERVER.os.environ, {}, clear=True):
-            self.assertEqual(SERVER._https_config("127.0.0.1", None, None), {})
+    def test_loopback_http_refuses_to_serve_unauthenticated_by_default(self) -> None:
+        with patch.object(SERVER, "AUTH_PROVIDER", None):
+            with self.assertRaisesRegex(RuntimeError, "--allow-unauthenticated"):
+                SERVER._https_config("127.0.0.1", None, None)
+            self.assertEqual(
+                SERVER._https_config("127.0.0.1", None, None, True), {},
+            )
 
     def test_https_requires_existing_certificates(self) -> None:
         with patch.object(SERVER, "AUTH_PROVIDER", object()):

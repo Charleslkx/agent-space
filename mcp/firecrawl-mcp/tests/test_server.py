@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -114,6 +115,50 @@ class ServerTest(unittest.TestCase):
             SERVER._validate_args([], None)
         with self.assertRaises(ValueError):
             SERVER._validate_args(["-y"], None)
+
+    def test_flags_may_not_precede_the_subcommand(self):
+        # A root-level option taking a value would otherwise swallow the token
+        # this validator reads as the command, and the CLI would run the next
+        # one -- which is how a blocked command sneaks past an allowlist.
+        for args in (
+            ["--limit", "5", "search", "query"],
+            ["--json", "monitor", "list"],
+        ):
+            with self.subTest(args=args):
+                with self.assertRaisesRegex(ValueError, "args\\[0\\] must be the subcommand"):
+                    SERVER._validate_args(args, None)
+
+    def test_concurrent_calls_are_capped_and_slots_are_returned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fake = write_fake_cli(directory, "echo ok")
+            environment = {
+                "FIRECRAWL_MCP_CLI_PATH": str(fake),
+                "FIRECRAWL_API_KEY": "firecrawl-key",
+                "FIRECRAWL_MCP_UPDATE_CHECK": "0",
+            }
+            with patch.object(SERVER, "_CALL_SLOTS", threading.BoundedSemaphore(1)), \
+                 patch.object(SERVER, "ACQUIRE_TIMEOUT_SECONDS", 0.05), \
+                 patch.dict(os.environ, environment, clear=False):
+                SERVER._CALL_SLOTS.acquire()
+                with self.assertRaisesRegex(RuntimeError, "at capacity"):
+                    SERVER.firecrawl_cli(["search", "query"])
+                SERVER._CALL_SLOTS.release()
+                # the slot is released even though the call raised
+                self.assertEqual(SERVER.firecrawl_cli(["search", "q"])["stdout"], "ok\n")
+                self.assertEqual(SERVER.firecrawl_cli(["search", "q"])["stdout"], "ok\n")
+
+    def test_unspawnable_argv_becomes_a_clear_error(self):
+        oversized = ["search", *(["x" * SERVER.MAX_ARG_BYTES] * (SERVER.MAX_ARGS - 1))]
+        SERVER._validate_args(oversized, None)  # within the documented limits
+        with tempfile.TemporaryDirectory() as directory:
+            fake = write_fake_cli(directory, "echo ok")
+            with patch.dict(os.environ, {
+                "FIRECRAWL_MCP_CLI_PATH": str(fake),
+                "FIRECRAWL_API_KEY": "firecrawl-key",
+                "FIRECRAWL_MCP_UPDATE_CHECK": "0",
+            }, clear=False):
+                with self.assertRaisesRegex(RuntimeError, "could not run firecrawl"):
+                    SERVER.firecrawl_cli(oversized)
 
     def test_tool_preserves_stdout_stderr_exit_code_and_stdin(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -230,7 +275,50 @@ class ServerTest(unittest.TestCase):
             with patch.dict(SERVER._LATEST_STATE, {"version": None, "checked_at": time.time(), "checking": False}):
                 self.assertIsNone(SERVER._update_available())
         finally:
-            SERVER._INSTALLED_VERSION = None
+            SERVER._INSTALLED_VERSION = SERVER._UNPROBED
+
+    def test_version_is_probed_once_even_when_the_cli_reports_nothing(self):
+        # A probe that yields no version used to be cached as None, which is
+        # also the "not probed yet" sentinel -- so every later tool call paid
+        # for another `firecrawl --version` subprocess.
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "invocations"
+            log.write_text("")
+            fake = write_fake_cli(directory, f'echo "$*" >> {log}\n[ "$1" = "--version" ] && exit 0\necho ok')
+            environment = {
+                "FIRECRAWL_MCP_CLI_PATH": str(fake),
+                "FIRECRAWL_API_KEY": "firecrawl-key",
+                "FIRECRAWL_MCP_UPDATE_CHECK": "1",
+            }
+            SERVER._INSTALLED_VERSION = SERVER._UNPROBED
+            try:
+                with patch.dict(os.environ, environment, clear=False), \
+                     patch.dict(SERVER._LATEST_STATE,
+                                {"version": "9.9.9", "checked_at": time.time(), "checking": False}):
+                    for _ in range(4):
+                        SERVER.firecrawl_cli(["search", "query"])
+            finally:
+                SERVER._INSTALLED_VERSION = SERVER._UNPROBED
+            probes = [line for line in log.read_text().splitlines() if line.strip() == "--version"]
+        self.assertEqual(len(probes), 1)
+
+    def test_disabled_update_check_also_skips_the_version_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "invocations"
+            log.write_text("")
+            fake = write_fake_cli(directory, f'echo "$*" >> {log}\necho ok')
+            SERVER._INSTALLED_VERSION = SERVER._UNPROBED
+            try:
+                with patch.dict(os.environ, {
+                    "FIRECRAWL_MCP_CLI_PATH": str(fake),
+                    "FIRECRAWL_API_KEY": "firecrawl-key",
+                    "FIRECRAWL_MCP_UPDATE_CHECK": "0",
+                }, clear=False):
+                    SERVER.firecrawl_cli(["search", "query"])
+            finally:
+                SERVER._INSTALLED_VERSION = SERVER._UNPROBED
+            invocations = [line for line in log.read_text().splitlines() if line]
+        self.assertEqual(invocations, ["search query"])
 
     def test_update_check_failure_never_breaks_a_tool_call(self):
         with tempfile.TemporaryDirectory() as directory:
