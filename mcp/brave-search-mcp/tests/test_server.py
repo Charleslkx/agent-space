@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -57,7 +58,74 @@ class ServerTest(unittest.TestCase):
             with self.subTest(args=args), self.assertRaises(ValueError):
                 SERVER._validate_args(args, None)
         SERVER._validate_args(["web", "query", "--goggles", "@-"], "rule")
-        SERVER._validate_args(["context", "config"], None)
+
+    def test_only_the_four_in_plan_commands_are_allowed(self):
+        for args in (
+            ["web", "query", "--count", "5"],
+            ["news", "query", "--freshness", "pd"],
+            ["images", "query"],
+            ["videos", "query"],
+            ["--help"],
+            ["--version"],
+        ):
+            with self.subTest(args=args):
+                SERVER._validate_args(args, None)
+        for args in (
+            ["context", "query"],       # not in this deployment's plan
+            ["answers", "query"],
+            ["spellcheck", "query"],
+            ["bare query"],             # bx would route this to context
+            [],
+            ["--count", "5", "web", "query"],   # flags may not precede the command
+        ):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                SERVER._validate_args(args, None)
+
+    def test_oversized_output_is_truncated_not_discarded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fake_bx = Path(directory) / "bx"
+            fake_bx.write_text("#!/bin/sh\nyes x | head -c 9000\n")
+            fake_bx.chmod(0o755)
+            with patch.object(SERVER, "MAX_OUTPUT_BYTES", 1024), patch.dict(os.environ, {
+                "BRAVE_MCP_BX_PATH": str(fake_bx),
+                "BRAVE_SEARCH_API_KEY": "brave-key",
+            }, clear=False):
+                result = SERVER.brave_search_cli(["web", "query"])
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["original_bytes"], 9000)
+        self.assertEqual(len(result["stdout"]), 1024)
+        self.assertIn("hint", result)
+
+    def test_concurrent_calls_are_capped_and_slots_are_returned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fake_bx = Path(directory) / "bx"
+            fake_bx.write_text("#!/bin/sh\necho ok\n")
+            fake_bx.chmod(0o755)
+            environment = {"BRAVE_MCP_BX_PATH": str(fake_bx), "BRAVE_SEARCH_API_KEY": "brave-key"}
+            with patch.object(SERVER, "_CALL_SLOTS", threading.BoundedSemaphore(1)), \
+                 patch.object(SERVER, "ACQUIRE_TIMEOUT_SECONDS", 0.05), \
+                 patch.dict(os.environ, environment, clear=False):
+                SERVER._CALL_SLOTS.acquire()
+                with self.assertRaisesRegex(RuntimeError, "at capacity"):
+                    SERVER.brave_search_cli(["web", "query"])
+                SERVER._CALL_SLOTS.release()
+                # the slot is released even though the call raised
+                self.assertEqual(SERVER.brave_search_cli(["web", "query"])["stdout"], "ok\n")
+                self.assertEqual(SERVER.brave_search_cli(["web", "query"])["stdout"], "ok\n")
+
+    def test_unspawnable_argv_becomes_a_clear_error(self):
+        oversized = ["web", *(["x" * SERVER.MAX_ARG_BYTES] * (SERVER.MAX_ARGS - 1))]
+        SERVER._validate_args(oversized, None)  # within the documented limits
+        with tempfile.TemporaryDirectory() as directory:
+            fake_bx = Path(directory) / "bx"
+            fake_bx.write_text("#!/bin/sh\necho ok\n")
+            fake_bx.chmod(0o755)
+            with patch.dict(os.environ, {
+                "BRAVE_MCP_BX_PATH": str(fake_bx),
+                "BRAVE_SEARCH_API_KEY": "brave-key",
+            }, clear=False):
+                with self.assertRaisesRegex(RuntimeError, "could not run bx"):
+                    SERVER.brave_search_cli(oversized)
 
     def test_tool_preserves_stdout_stderr_exit_code_and_stdin(self):
         with tempfile.TemporaryDirectory() as directory:

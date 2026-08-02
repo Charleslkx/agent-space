@@ -52,6 +52,7 @@ MAX_BATCH_ITEMS = 100
 DEFAULT_BATCH_CONCURRENCY = 4
 MAX_BATCH_CONCURRENCY = 8
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
+MAX_PATTERN_BYTES = 128 * 1024
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 MAX_SNIPPET_CONTEXT_CHARS = 1000
 MAX_SNIPPET_MATCHES = 10
@@ -102,6 +103,11 @@ def _center_display_math(content: str) -> str:
             prose.append(line)
     output.append(convert("".join(prose)))
     return "".join(output)
+
+
+def _render(content: str, doc_format: DocFormat) -> str:
+    """Return exactly what will be stored, so preflight can simulate against it."""
+    return _center_display_math(content) if doc_format == "markdown" else content
 
 
 def _auth_mode() -> str:
@@ -268,7 +274,9 @@ mcp = FastMCP(
         "longer exact text and never guess. Use point_update or batch_point_update only for exact targets; "
         "they reject non-unique patterns. Use batch_pull only when full-document understanding is requested, the target cannot be "
         "narrowed by snippets, or XML/native-block structure is needed. Use batch_push only for an explicit "
-        "whole-document replacement or append. After point_update, verify with find_document_text using the "
+        "whole-document replacement or append. batch_push with mode=append is not idempotent, so after any "
+        "reported write failure verify with find_document_text before retrying rather than retrying blindly. "
+        "After point_update, verify with find_document_text using the "
         "replacement (or the removed text for deletion); use batch_pull only after partial_success, an error, "
         "a format-sensitive operation, or an explicit verification request. Use scan_document_assets to list "
         "images and whiteboards in a Lark document without returning its full XML."
@@ -308,11 +316,19 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
-def _https_config(host: str, cert: Path | None, key: Path | None) -> dict[str, str]:
+def _https_config(
+    host: str, cert: Path | None, key: Path | None, allow_unauthenticated: bool = False,
+) -> dict[str, str]:
     if bool(cert) != bool(key):
         raise RuntimeError("--tls-cert and --tls-key must be supplied together")
-    if not _is_loopback(host) and AUTH_PROVIDER is None:
-        raise RuntimeError("public HTTP binding requires configured authentication")
+    if AUTH_PROVIDER is None and not allow_unauthenticated:
+        # A loopback bind is not a safety property: the documented deployment
+        # puts nginx in front of 127.0.0.1, so a missing LARK_MCP_AUTH_MODE
+        # would otherwise publish an unauthenticated server to the internet.
+        raise RuntimeError(
+            f"HTTP transport requires configured authentication: set {AUTH_MODE_ENV} "
+            "(github or token), or pass --allow-unauthenticated for local-only use"
+        )
     if not _is_loopback(host) and not cert:
         raise RuntimeError("public HTTP binding requires --tls-cert and --tls-key")
     if cert:
@@ -340,11 +356,23 @@ def _run_process(
             timeout=CLI_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as error:
+        # The timeout kills the local CLI process, not the request already in
+        # flight to Lark, so the write may well have applied.
         raise LarkCLIError({
             "operation": operation,
             "error": "timeout",
             "timeout_seconds": CLI_TIMEOUT_SECONDS,
-            "next_step": "retry once; if it repeats, run lark-cli auth status --json --verify",
+            "next_step": (
+                "this operation may already have applied server-side; verify with "
+                "find_document_text before retrying. Retrying batch_push with "
+                "mode=append duplicates content."
+            ),
+        }) from error
+    except OSError as error:
+        raise LarkCLIError({
+            "operation": operation,
+            "error": "spawn_failed",
+            "message": str(error),
         }) from error
     if result.returncode:
         raise LarkCLIError({
@@ -370,8 +398,9 @@ def _run_cli(args: list[str], context: str = "lark-cli") -> dict:
 
 def _check_lark_cli(use_cache: bool = True) -> dict:
     global _auth_cache
-    if use_cache and _auth_cache and time.monotonic() < _auth_cache[0]:
-        return _auth_cache[1]
+    cache = _auth_cache  # One read: complete_lark_auth may clear it concurrently.
+    if use_cache and cache and time.monotonic() < cache[0]:
+        return cache[1]
     executable = shutil.which("lark-cli")
     if not executable:
         raise LarkCLIError({
@@ -450,9 +479,11 @@ def _hidden_run() -> Iterator[Path]:
                     "cleanup_error": message,
                 }) from original_error
             else:
-                raise RuntimeError(message) from error
-        if WORKDIR.exists() and not any(WORKDIR.iterdir()):
-            WORKDIR.rmdir()
+                # The operation already succeeded. Raising here would report a
+                # completed write as a failure and invite a retry that appends
+                # the same content twice. _cleanup_stale_runs reclaims the
+                # directory on the next start.
+                print(f"lark-markdown: {message}", file=sys.stderr)
 
 
 def _cleanup_stale_runs() -> None:
@@ -460,8 +491,13 @@ def _cleanup_stale_runs() -> None:
         raise RuntimeError("refusing to clean a symlinked .lark_publish directory")
     if not WORKDIR.exists():
         return
+    # ponytail: age heuristic, not a lock. It keeps a second instance sharing
+    # PROJECT_ROOT from deleting payloads it is still writing, because no call
+    # outlives CLI_TIMEOUT_SECONDS. Use a lockfile only if sharing is by design.
+    cutoff = time.time() - CLI_TIMEOUT_SECONDS * 2
     for path in WORKDIR.glob(".run-*"):
-        shutil.rmtree(path)
+        if path.stat().st_mtime < cutoff:
+            shutil.rmtree(path)
     if not any(WORKDIR.iterdir()):
         WORKDIR.rmdir()
 
@@ -471,6 +507,14 @@ def _payload(path: Path, content: str) -> str:
         raise ValueError(f"content exceeds {MAX_CONTENT_BYTES} bytes")
     path.write_text(content, encoding="utf-8")
     return "@./" + path.resolve().relative_to(PROJECT_ROOT).as_posix()
+
+
+def _validate_pattern(pattern: str) -> None:
+    """Patterns travel as argv, so they must stay well under ARG_MAX."""
+    if not pattern:
+        raise ValueError("pattern must not be empty")
+    if len(pattern.encode("utf-8")) > MAX_PATTERN_BYTES:
+        raise ValueError(f"pattern exceeds {MAX_PATTERN_BYTES} bytes")
 
 
 def _validate_batch(items: list, name: str) -> None:
@@ -809,9 +853,14 @@ def search_documents(
 def batch_push(
     documents: list[dict[str, str]], concurrency: int = DEFAULT_BATCH_CONCURRENCY,
 ) -> list[dict]:
-    """Write independent documents concurrently; results remain in input order."""
+    """Write independent documents concurrently; results remain in input order.
+
+    mode="append" is not idempotent: a retry after a reported failure can append
+    the same content twice. Verify with find_document_text before retrying.
+    """
     _validate_batch(documents, "documents")
     workers = _batch_workers(concurrency, len(documents))
+    seen: set[str] = set()
     prepared = []
     for index, item in enumerate(documents):
         if not isinstance(item, dict):
@@ -829,8 +878,13 @@ def batch_push(
             raise _batch_failure("batch_push", index, doc, 0, ValueError("mode must be overwrite or append"))
         if doc_format not in {"markdown", "xml"}:
             raise _batch_failure("batch_push", index, doc, 0, ValueError("doc_format must be markdown or xml"))
-        if doc_format == "markdown":
-            content = _center_display_math(content)
+        if doc in seen:
+            raise _batch_failure(
+                "batch_push", index, doc, 0,
+                ValueError("doc appears more than once; concurrent writes would overwrite each other"),
+            )
+        seen.add(doc)
+        content = _render(content, doc_format)
         if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
             raise _batch_failure(
                 "batch_push", index, doc, 0,
@@ -877,11 +931,9 @@ def _write_exact_text(
     doc_format: DocFormat,
     revision_id: int,
 ) -> dict:
+    """Write an already-rendered replacement; callers must pass it through _render."""
     with _hidden_run() as run:
-        content = _payload(
-            run / ".replacement",
-            _center_display_math(replacement) if doc_format == "markdown" else replacement,
-        )
+        content = _payload(run / ".replacement", replacement)
         return _run_cli([
             "docs", "+update", "--api-version", "v2", "--as", "user",
             "--doc", doc, "--command", "str_replace", "--pattern", pattern,
@@ -911,8 +963,7 @@ def point_update(
     """Replace an exact text target only when it occurs once; the full document stays server-side."""
     if not doc.strip():
         raise ValueError("doc must not be empty")
-    if not pattern:
-        raise ValueError("pattern must not be empty")
+    _validate_pattern(pattern)
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")
     _check_lark_cli()
@@ -923,7 +974,7 @@ def point_update(
         raise ValueError(
             f"pattern must occur exactly once, found {matches}; call find_document_text for bounded context"
         )
-    return _write_exact_text(doc, pattern, replacement, doc_format, revision_id)
+    return _write_exact_text(doc, pattern, _render(replacement, doc_format), doc_format, revision_id)
 
 
 @mcp.tool(title="Update multiple exact document texts", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -950,11 +1001,16 @@ def batch_point_update(
             raise _batch_failure("batch_point_update", index, doc, 0, ValueError("item must be an object"))
         pattern = update.get("pattern")
         replacement = update.get("replacement")
-        if not isinstance(pattern, str) or not pattern:
+        if not isinstance(pattern, str):
             raise _batch_failure("batch_point_update", index, doc, 0, ValueError("pattern must not be empty"))
+        try:
+            _validate_pattern(pattern)
+        except ValueError as error:
+            raise _batch_failure("batch_point_update", index, doc, 0, error) from error
         if not isinstance(replacement, str):
             raise _batch_failure("batch_point_update", index, doc, 0, ValueError("replacement must be a string"))
-        prepared.append((pattern, replacement))
+        # Simulate against what will actually be stored, not the raw replacement.
+        prepared.append((pattern, _render(replacement, doc_format)))
     _check_lark_cli()
     document = _fetch_document(doc, doc_format, "simple", "batch_point_update preflight")
     content, revision_id = _preflight_content(document, "batch_point_update preflight")
@@ -971,7 +1027,7 @@ def batch_point_update(
         })
         raise failure
     simulated = content
-    for index, (pattern, replacement) in enumerate(prepared):
+    for index, (pattern, rendered) in enumerate(prepared):
         matches = simulated.count(pattern)
         if matches != 1:
             failure = _batch_failure(
@@ -984,11 +1040,11 @@ def batch_point_update(
                 "applied_indexes": [],
             })
             raise failure
-        simulated = simulated.replace(pattern, replacement, 1)
+        simulated = simulated.replace(pattern, rendered, 1)
     results = []
-    for index, (pattern, replacement) in enumerate(prepared):
+    for index, (pattern, rendered) in enumerate(prepared):
         try:
-            result = _write_exact_text(doc, pattern, replacement, doc_format, revision_id)
+            result = _write_exact_text(doc, pattern, rendered, doc_format, revision_id)
         except Exception as error:
             failure = _batch_failure("batch_point_update", index, doc, len(results), error)
             failure.details.update({
@@ -1022,10 +1078,7 @@ def create_document(
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")
     with _hidden_run() as run:
-        payload = _payload(
-            run / ".document",
-            _center_display_math(content) if doc_format == "markdown" else content,
-        )
+        payload = _payload(run / ".document", _render(content, doc_format))
         args = [
             "docs", "+create", "--api-version", "v2", "--as", "user",
             "--doc-format", doc_format, "--content", payload, "--format", "json",
@@ -1218,10 +1271,16 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--tls-cert", type=Path)
     parser.add_argument("--tls-key", type=Path)
+    parser.add_argument(
+        "--allow-unauthenticated", action="store_true",
+        help="serve HTTP without authentication; local development only",
+    )
     args = parser.parse_args()
     _cleanup_stale_runs()
     if args.transport == "http":
-        uvicorn_config = _https_config(args.host, args.tls_cert, args.tls_key)
+        uvicorn_config = _https_config(
+            args.host, args.tls_cert, args.tls_key, args.allow_unauthenticated,
+        )
         mcp.run(
             transport="http", host=args.host, port=args.port,
             uvicorn_config=uvicorn_config,
