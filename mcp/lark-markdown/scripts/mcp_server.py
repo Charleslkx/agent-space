@@ -768,7 +768,15 @@ def batch_pull(
     detail: Literal["simple", "with-ids", "full"] = "simple",
     concurrency: int = DEFAULT_BATCH_CONCURRENCY,
 ) -> list[dict]:
-    """Fetch documents concurrently; results remain in input order."""
+    """Fetch documents concurrently; results remain in input order.
+
+    Use Markdown/simple for ordinary text. Use XML/full when the task depends on
+    formatting or native structure that Markdown cannot reliably expose, including
+    highlights, text/background colors, underline, callouts, columns, references,
+    bookmarks, URL previews, buttons, reminders, whiteboards, block IDs, style
+    attributes, or reference metadata. Highlights are returned as
+    <span background-color="..."> in XML but degrade to plain text in Markdown.
+    """
     _check_lark_cli()
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")

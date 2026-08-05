@@ -47,8 +47,8 @@ description: "使用已连接的远程 Lark-Markdown MCP 阅读、创建和编�
 
 1. 局部编辑前，优先调用 `find_document_text(doc, query)`；它只返回命中内容与有限上下文，不把全文交给模型。
 2. 只有用户需要通读、总结全文、旧文本未知且无法靠片段定位，才调用 `batch_pull`；单篇也传一项数组。
-3. 常规阅读用 `doc_format=markdown`、`detail=simple`。
-4. 涉及飞书原生块、块级格式或精确结构时，再用 `doc_format=xml`、`detail=full` 回读。
+3. 只依赖正文语义的常规阅读用 `doc_format=markdown`、`detail=simple`。
+4. 当任务依赖 Markdown 无法可靠呈现的格式或原生结构时，直接用 `doc_format=xml`、`detail=full`：高亮、文字/背景颜色、下划线、Callout、分栏、引用、书签、URL 预览、按钮、提醒、画板，以及 block ID、样式属性和引用元数据。高亮在 XML 中表示为 `<span background-color="...">`，在 Markdown 中会降级为纯文本。
 5. 基于实际回读内容回答，不根据标题、URL 或旧副本猜测。
 
 ### 编辑

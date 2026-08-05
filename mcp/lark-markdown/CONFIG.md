@@ -302,7 +302,7 @@ uv run python scripts/test_live_capabilities.py \
 - `check_lark_cli`：检查 CLI、版本和用户登录态。
 - `schedule_mcp_restart`：在当前调用完成后延迟重启固定的 MCP 服务；必须传入确认词 `RESTART_LARK_MARKDOWN_MCP`，延迟范围为 5–300 秒。
 - `begin_lark_auth`、`complete_lark_auth`：发起和完成飞书用户授权。
-- `batch_pull`：批量读取 Markdown/XML 与 revision。
+- `batch_pull`：批量读取 Markdown/XML 与 revision。普通正文使用 Markdown `simple`；当任务依赖 Markdown 无法可靠呈现的格式或原生结构时，使用 XML `full`，包括高亮、文字/背景颜色、下划线、Callout、分栏、引用、书签、URL 预览、按钮、提醒、画板，以及 block ID、样式属性和引用元数据。高亮在 XML 中表示为 `<span background-color="...">`，在 Markdown 中会降级为纯文本。
 - `find_document_text`：按精确文本返回有限上下文，不向模型返回全文；用于局部编辑前定位句子。
 - `batch_push`：批量覆盖或追加 Markdown/XML；Markdown 中独立 `$$...$$` 公式会自动写为居中的原生公式段落，代码块中的字面量不转换。lark-cli 报告写入失败时立即报错，不中继为成功。
 - `point_update`：仅在旧文本唯一命中时精确替换或删除；重复命中时先调用 `find_document_text` 缩小目标。lark-cli 报告写入失败时抛错，并附带失败后的文档状态（revision、替换文本是否已部分写入、原文尾部是否完整），用于区分"未生效"与"部分应用/截断"。
