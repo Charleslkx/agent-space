@@ -262,7 +262,7 @@ TOOL_META = {"securitySchemes": _security_schemes(AUTH_MODE)}
 AUTH_PROVIDER = _auth_provider()
 mcp = FastMCP(
     name="Lark-Markdown",
-    version="0.14.0",
+    version="0.15.0",
     instructions=(
         "For normal document work, use the connected tools and never configure or start a server. "
         "Call check_lark_cli only when connection or user auth is uncertain; use begin_lark_auth "
@@ -272,7 +272,11 @@ mcp = FastMCP(
         "Before a local edit, use "
         "find_document_text to return bounded snippets; if it finds multiple targets, refine the query with "
         "longer exact text and never guess. Use point_update or batch_point_update only for exact targets; "
-        "they reject non-unique patterns. Use batch_pull only when full-document understanding is requested, the target cannot be "
+        "they reject non-unique patterns. Write tools raise when lark-cli reports a failed write, and the "
+        "error reports the post-failure document state: after any reported write failure, verify with "
+        "find_document_text before retrying, and never retry when the state shows the write partially "
+        "applied or truncated the document. Use batch_pull only when full-document understanding is "
+        "requested, the target cannot be "
         "narrowed by snippets, or XML/native-block structure is needed. Use batch_push only for an explicit "
         "whole-document replacement or append. batch_push with mode=append is not idempotent, so after any "
         "reported write failure verify with find_document_text before retrying rather than retrying blindly. "
@@ -568,6 +572,68 @@ def _is_revision_conflict(error: Exception) -> bool:
     details = error.details if isinstance(error, LarkCLIError) else str(error)
     message = json.dumps(details, ensure_ascii=False).casefold()
     return "1770021" in message or "too old document" in message
+
+
+def _assert_write_succeeded(result: dict, operation: str) -> None:
+    """Raise when lark-cli reports a write as failed; never relay degradation as success.
+
+    lark-cli exits 0 but returns data.result="failed" with a degrade warning when a write
+    degrades (e.g. str_replace pattern not found). Relaying that as a normal result hid
+    document corruption and let batch_point_update keep writing into a damaged document.
+    Treat any explicit non-success result as a hard failure so callers stop and verify.
+    Envelopes without a result field (some unit-test mocks) pass through unchanged.
+    """
+    if not isinstance(result, dict):
+        return
+    ok = result.get("ok", True)
+    data = result.get("data")
+    status = data.get("result") if isinstance(data, dict) else None
+    if ok is False or (isinstance(status, str) and status.casefold() != "success"):
+        warnings = data.get("warnings") if isinstance(data, dict) else None
+        if isinstance(warnings, str):
+            warnings = [warnings]
+        message = "; ".join(str(w) for w in (warnings or [])) if warnings else str(status or "failed")
+        if not message:
+            message = json.dumps(result, ensure_ascii=False)[:4000]
+        raise LarkCLIError({
+            "operation": operation,
+            "error": "lark_write_failed",
+            "result": status,
+            "message": message,
+            "next_step": (
+                "The write was reported as failed and may have partially modified the "
+                "document. Verify with find_document_text before retrying; only retry "
+                "when the document state shows the write did not apply."
+            ),
+        })
+
+
+def _assess_document_state(
+    doc: str,
+    doc_format: DocFormat,
+    original_content: str,
+    rendered: str,
+    operation: str,
+) -> dict:
+    """Best-effort document state after a failed write; never raises.
+
+    Detects the two failure signatures of lark-cli write degradation: a partial apply
+    (the intended replacement is present despite the failure) and destructive truncation
+    (the document tail from before the write is missing).
+    """
+    try:
+        document = _fetch_document(doc, doc_format, "simple", f"{operation} damage assessment")
+        current = document.get("content", "")
+        current_text = current if isinstance(current, str) else ""
+        revision_id = _revision_id(document, f"{operation} damage assessment")
+        tail = original_content[-120:] if isinstance(original_content, str) else ""
+        return {
+            "revision_id": revision_id,
+            "intended_replacement_present": bool(rendered) and rendered in current_text,
+            "original_tail_preserved": bool(tail) and tail in current_text,
+        }
+    except Exception as error:  # Assessment must never mask the original write failure.
+        return {"error": "damage_assessment_unavailable", "message": str(error)}
 
 
 def _find_auth_value(payload: object, names: tuple[str, ...]) -> str | None:
@@ -906,6 +972,7 @@ def batch_push(
                     "--doc", doc, "--command", mode,
                     "--doc-format", doc_format, "--content", payloads[index], "--format", "json",
                 ], f"batch_push documents[{index}]")
+                _assert_write_succeeded(result, f"batch_push documents[{index}]")
             except RuntimeError as error:
                 raise _batch_failure("batch_push", index, doc, 0, error) from error
             return {"doc": doc, "result": result}
@@ -934,12 +1001,14 @@ def _write_exact_text(
     """Write an already-rendered replacement; callers must pass it through _render."""
     with _hidden_run() as run:
         content = _payload(run / ".replacement", replacement)
-        return _run_cli([
+        result = _run_cli([
             "docs", "+update", "--api-version", "v2", "--as", "user",
             "--doc", doc, "--command", "str_replace", "--pattern", pattern,
             "--revision-id", str(revision_id),
             "--doc-format", doc_format, "--content", content, "--format", "json",
         ], "point_update")
+    _assert_write_succeeded(result, "point_update")
+    return result
 
 
 def _preflight_content(document: dict, operation: str) -> tuple[str, int]:
@@ -960,7 +1029,11 @@ def point_update(
     replacement: str,
     doc_format: DocFormat = "markdown",
 ) -> dict:
-    """Replace an exact text target only when it occurs once; the full document stays server-side."""
+    """Replace an exact text target only when it occurs once; the full document stays server-side.
+
+    Raises when lark-cli reports the write as failed, including a best-effort
+    post-failure document state so the caller can tell a no-op from a partial apply.
+    """
     if not doc.strip():
         raise ValueError("doc must not be empty")
     _validate_pattern(pattern)
@@ -974,7 +1047,14 @@ def point_update(
         raise ValueError(
             f"pattern must occur exactly once, found {matches}; call find_document_text for bounded context"
         )
-    return _write_exact_text(doc, pattern, _render(replacement, doc_format), doc_format, revision_id)
+    rendered = _render(replacement, doc_format)
+    try:
+        return _write_exact_text(doc, pattern, rendered, doc_format, revision_id)
+    except LarkCLIError as error:
+        error.details.setdefault("document_state", _assess_document_state(
+            doc, doc_format, content, rendered, "point_update",
+        ))
+        raise
 
 
 @mcp.tool(title="Update multiple exact document texts", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -984,7 +1064,11 @@ def batch_point_update(
     doc_format: DocFormat = "markdown",
     expected_revision_id: int | None = None,
 ) -> list[dict]:
-    """Preflight and apply ordered exact replacements with revision guards."""
+    """Preflight and apply ordered exact replacements with revision guards.
+
+    Stops at the first write that lark-cli reports as failed (never continuing into a
+    possibly damaged document) and reports the post-failure document state.
+    """
     if not doc.strip():
         raise ValueError("doc must not be empty")
     if doc_format not in {"markdown", "xml"}:
@@ -1052,6 +1136,12 @@ def batch_point_update(
                 "expected_revision_id": revision_id,
                 "applied_indexes": list(range(len(results))),
             })
+            if isinstance(error, LarkCLIError):
+                # A degraded write may have partially applied or truncated the document;
+                # surface the post-failure state so callers never retry blindly.
+                failure.details["document_state"] = _assess_document_state(
+                    doc, doc_format, content, rendered, "batch_point_update",
+                )
             raise failure from error
         results.append({"pattern": pattern, "result": result})
         try:
@@ -1085,7 +1175,9 @@ def create_document(
         ]
         if parent_token:
             args.extend(["--parent-token", parent_token])
-        return _run_cli(args, "create_document")
+        result = _run_cli(args, "create_document")
+        _assert_write_succeeded(result, "create_document")
+        return result
 
 
 @mcp.tool(title="Create a Lark Wiki node", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
@@ -1108,7 +1200,9 @@ def create_wiki_node(
         args.extend(["--parent-node-token", parent_node_token])
     if space_id:
         args.extend(["--space-id", space_id])
-    return _run_cli(args, "create_wiki_node")
+    result = _run_cli(args, "create_wiki_node")
+    _assert_write_succeeded(result, "create_wiki_node")
+    return result
 
 
 @mcp.tool(title="Create a Lark Wiki space", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
@@ -1120,7 +1214,9 @@ def create_wiki_space(name: str, description: str | None = None) -> dict:
     args = ["wiki", "+space-create", "--as", "user", "--name", name, "--format", "json"]
     if description:
         args.extend(["--description", description])
-    return _run_cli(args, "create_wiki_space")
+    result = _run_cli(args, "create_wiki_space")
+    _assert_write_succeeded(result, "create_wiki_space")
+    return result
 
 
 @mcp.tool(title="Scan document images and whiteboards", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
@@ -1182,7 +1278,9 @@ def insert_media(
             args.extend(["--selection-with-ellipsis", selection])
         if before:
             args.append("--before")
-        return _run_cli(args, "insert_media")
+        result = _run_cli(args, "insert_media")
+        _assert_write_succeeded(result, "insert_media")
+        return result
 
 
 @mcp.tool(title="Read a Lark whiteboard", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
@@ -1229,7 +1327,9 @@ def whiteboard_update(
         ]
         if overwrite:
             args.append("--overwrite")
-        return _run_cli(args, "whiteboard_update")
+        result = _run_cli(args, "whiteboard_update")
+        _assert_write_succeeded(result, "whiteboard_update")
+        return result
 
 
 @mcp.tool(title="Schedule Lark-Markdown MCP restart", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False})

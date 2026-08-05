@@ -27,7 +27,7 @@ SPEC.loader.exec_module(SERVER)
 class MCPServerTest(unittest.IsolatedAsyncioTestCase):
     def test_server_name_is_canonical(self) -> None:
         self.assertEqual(SERVER.mcp.name, "Lark-Markdown")
-        self.assertEqual(SERVER.mcp.version, "0.14.0")
+        self.assertEqual(SERVER.mcp.version, "0.15.0")
         instructions = SERVER.mcp.instructions.lower()
         self.assertIn("never configure or start a server", instructions)
         self.assertIn("if it finds multiple targets", instructions)
@@ -243,6 +243,75 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
     def test_point_update_rejects_oversized_pattern(self) -> None:
         with self.assertRaisesRegex(ValueError, "pattern exceeds"):
             SERVER.point_update("doc-a", "x" * (SERVER.MAX_PATTERN_BYTES + 1), "new")
+
+    def test_point_update_raises_on_lark_failed_write(self) -> None:
+        document = {"revision_id": 7, "content": "old target old"}
+        failed = {
+            "ok": True,
+            "data": {
+                "document": {"revision_id": 7},
+                "result": "failed",
+                "warnings": ["degrade_code=1013,msg=str_replace pattern was not found in the document"],
+            },
+        }
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
+             patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_fetch_document", return_value=document), \
+             patch.object(SERVER, "_run_cli", return_value=failed) as run_cli:
+            with self.assertRaises(RuntimeError) as raised:
+                SERVER.point_update("doc-a", "target", "new")
+        error = json.loads(str(raised.exception))
+        self.assertEqual(error["error"], "lark_write_failed")
+        self.assertIn("degrade_code=1013", error["message"])
+        self.assertIn("document_state", error)
+        self.assertEqual(run_cli.call_count, 1)
+
+    def test_batch_point_update_stops_and_assesses_damage_on_failed_write(self) -> None:
+        document = {"revision_id": 7, "content": "first second third"}
+        writes = [
+            {"ok": True, "data": {"document": {"revision_id": 8}, "result": "success", "warnings": []}},
+            {"ok": True, "data": {"document": {"revision_id": 8}, "result": "failed",
+             "warnings": ["degrade_code=1013,msg=str_replace pattern was not found"]}},
+        ]
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
+             patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_fetch_document", return_value=document), \
+             patch.object(SERVER, "_run_cli", side_effect=writes) as run_cli:
+            with self.assertRaises(RuntimeError) as raised:
+                SERVER.batch_point_update("doc-a", [
+                    {"pattern": "first", "replacement": "one"},
+                    {"pattern": "second", "replacement": "two"},
+                    {"pattern": "third", "replacement": "three"},
+                ])
+        error = json.loads(str(raised.exception))
+        self.assertEqual(error["error"], "remote_error")
+        self.assertEqual(error["failed_index"], 1)
+        self.assertEqual(error["applied_indexes"], [0])
+        self.assertIn("document_state", error)
+        self.assertEqual(run_cli.call_count, 2)
+
+    def test_batch_push_raises_on_lark_failed_write(self) -> None:
+        failed = {
+            "ok": True,
+            "data": {"document": {"revision_id": 2}, "result": "failed",
+             "warnings": ["degrade_code=5000000,msg=Document operation failed"]},
+        }
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
+             patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", return_value=failed):
+            with self.assertRaises(RuntimeError) as raised:
+                SERVER.batch_push([{"doc": "doc-a", "content": "# t"}])
+        error = json.loads(str(raised.exception))
+        self.assertEqual(error["failed_index"], 0)
+        self.assertEqual(error["cause"]["cause"]["error"], "lark_write_failed")
+        self.assertIn("degrade_code=5000000", error["cause"]["cause"]["message"])
+
+    def test_assert_write_succeeded_is_tolerant_of_minimal_envelopes(self) -> None:
+        for envelope in ({}, {"ok": True}, {"data": {"document": {"revision_id": 1}}}):
+            SERVER._assert_write_succeeded(envelope, "unit-test")
 
     def test_batch_push_rejects_duplicate_documents(self) -> None:
         with patch.object(SERVER, "_check_lark_cli") as check, \

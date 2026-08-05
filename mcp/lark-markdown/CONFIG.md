@@ -304,9 +304,11 @@ uv run python scripts/test_live_capabilities.py \
 - `begin_lark_auth`、`complete_lark_auth`：发起和完成飞书用户授权。
 - `batch_pull`：批量读取 Markdown/XML 与 revision。
 - `find_document_text`：按精确文本返回有限上下文，不向模型返回全文；用于局部编辑前定位句子。
-- `batch_push`：批量覆盖或追加 Markdown/XML；Markdown 中独立 `$$...$$` 公式会自动写为居中的原生公式段落，代码块中的字面量不转换。
-- `point_update`：仅在旧文本唯一命中时精确替换或删除；重复命中时先调用 `find_document_text` 缩小目标。
-- `batch_point_update`：单篇文档内先预演全部唯一文本替换，再以 `revision_id` 串行写入；可传 `expected_revision_id` 拒绝过期定位，冲突时停止并报告已完成项。
+- `batch_push`：批量覆盖或追加 Markdown/XML；Markdown 中独立 `$$...$$` 公式会自动写为居中的原生公式段落，代码块中的字面量不转换。lark-cli 报告写入失败时立即报错，不中继为成功。
+- `point_update`：仅在旧文本唯一命中时精确替换或删除；重复命中时先调用 `find_document_text` 缩小目标。lark-cli 报告写入失败时抛错，并附带失败后的文档状态（revision、替换文本是否已部分写入、原文尾部是否完整），用于区分"未生效"与"部分应用/截断"。
+- `batch_point_update`：单篇文档内先预演全部唯一文本替换，再以 `revision_id` 串行写入；可传 `expected_revision_id` 拒绝过期定位。任一写入被 lark-cli 报告失败时立即停止（不继续写入可能已损坏的文档），并报告失败后的文档状态与已完成项。
+
+> **写失败安全（0.15.0）**：lark-cli 的写入接口可能以退出码 0 返回 `result:"failed"`（如 `str_replace` 未命中 pattern 时的降级路径），并可能对文档造成部分应用或截断。服务器对所有写操作校验该结果字段：任何显式失败都会以错误返回并附上失败后的文档状态。调用方收到写失败后必须先 `find_document_text` 核实，再决定是否重试——当状态显示写入已部分生效或文档尾部丢失时**不要重试**，否则会叠加损坏。
 - `create_document`：在个人空间或 Drive 文件夹创建普通 Docx。
 - `create_wiki_node`：在指定 Wiki 空间根目录或父节点下创建空白 Docx 页面。
 - `create_wiki_space`：创建 Wiki 空间。
