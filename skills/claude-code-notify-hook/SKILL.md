@@ -18,7 +18,7 @@ description: >
 
 ### 飞书通知协议
 
-Codex、Claude Code、OpenCode 使用同一协议：读取各自 `feishu-agent.env` 中的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`、`FEISHU_APPROVAL_RECEIVE_ID_TYPE`；自建应用 IM API 为主通道，webhook 为失败回退。卡片无按钮，字段固定为 Agent、Project、Content、时间；完成为蓝色，需注意为橙色。通知链路不调用 `lark-cli`。
+Codex、Claude Code、OpenCode、Copilot 使用同一协议：读取各自 `feishu-agent.env` 中的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`、`FEISHU_APPROVAL_RECEIVE_ID_TYPE`；自建应用 IM API 为主通道，webhook 为失败回退。卡片无按钮，字段固定为 Agent、Project、Content、时间；完成为蓝色，需注意为橙色。通知链路不调用 `lark-cli`。
 
 ## 工作原理（先理解再动手）
 
@@ -53,22 +53,9 @@ esac
 
 原生 Linux 仍需注册两个 hook，用它们触发飞书；脚本不会尝试本地通知或终端响铃。Claude Desktop 通过 `__CFBundleIdentifier=com.anthropic.claudefordesktop` 被识别，跳过本地通知，避免与 Desktop 自带提醒重复；飞书仍会发送。
 
-### 飞书配置交接规则
+### 飞书配置入口
 
-需要飞书时，先给用户生成可编辑脚本，**不要代填、不要运行、不要要求用户在对话中发送密钥**：
-
-```bash
-cp <skill-dir>/scripts/write_feishu_agent_env.sh ~/.claude/configure-feishu-agent.sh
-chmod 700 ~/.claude/configure-feishu-agent.sh
-```
-
-告知用户编辑 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`（接收会话的 `chat_id`）；用户自行运行：
-
-```bash
-~/.claude/configure-feishu-agent.sh
-```
-
-用户回复“已运行”后，检查 `~/.claude/feishu-agent.env` 存在且权限为 `600`，再触发一次 hook 测试。
+优先运行第 4a 节的独立安装脚本。它会使用 Claude 自己的完整配置，或把其他 Agent 的完整机器人配置复制成 Claude 自己的 mode-`600` env；所有配置都不存在时再扫码新建。手工模板只作兜底，不要在对话中传递密钥。
 
 ### 1. 放置脚本
 
@@ -115,19 +102,20 @@ jq -e '.hooks.Notification[].hooks[].command, .hooks.Stop[].hooks[].command' ~/.
 
 #### 4a. 一键创建 / 选择应用（推荐）
 
-`scripts/create_feishu_agent_app.py` 复刻 codex 的一键创建流程：扫码后飞书创建或**选择已有应用**，SDK 返回 App ID / App Secret，脚本直接写入 `~/.claude/feishu-agent.env`（mode 600），无需手工复制或软链。
+`scripts/create_feishu_agent_app.py` 是完整、独立的配置入口，运行期不依赖 Codex、OpenCode 或 Copilot。复用时复制应用和目标群配置到 Claude 自己的 env，不创建软链接；都没有配置时，扫码创建或选择自建应用并写入完整 env。
 
 ```bash
-python3 <skill-dir>/scripts/create_feishu_agent_app.py            # dry-run，打印将提交的权限清单
+python3 <skill-dir>/scripts/create_feishu_agent_app.py            # 使用自己的配置或自动复用其他 Agent
 python3 -m pip install 'lark-oapi>=1.5.5'
-python3 <skill-dir>/scripts/create_feishu_agent_app.py --live     # 扫码，新建一个应用
-python3 <skill-dir>/scripts/create_feishu_agent_app.py --live --app-id cli_xxx  # 共用同一应用：指定已有 app_id
+python3 <skill-dir>/scripts/create_feishu_agent_app.py --live --home-channel oc_xxx --test
+python3 <skill-dir>/scripts/create_feishu_agent_app.py --live --app-id cli_xxx --home-channel oc_xxx
+python3 <skill-dir>/scripts/create_feishu_agent_app.py --live --new --home-channel oc_xxx
 python3 <skill-dir>/scripts/create_feishu_agent_app.py --manual   # 手工创建兜底
 ```
 
-env 路径可用 `--env-out` 改写；`--env-out ''` 只打印不落盘。
+新建应用前必须提供目标会话的 `chat_id`，创建后把机器人加入该会话。`--test` 发送一张连接测试卡片。env 路径可用 `--env-out` 改写。
 
-> **共用一个应用的注意点**：三个 agent 各自跑本脚本、各写各的 env，指向同一 app_id 时拿到的是**同一个 App Secret**（飞书一个应用只有一个 secret）。若某次重新授权导致飞书**重置了 secret**，其余 agent 的旧 secret 会失效——此时重跑另外两个 agent 的创建脚本刷新即可。
+共用应用时，四个 Agent 各自保存一份 env。飞书重置 App Secret 后，重新运行各自脚本即可从任一已更新配置自动刷新。
 
 #### 4b. 手工填写
 
@@ -195,7 +183,7 @@ settings 改动通常下一轮即生效。若没生效，让用户打开一次 `
 - **焦点识别用 `lsappinfo` 不用 System Events**：前者查 CoreServices DB 无需自动化授权弹窗，后者会弹权限框。
 - **焦点是应用级非窗口级**：在 VSCode 但看的是代码而非集成终端、或开了多个同 app 窗口时，会误判为"在焦点"而静默。需窗口级要用 Accessibility 脚本逐 app 取窗口标题，代价大且对 VSCode 集成终端不可靠，一般不做。
 - **远程/SSH 会话**：`__CFBundleIdentifier` 为空时自动跳过焦点检查，通知照常弹出。
-- **通知内容保持简单**：本地通知 title 是 `ClaudeCode`，subtitle 是项目根目录名称，body 是通知内容；飞书发通知卡片（绿=完成/橙=授权），卡片只含 agent、project、content、时间戳，不加按钮。
+- **通知内容保持简单**：本地通知 title 是 `ClaudeCode`，subtitle 是项目根目录名称，body 是通知内容；飞书发通知卡片（蓝=完成/橙=授权），卡片只含 agent、project、content、时间戳，不加按钮。
 
 ## 自定义
 
@@ -213,6 +201,8 @@ echo '{"message":"Claude needs your permission to use Bash"}' | NOTIFY_DEBUG=1 N
 echo '{"message":"Claude is waiting for your input"}' | NOTIFY_DEBUG=1 $SH notification
 # 任务完成 → CLI 应弹出；Claude Desktop 只发飞书
 echo '{}' | NOTIFY_DEBUG=1 NOTIFY_FORCE=1 $SH stop
+# 飞书配置的独立创建和自动复用自测
+python3 <skill-dir>/scripts/test_feishu_setup.py
 # 飞书格式自测（用无效 URL 也应快速失败且 exit 0）
 echo '{"message":"x","cwd":"/tmp/demo-project"}' | LARK_WEBHOOK_URL=http://127.0.0.1:9 NOTIFY_FORCE=1 $SH notification
 # 无 terminal-notifier → 退 osascript

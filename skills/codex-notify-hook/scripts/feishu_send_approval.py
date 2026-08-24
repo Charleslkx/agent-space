@@ -22,9 +22,15 @@ def post_json(url: str, payload: dict, headers: dict[str, str] | None = None) ->
         return json.loads(resp.read())
 
 
+def api_base(env: dict[str, str]) -> str:
+    if env.get("FEISHU_DOMAIN") in {"lark", "larksuite"}:
+        return "https://open.larksuite.com"
+    return "https://open.feishu.cn"
+
+
 def tenant_token(env: dict[str, str]) -> str:
     resp = post_json(
-        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        f"{api_base(env)}/open-apis/auth/v3/tenant_access_token/internal",
         {"app_id": env["FEISHU_APP_ID"], "app_secret": env["FEISHU_APP_SECRET"]},
     )
     if resp.get("code") != 0:
@@ -84,7 +90,7 @@ def main() -> int:
 
     token = tenant_token(env)
     resp = post_json(
-        f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}",
+        f"{api_base(env)}/open-apis/im/v1/messages?receive_id_type={receive_id_type}",
         {
             "receive_id": receive_id,
             "msg_type": "interactive",

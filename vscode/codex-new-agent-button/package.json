@@ -1,0 +1,41 @@
+{
+  "name": "codex-new-agent-button",
+  "displayName": "Codex New Agent Button",
+  "description": "Adds a New Codex Agent button to the editor title bar.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.96.2"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionDependencies": [
+    "openai.chatgpt"
+  ],
+  "main": "./extension.js",
+  "files": [
+    "extension.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexNewAgentButton.new",
+        "title": "New Codex Agent",
+        "category": "Codex",
+        "icon": "$(plus)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "codexNewAgentButton.new",
+          "group": "navigation@100"
+        }
+      ]
+    }
+  }
+}

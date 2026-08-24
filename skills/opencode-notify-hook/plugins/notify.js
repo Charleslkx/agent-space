@@ -182,13 +182,14 @@ export const OpenCodeNotifyPlugin = async () => {
       const receiveId = env.FEISHU_HOME_CHANNEL || env.FEISHU_APPROVAL_RECEIVE_ID
       const receiveIdType = env.FEISHU_APPROVAL_RECEIVE_ID_TYPE || "chat_id"
       if (!appId || !appSecret || !receiveId) return false
+      const base = ["lark", "larksuite"].includes(env.FEISHU_DOMAIN) ? "https://open.larksuite.com" : "https://open.feishu.cn"
       const tok = await httpsPostJson(
-        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        `${base}/open-apis/auth/v3/tenant_access_token/internal`,
         { app_id: appId, app_secret: appSecret },
       )
       if (tok.code !== 0) return false
       const resp = await httpsPostJson(
-        `https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`,
+        `${base}/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`,
         { receive_id: receiveId, msg_type: "interactive", content: JSON.stringify(buildCard(TITLE, project, content, kind)) },
         { Authorization: `Bearer ${tok.tenant_access_token}` },
       )

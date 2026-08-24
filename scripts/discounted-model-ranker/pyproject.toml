@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "discounted-model-ranker"
+version = "0.1.0"
+description = "Rank discounted OpenRouter language models with Artificial Analysis data."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+discounted-model-ranker = "discounted_model_ranker.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

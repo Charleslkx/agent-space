@@ -1,24 +1,57 @@
 #!/usr/bin/env python3
-"""Create (or select) a Feishu/Lark agent app for opencode notifications.
-
-一键创建流程：扫码后飞书创建或选择自建应用，SDK 返回 App ID / App Secret，
-脚本把凭证直接写入 --env-out 指向的 feishu-agent.env（默认 ~/.config/opencode/feishu-agent.env）。
-
-共用一个应用时：--live 时在扫码页选择同一个已有应用（或用 --app-id 直接指定），
-SDK 会返回该应用的 App Secret，脚本据此生成本 agent 自己的 env（不共享文件、不软链）。
-
-Dry-run is dependency-free. Live mode requires:
-    python3 -m pip install 'lark-oapi>=1.5.5'
-"""
+"""Configure a self-contained Feishu app for an agent notification skill."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+from pathlib import Path
 import sys
+import urllib.request
 
 
+PROFILES = {
+    "codex-notify-hook": {
+        "agent": "Codex",
+        "app_name": "Codex Notify Agent",
+        "description": "Codex notification bot.",
+        "env": "~/.codex/feishu-agent.env",
+        "source": "codex-notify-hook",
+    },
+    "claude-code-notify-hook": {
+        "agent": "ClaudeCode",
+        "app_name": "Claude Code Notify Agent",
+        "description": "Claude Code notification bot.",
+        "env": "~/.claude/feishu-agent.env",
+        "source": "claude-code-notify-hook",
+    },
+    "opencode-notify-hook": {
+        "agent": "OpenCode",
+        "app_name": "OpenCode Notify Agent",
+        "description": "OpenCode notification bot.",
+        "env": "~/.config/opencode/feishu-agent.env",
+        "source": "opencode-notify-hook",
+    },
+    "copilot-notify-hook": {
+        "agent": "Copilot",
+        "app_name": "Copilot Notify Agent",
+        "description": "GitHub Copilot CLI notification bot.",
+        "env": "~/.copilot/feishu-agent.env",
+        "source": "copilot-notify-hook",
+    },
+}
+
+ENV_PATHS = [profile["env"] for profile in PROFILES.values()]
+COPY_KEYS = (
+    "FEISHU_APP_ID",
+    "FEISHU_APP_SECRET",
+    "FEISHU_DOMAIN",
+    "FEISHU_CONNECTION_MODE",
+    "FEISHU_HOME_CHANNEL",
+    "FEISHU_APPROVAL_RECEIVE_ID",
+    "FEISHU_APPROVAL_RECEIVE_ID_TYPE",
+)
 ADDONS = {
     "scopes": {
         "tenant": [
@@ -31,64 +64,142 @@ ADDONS = {
             "cardkit:card:read",
             "cardkit:card:write",
             "application:bot.basic_info:read",
-        ],
+        ]
     },
     "events": {"items": {"tenant": ["im.message.receive_v1"]}},
     "callbacks": {"items": ["card.action.trigger"]},
 }
 
-APP_PRESET = {
-    "name": "OpenCode Notify Agent",
-    "desc": "opencode notification bot.",
-}
 
-DEFAULT_ENV_OUT = os.path.expanduser("~/.config/opencode/feishu-agent.env")
-
-# 凭证类键由本脚本覆盖，其它键（如 FEISHU_HOME_CHANNEL）保留
-CRED_KEYS = ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_DOMAIN", "FEISHU_CONNECTION_MODE")
+def profile() -> dict[str, str]:
+    name = os.environ.get("NOTIFY_SKILL_NAME") or Path(__file__).resolve().parents[1].name
+    try:
+        return PROFILES[name]
+    except KeyError:
+        raise SystemExit(f"Unsupported skill directory: {name}")
 
 
-def print_manual_setup() -> None:
-    print("Manual Feishu app setup:")
-    print("1. Create an enterprise self-built app in Feishu Open Platform.")
-    print("2. Enable the Bot capability.")
-    print("3. Bulk-import this permissions/events/callbacks config:")
-    print(json.dumps(ADDONS, ensure_ascii=False, indent=4))
-    print("4. Use WebSocket long connection unless you already have a public webhook.")
-    print("5. Publish a new app version and wait for admin approval.")
+def read_env(path: str | Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        lines = Path(path).expanduser().read_text().splitlines()
+    except OSError:
+        return values
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip().strip("'\"")
+    return values
 
 
-def print_dry_run() -> None:
-    print("Live mode will call lark_oapi.register_app with:")
-    print(json.dumps({"app_preset": APP_PRESET, "addons": ADDONS, "create_only": True}, ensure_ascii=False, indent=4))
+def receive_id(env: dict[str, str]) -> str:
+    return env.get("FEISHU_HOME_CHANNEL") or env.get("FEISHU_APPROVAL_RECEIVE_ID", "")
 
 
-def write_env(path: str, values: dict[str, str]) -> None:
-    """Merge credential keys into env file, preserving other keys. chmod 600."""
-    path = os.path.expanduser(path)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    lines = []
-    if os.path.exists(path):
-        with open(path) as f:
-            lines = f.read().splitlines()
-    seen = set()
-    out = []
-    for line in lines:
-        key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+def complete(env: dict[str, str]) -> bool:
+    return bool(env.get("FEISHU_APP_ID") and env.get("FEISHU_APP_SECRET") and receive_id(env))
+
+
+def write_env(path: str | Path, values: dict[str, str]) -> None:
+    target = Path(path).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing = []
+    try:
+        existing = target.read_text().splitlines()
+    except OSError:
+        pass
+    written: set[str] = set()
+    output: list[str] = []
+    for line in existing:
+        key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else ""
+        if key.startswith("export "):
+            key = key[7:].strip()
         if key in values:
-            out.append(f"{key}={values[key]}")
-            seen.add(key)
+            output.append(f"{key}={values[key]}")
+            written.add(key)
         else:
-            out.append(line)
-    for key, val in values.items():
-        if key not in seen:
-            out.append(f"{key}={val}")
-    with open(path, "w") as f:
-        f.write("\n".join(out) + "\n")
-    os.chmod(path, 0o600)
+            output.append(line)
+    output.extend(f"{key}={value}" for key, value in values.items() if key not in written)
+    target.write_text("\n".join(output) + "\n")
+    target.chmod(0o600)
 
 
-def run_live(app_id: str, env_out: str) -> int:
+def candidates(target: Path) -> list[Path]:
+    override = os.environ.get("FEISHU_REUSE_ENV_PATHS")
+    paths = override.split(os.pathsep) if override is not None else ENV_PATHS
+    result = [target]
+    result.extend(Path(path).expanduser() for path in paths if Path(path).expanduser() != target)
+    return result
+
+
+def find_reusable(target: Path, app_id: str) -> tuple[Path, dict[str, str]] | None:
+    for path in candidates(target):
+        env = read_env(path)
+        if complete(env) and (not app_id or env.get("FEISHU_APP_ID") == app_id):
+            return path, env
+    return None
+
+
+def api_base(env: dict[str, str]) -> str:
+    return "https://open.larksuite.com" if env.get("FEISHU_DOMAIN") in {"lark", "larksuite"} else "https://open.feishu.cn"
+
+
+def post(url: str, payload: dict, headers: dict[str, str] | None = None) -> dict:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode(),
+        headers={"Content-Type": "application/json", **(headers or {})},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read())
+
+
+def test_connection(env: dict[str, str], agent: str) -> None:
+    base = api_base(env)
+    token = post(
+        f"{base}/open-apis/auth/v3/tenant_access_token/internal",
+        {"app_id": env["FEISHU_APP_ID"], "app_secret": env["FEISHU_APP_SECRET"]},
+    )
+    if token.get("code") != 0:
+        raise RuntimeError(f"tenant token failed: {token.get('code')} {token.get('msg')}")
+    card = {
+        "schema": "2.0",
+        "header": {"title": {"tag": "plain_text", "content": f"🤖 {agent} · 配置成功"}, "template": "blue"},
+        "body": {"elements": [{"tag": "markdown", "content": "通知机器人连接测试成功。"}]},
+    }
+    result = post(
+        f"{base}/open-apis/im/v1/messages?receive_id_type={env.get('FEISHU_APPROVAL_RECEIVE_ID_TYPE', 'chat_id')}",
+        {"receive_id": receive_id(env), "msg_type": "interactive", "content": json.dumps(card, ensure_ascii=False)},
+        {"Authorization": f"Bearer {token['tenant_access_token']}"},
+    )
+    if result.get("code") != 0:
+        raise RuntimeError(f"send failed: {result.get('code')} {result.get('msg')}")
+
+
+def print_manual() -> None:
+    print("1. Create an enterprise self-built app in Feishu Open Platform and enable Bot.")
+    print("2. Import this permissions/events/callbacks configuration:")
+    print(json.dumps(ADDONS, ensure_ascii=False, indent=2))
+    print("3. Publish the app, obtain admin approval, and add the bot to the target chat.")
+    print("4. Run this script with --live --app-id cli_xxx --home-channel oc_xxx --test.")
+
+
+def home_channel(args: argparse.Namespace, target_env: dict[str, str]) -> str:
+    value = args.home_channel or receive_id(target_env)
+    if not value and sys.stdin.isatty():
+        value = input("FEISHU_HOME_CHANNEL (target chat_id): ").strip()
+    return value
+
+
+def create_app(args: argparse.Namespace, cfg: dict[str, str], target: Path) -> int:
+    channel = home_channel(args, read_env(target))
+    if not channel:
+        print("No reusable bot configuration found; --home-channel is required before creating an app.", file=sys.stderr)
+        return 2
     try:
         import lark_oapi as lark
     except ImportError:
@@ -99,56 +210,86 @@ def run_live(app_id: str, env_out: str) -> int:
         print(f"Scan or open: {info['url']}")
         print(f"Expires in: {info['expire_in']} seconds")
 
-    def on_status_change(info: dict) -> None:
-        status = info.get("status", "")
-        interval = info.get("interval")
-        print(f"Status: {status}" + (f" interval={interval}" if interval else ""))
-
     kwargs = {
         "on_qr_code": on_qr_code,
-        "on_status_change": on_status_change,
-        "source": "opencode-notify-hook",
-        "app_preset": APP_PRESET,
+        "on_status_change": lambda info: print(f"Status: {info.get('status', '')}"),
+        "source": cfg["source"],
+        "app_preset": {"name": cfg["app_name"], "desc": cfg["description"]},
         "addons": ADDONS,
     }
-    if app_id:
-        kwargs["app_id"] = app_id
+    if args.app_id:
+        kwargs["app_id"] = args.app_id
     else:
         kwargs["create_only"] = True
-
     result = lark.register_app(**kwargs)
-    brand = (result.get("user_info") or {}).get("tenant_brand", "feishu")
     values = {
         "FEISHU_APP_ID": result["client_id"],
         "FEISHU_APP_SECRET": result["client_secret"],
-        "FEISHU_DOMAIN": brand,
+        "FEISHU_DOMAIN": (result.get("user_info") or {}).get("tenant_brand", "feishu"),
         "FEISHU_CONNECTION_MODE": "websocket",
+        "FEISHU_HOME_CHANNEL": channel,
+        "FEISHU_APPROVAL_RECEIVE_ID": channel,
+        "FEISHU_APPROVAL_RECEIVE_ID_TYPE": args.receive_id_type,
     }
-    print("Created/updated Feishu app.")
-    for k, v in values.items():
-        print(f"{k}={v}" if k != "FEISHU_APP_SECRET" else f"{k}=***")
-    if env_out:
-        write_env(env_out, values)
-        print(f"Wrote credentials to {os.path.expanduser(env_out)} (mode 600).")
-        print("提醒：FEISHU_HOME_CHANNEL 仍需机器人私聊 /set-home 或手工填入。")
+    write_env(target, values)
+    print(f"Created/updated app {values['FEISHU_APP_ID']} and wrote {target} (mode 600).")
+    if args.test:
+        if sys.stdin.isatty():
+            input(f"Add the bot to {channel}, then press Enter to test delivery: ")
+        test_connection(read_env(target), cfg["agent"])
+        print("Notification bot test succeeded.")
     return 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Create a Feishu agent app for opencode notify hooks.")
-    parser.add_argument("--live", action="store_true", help="call Feishu SDK and wait for QR approval")
-    parser.add_argument("--manual", action="store_true", help="print manual setup checklist")
-    parser.add_argument("--app-id", default="", help="select/update an existing app (共用同一应用) instead of creating a new one")
-    parser.add_argument("--env-out", default=DEFAULT_ENV_OUT, help=f"write fetched credentials here (default {DEFAULT_ENV_OUT}); empty string to skip")
+    cfg = profile()
+    parser = argparse.ArgumentParser(description=f"Configure {cfg['agent']} Feishu notifications.")
+    parser.add_argument("--live", action="store_true", help="create/select an app when no reusable config exists")
+    parser.add_argument("--manual", action="store_true", help="print manual setup steps")
+    parser.add_argument("--new", action="store_true", help="skip automatic reuse and create a separate app")
+    parser.add_argument("--app-id", default="", help="reuse or select this existing app")
+    parser.add_argument("--home-channel", default="", help="target chat_id, required for a new setup")
+    parser.add_argument("--receive-id-type", default="chat_id")
+    parser.add_argument("--env-out", default=cfg["env"], help="this agent's independent env file")
+    parser.add_argument("--test", action="store_true", help="send one connection-test card")
     args = parser.parse_args()
+    if args.new and args.app_id:
+        parser.error("--new and --app-id are mutually exclusive")
+    if not args.env_out:
+        parser.error("--env-out must name this agent's env file")
+    target = Path(args.env_out).expanduser()
 
     if args.manual:
-        print_manual_setup()
+        print_manual()
         return 0
+    if not args.new:
+        found = find_reusable(target, args.app_id)
+        if found:
+            source, env = found
+            values = {key: env[key] for key in COPY_KEYS if env.get(key)}
+            values["FEISHU_HOME_CHANNEL"] = receive_id(env)
+            values["FEISHU_APPROVAL_RECEIVE_ID"] = receive_id(env)
+            values.setdefault("FEISHU_APPROVAL_RECEIVE_ID_TYPE", "chat_id")
+            if args.home_channel:
+                values["FEISHU_HOME_CHANNEL"] = args.home_channel
+                values["FEISHU_APPROVAL_RECEIVE_ID"] = args.home_channel
+                values["FEISHU_APPROVAL_RECEIVE_ID_TYPE"] = args.receive_id_type
+            write_env(target, values)
+            print(f"Reused app {env['FEISHU_APP_ID']} from {source}; wrote independent {target} (mode 600).")
+            if args.test:
+                test_connection(read_env(target), cfg["agent"])
+                print("Notification bot test succeeded.")
+            return 0
     if not args.live:
-        print_dry_run()
+        print("No reusable complete bot configuration found.")
+        print(json.dumps({"app_preset": {"name": cfg["app_name"], "desc": cfg["description"]}, "addons": ADDONS}, ensure_ascii=False, indent=2))
+        print("Run again with --live --home-channel <chat_id>; add --test to verify delivery.")
         return 0
-    return run_live(args.app_id, args.env_out)
+    try:
+        return create_app(args, cfg, target)
+    except Exception as error:
+        print(f"Setup failed: {error}", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":

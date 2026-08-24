@@ -31,11 +31,10 @@ is_wsl() {
 }
 
 is_claude_desktop() {
-  [ "${__CFBundleIdentifier:-}" = "com.anthropic.claudefordesktop" ]
+  [ "${CLAUDE_CODE_ENTRYPOINT:-}" = "claude-desktop" ]
 }
 
 local_notifications_enabled() {
-  is_claude_desktop && return 1
   [ "$(uname -s 2>/dev/null)" = "Darwin" ] || is_wsl
 }
 
@@ -131,6 +130,7 @@ receive_id = env.get("FEISHU_HOME_CHANNEL") or env.get("FEISHU_APPROVAL_RECEIVE_
 receive_id_type = env.get("FEISHU_APPROVAL_RECEIVE_ID_TYPE", "chat_id")
 if not (app_id and app_secret and receive_id):
     sys.exit(1)
+base = "https://open.larksuite.com" if env.get("FEISHU_DOMAIN") in {"lark", "larksuite"} else "https://open.feishu.cn"
 
 def post(url, payload, headers=None):
     req = urllib.request.Request(
@@ -141,7 +141,7 @@ def post(url, payload, headers=None):
         return json.loads(r.read())
 
 tok = post(
-    "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+    f"{base}/open-apis/auth/v3/tenant_access_token/internal",
     {"app_id": app_id, "app_secret": app_secret},
 )
 if tok.get("code") != 0:
@@ -176,7 +176,7 @@ card = {
     },
 }
 resp = post(
-    f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}",
+    f"{base}/open-apis/im/v1/messages?receive_id_type={receive_id_type}",
     {"receive_id": receive_id, "msg_type": "interactive",
      "content": json.dumps(card, ensure_ascii=False)},
     {"Authorization": f"Bearer {tok['tenant_access_token']}"},
@@ -209,6 +209,8 @@ front_bundle_id() {
 
 # 焦点是否在承载本会话的 app（任一信号缺失 -> 返回 1，即“不静默”，宁可多弹）
 is_focused_on_session() {
+  # ponytail: Desktop 下多会话共用一个 bundle id，app 级焦点分不清是哪个会话，直接放弃判断
+  is_claude_desktop && { dbg "Claude Desktop：跳过焦点检查"; return 1; }
   local owner="${__CFBundleIdentifier:-}" front
   [ -n "$owner" ] || { dbg "无 __CFBundleIdentifier，跳过焦点检查"; return 1; }
   front="$(front_bundle_id 2>/dev/null || true)"
@@ -221,11 +223,7 @@ deliver() {
   local body="$1" subtitle="$2" owner="${__CFBundleIdentifier:-}"
 
   if ! local_notifications_enabled; then
-    if is_claude_desktop; then
-      dbg "Claude Desktop：跳过本地通知，仅发送飞书"
-    else
-      dbg "原生 Linux：跳过本地通知，仅发送飞书"
-    fi
+    dbg "原生 Linux：跳过本地通知，仅发送飞书"
     return 0
   fi
 

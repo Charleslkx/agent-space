@@ -17,7 +17,7 @@ description: >
 
 ### 飞书通知协议
 
-Codex、Claude Code、OpenCode 使用同一协议：读取各自 `feishu-agent.env` 中的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`、`FEISHU_APPROVAL_RECEIVE_ID_TYPE`；自建应用 IM API 为主通道，webhook 为失败回退。卡片无按钮，字段固定为 Agent、Project、Content、时间；完成为蓝色，需注意为橙色。通知链路不调用 `lark-cli`。
+Codex、Claude Code、OpenCode、Copilot 使用同一协议：读取各自 `feishu-agent.env` 中的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`、`FEISHU_APPROVAL_RECEIVE_ID_TYPE`；自建应用 IM API 为主通道，webhook 为失败回退。卡片无按钮，字段固定为 Agent、Project、Content、时间；完成为蓝色，需注意为橙色。通知链路不调用 `lark-cli`。
 
 ## 与 Claude Code / Codex hook 的对比
 
@@ -62,22 +62,9 @@ esac
 
 原生 Linux 仍需放置插件，用它触发飞书；插件不会尝试本地通知或终端响铃。
 
-### 飞书配置交接规则
+### 飞书配置入口
 
-需要飞书时，先给用户生成可编辑脚本，**不要代填、不要运行、不要要求用户在对话中发送密钥**：
-
-```bash
-cp <skill-dir>/scripts/write_feishu_agent_env.sh ~/.config/opencode/configure-feishu-agent.sh
-chmod 700 ~/.config/opencode/configure-feishu-agent.sh
-```
-
-告知用户编辑 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`（接收会话的 `chat_id`）；用户自行运行：
-
-```bash
-~/.config/opencode/configure-feishu-agent.sh
-```
-
-用户回复“已运行”后，检查 `~/.config/opencode/feishu-agent.env` 存在且权限为 `600`，再触发一次插件事件测试。
+优先运行第 2a 节的独立安装脚本。它会使用 OpenCode 自己的完整配置，或把其他 Agent 的完整机器人配置复制成 OpenCode 自己的 mode-`600` env；所有配置都不存在时再扫码新建。手工模板只作兜底，不要在对话中传递密钥。
 
 ### 1. 放置插件
 
@@ -94,19 +81,20 @@ cp <skill-dir>/plugins/notify.js ~/.config/opencode/plugins/notify.js
 
 #### 2a. 一键创建 / 选择应用（推荐）
 
-`scripts/create_feishu_agent_app.py` 复刻 codex 的一键创建流程：扫码后飞书创建或**选择已有应用**，SDK 返回 App ID / App Secret，脚本直接写入 `~/.config/opencode/feishu-agent.env`（mode 600），无需手工复制或软链。
+`scripts/create_feishu_agent_app.py` 是完整、独立的配置入口，运行期不依赖 Codex、Claude Code 或 Copilot。复用时复制应用和目标群配置到 OpenCode 自己的 env，不创建软链接；都没有配置时，扫码创建或选择自建应用并写入完整 env。
 
 ```bash
-python3 <skill-dir>/scripts/create_feishu_agent_app.py            # dry-run，打印将提交的权限清单
+python3 <skill-dir>/scripts/create_feishu_agent_app.py            # 使用自己的配置或自动复用其他 Agent
 python3 -m pip install 'lark-oapi>=1.5.5'
-python3 <skill-dir>/scripts/create_feishu_agent_app.py --live     # 扫码，新建一个应用
-python3 <skill-dir>/scripts/create_feishu_agent_app.py --live --app-id cli_xxx  # 共用同一应用：指定已有 app_id
+python3 <skill-dir>/scripts/create_feishu_agent_app.py --live --home-channel oc_xxx --test
+python3 <skill-dir>/scripts/create_feishu_agent_app.py --live --app-id cli_xxx --home-channel oc_xxx
+python3 <skill-dir>/scripts/create_feishu_agent_app.py --live --new --home-channel oc_xxx
 python3 <skill-dir>/scripts/create_feishu_agent_app.py --manual   # 手工创建兜底
 ```
 
-env 路径可用 `--env-out` 改写；`--env-out ''` 只打印不落盘。
+新建应用前必须提供目标会话的 `chat_id`，创建后把机器人加入该会话。`--test` 发送一张连接测试卡片。env 路径可用 `--env-out` 改写。
 
-> **共用一个应用的注意点**：三个 agent 各自跑本脚本、各写各的 env，指向同一 app_id 时拿到的是**同一个 App Secret**（飞书一个应用只有一个 secret）。若某次重新授权导致飞书**重置了 secret**，其余 agent 的旧 secret 会失效——此时重跑另外两个 agent 的创建脚本刷新即可。
+共用应用时，四个 Agent 各自保存一份 env。飞书重置 App Secret 后，重新运行各自脚本即可从任一已更新配置自动刷新。
 
 #### 2b. 手工填写
 
@@ -163,6 +151,7 @@ import { OpenCodeNotifyPlugin } from "./plugins/notify.js"
 const plugin = await OpenCodeNotifyPlugin()
 console.log("plugin hooks:", Object.keys(plugin))
 EOF
+python3 <skill-dir>/scripts/test_feishu_setup.py
 ```
 
 ## 插件设计要点
@@ -171,7 +160,7 @@ EOF
 - **同步试投检测崩溃**：terminal-notifier 在 macOS 26 上崩溃会立即返回非零，同步等待才能检测到并降级；异步 fire-and-forget 会漏掉崩溃。
 - **焦点识别**：见下方「ASN 问题与焦点检测」一节。
 - **`event.properties` 防御**：不同 opencode 版本的事件 payload 字段名可能有差异，`extractPermissionMsg` 多重 fallback 兜底，最终退到"需要授权"默认文案。
-- **通知内容保持简单**：本地通知 title 是 `OpenCode`，subtitle 是项目根目录名称，body 是通知内容；飞书发通知卡片（绿=完成/橙=授权），卡片只含 agent、project、content、时间戳，不加按钮。
+- **通知内容保持简单**：本地通知 title 是 `OpenCode`，subtitle 是项目根目录名称，body 是通知内容；飞书发通知卡片（蓝=完成/橙=授权），卡片只含 agent、project、content、时间戳，不加按钮。
 - **不 `throw`**：插件内所有路径 `.catch(() => {})` 兜底，确保通知失败不中断 opencode 会话。
 
 ## ASN 问题与焦点检测

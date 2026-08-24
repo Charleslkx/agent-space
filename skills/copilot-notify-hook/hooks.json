@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "hooks": {
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "python3 \"$HOME/.copilot/hooks/notify.py\" stop",
+        "timeoutSec": 20
+      }
+    ],
+    "notification": [
+      {
+        "type": "command",
+        "matcher": "permission_prompt|elicitation_dialog",
+        "bash": "python3 \"$HOME/.copilot/hooks/notify.py\" notification",
+        "timeoutSec": 20
+      }
+    ]
+  }
+}

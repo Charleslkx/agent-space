@@ -15,7 +15,7 @@ description: >
 
 ### 飞书通知协议
 
-三个 agent 使用同一协议：读取各自 `feishu-agent.env` 中的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`、`FEISHU_APPROVAL_RECEIVE_ID_TYPE`；自建应用 IM API 为主通道，webhook 为失败回退。卡片无按钮，字段固定为 Agent、Project、Content、时间；完成为蓝色，需注意为橙色。通知链路不调用 `lark-cli`。
+四个 agent 使用同一协议：读取各自 `feishu-agent.env` 中的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`、`FEISHU_APPROVAL_RECEIVE_ID_TYPE`；自建应用 IM API 为主通道，webhook 为失败回退。卡片无按钮，字段固定为 Agent、Project、Content、时间；完成为蓝色，需注意为橙色。通知链路不调用 `lark-cli`。
 
 完成卡片的正文必须使用真实换行来分隔 Agent、Project、Content；不得把 `\n` 作为普通文本发送。时间应作为弱化的说明文字显示。
 
@@ -54,13 +54,15 @@ esac
 
 通知不调用 `lark-cli`，也不读取其用户登录态。它使用 `feishu-agent.env` 中的应用凭证，先换取 tenant access token，再调用飞书 IM API 向 `FEISHU_HOME_CHANNEL` 发卡片。
 
-已有绑定应用时，保留现有 `~/.codex/feishu-agent.env`。需要新建或更新应用时，用户在本机运行：
+每个通知 Skill 都包含完整的 `create_feishu_agent_app.py`，运行期只读取自己的 env，不调用其他 Skill。安装脚本依次使用 Codex 自己的完整配置、自动复制其他 Agent 的完整配置，或在完全没有配置时扫码创建应用。复用会写入 Codex 自己的 mode-`600` env，不创建软链接。
 
 ```bash
-python3 <skill-dir>/scripts/create_feishu_agent_app.py --live
+python3 <skill-dir>/scripts/create_feishu_agent_app.py
+python3 -m pip install 'lark-oapi>=1.5.5'
+python3 <skill-dir>/scripts/create_feishu_agent_app.py --live --home-channel oc_xxx --test
 ```
 
-该命令通过 `lark_oapi.register_app` 展示二维码，完成飞书一键绑定；将输出的凭证和接收群 `FEISHU_HOME_CHANNEL` 写入 `~/.codex/feishu-agent.env`（权限 `600`）。不要在对话中发送密钥。
+`--app-id cli_xxx` 选择指定现有应用；`--new` 跳过自动复用并创建独立应用；`--manual` 打印手工创建步骤。新建应用前必须提供目标会话的 `chat_id`，创建后把机器人加入该会话。`--test` 发送一张连接测试卡片。不要在对话中发送密钥。
 
 脚本与三个 Python 文件必须一并放入 hook 目录：
 
@@ -126,6 +128,7 @@ Codex 对非托管 hook 要求审核并信任：
 ```bash
 rg -n '"Stop"|PermissionRequest' ~/.codex/hooks.json
 bash <skill-dir>/scripts/test_notify.sh
+python3 <skill-dir>/scripts/test_feishu_setup.py
 ```
 
 预期：配置中存在 `Stop`，不存在 `PermissionRequest`；测试输出 `ok: Stop notification delivered`。
@@ -164,6 +167,7 @@ brew install terminal-notifier
 ```bash
 SH=~/.codex/hooks/notify.sh
 bash <skill-dir>/scripts/test_notify.sh
+python3 <skill-dir>/scripts/test_feishu_setup.py
 echo '{"hook_event_name":"Stop"}' | NOTIFY_DEBUG=1 NOTIFY_FORCE=1 "$SH" stop
 echo '{"hook_event_name":"Stop"}' | NOTIFY_FORCE=1 PATH=/usr/bin:/bin "$SH" stop
 ```
