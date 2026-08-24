@@ -14,6 +14,15 @@ sudo -E BASE_DOMAIN=example.com scripts/ubuntu.sh install
 脚本拒绝协议、路径、端口和已经带 `lark.` 的值。环境检查不会修改系统；`install` 只安装 Docker Compose、Nginx 和 Certbot。
 安装脚本验证 root 可以连接 Docker daemon。后续 Docker 和 Compose 命令统一使用 `sudo`；这同时满足 Docker socket 与 0600 环境文件的权限要求，不需要把部署用户加入等同 root 权限的 `docker` 组。
 
+如果服务器已经运行 Caddy，可使用仓库中的 scripts/deploy-caddy.sh 辅助部署。该脚本是通用模板，运行时会要求管理员手动输入以下值：
+
+- 公网 MCP 主机名，例如 lark.example.com；
+- GitHub OAuth App Client ID；
+- GitHub OAuth App Client Secret（隐藏输入）；
+- 允许访问的 GitHub login 白名单，多个 login 用逗号分隔。
+
+这些值不会预先写在脚本中，也不应写入 Git。运行前请先创建独立的 GitHub OAuth App，并将 Homepage 设置为 https://<主机名>、callback URL 设置为 https://<主机名>/auth/callback。脚本只把运行时输入写入 /etc/lark-cli-mcp.env，并将文件权限设为 0600；JWT、Fernet 和 Redis 密钥由脚本现场生成。公网主机名还必须已有 DNS 记录，且服务器已有 Caddy 服务。
+
 ## 2. GitHub OAuth App
 
 在 GitHub Developer Settings 创建独立 OAuth App：

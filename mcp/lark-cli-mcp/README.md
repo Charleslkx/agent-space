@@ -30,6 +30,14 @@ sudo docker compose up -d
 
 这四条命令不能替代 OAuth、飞书应用和 TLS 配置；继续按 `CONFIGURATION.md` 的编号完成。部署命令统一使用 `sudo`，因为 Compose 需要访问 Docker socket 和权限为 0600 的 `/etc` 环境文件。
 
+仓库还提供一个面向已有 Caddy 实例的辅助脚本：
+
+~~~bash
+sudo ./scripts/deploy-caddy.sh
+~~~
+
+该脚本不会把部署环境写入仓库。运行时必须由操作者在终端手动输入公网 MCP 主机名、GitHub OAuth Client ID、GitHub OAuth Client Secret，以及允许访问的 GitHub login 白名单（多个 login 用逗号分隔）。公网主机名必须已解析到服务器，GitHub OAuth App 的 Homepage 和 callback URL 也必须使用同一个主机名；Client Secret 不要写入脚本或提交到 Git。脚本只将这些运行配置写入权限为 0600 的 /etc/lark-cli-mcp.env，JWT、Fernet 和 Redis 密钥由脚本随机生成。
+
 ## 固定边界
 
 服务开放飞书业务命令、`api`、`schema`、`help` 和 `skills`，拒绝服务器认证、配置、profile、自动升级、本地文件、剪贴板、本地 Apps 工程和无界事件监听。高风险写操作保留 `lark-cli` 的退出码 10 门禁，服务不会自动追加 `--yes`。
