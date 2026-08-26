@@ -165,6 +165,9 @@ class ServerTest(unittest.TestCase):
     def test_workbuddy_callback_is_allowlisted(self):
         self.assertIn(SERVER.WORKBUDDY_REDIRECT_URI, SERVER.ALLOWED_CLIENT_REDIRECT_URIS)
 
+    def test_grok_callback_is_allowlisted(self):
+        self.assertIn(SERVER.GROK_REDIRECT_URI, SERVER.ALLOWED_CLIENT_REDIRECT_URIS)
+
 
 if __name__ == "__main__":
     unittest.main()

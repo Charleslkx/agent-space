@@ -770,6 +770,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(kwargs["base_url"], "https://mcp.example.com")
             self.assertIn("https://chatgpt.com/connector/oauth/*", kwargs["allowed_client_redirect_uris"])
             self.assertIn("https://claude.ai/api/mcp/auth_callback", kwargs["allowed_client_redirect_uris"])
+            self.assertIn(SERVER.GROK_REDIRECT_URI, kwargs["allowed_client_redirect_uris"])
             self.assertIn(SERVER.WORKBUDDY_REDIRECT_URI, kwargs["allowed_client_redirect_uris"])
             self.assertIn("http://localhost:*", kwargs["allowed_client_redirect_uris"])
             self.assertIn("http://127.0.0.1:*", kwargs["allowed_client_redirect_uris"])

@@ -139,6 +139,8 @@ ChatGPT、Claude.ai 或 Claude Desktop 使用其远程 Connector 界面添加相
 
 WorkBuddy Custom MCP 使用固定回调 URI `workbuddy://workbuddy/mcp/custom-mcp%3Afirecrawl/oauth/callback`；服务已将该精确 URI 加入 OAuth 白名单。
 
+Grok 自定义连接器使用固定回调 URI `https://grok.com/connectors-oauth-exchange-code/`；服务已将该精确 URI（包括末尾 `/`）加入 OAuth 白名单。
+
 ## 10 故障处理
 
 | 现象 | 检查项 |

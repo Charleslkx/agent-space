@@ -51,6 +51,9 @@ class ServerTest(unittest.TestCase):
         tools = asyncio.run(SERVER.mcp.list_tools(run_middleware=False))
         self.assertEqual({tool.name for tool in tools}, {"lark_cli", "lark_cli_skill"})
 
+    def test_grok_callback_is_allowlisted(self):
+        self.assertIn(SERVER.GROK_REDIRECT_URI, SERVER.ALLOWED_CLIENT_REDIRECT_URIS)
+
     def test_github_allowlist_is_case_insensitive(self):
         token = type("Token", (), {"claims": {"login": "cHaRlEs"}})()
         context = type("Context", (), {"token": token})()
