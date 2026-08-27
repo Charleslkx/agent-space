@@ -33,11 +33,13 @@ CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 CLAUDE_CODE_REDIRECT_URI_PATTERN = "http://localhost:*"
 WORKBUDDY_REDIRECT_URI = "workbuddy://workbuddy/mcp/custom-mcp%3Abrave-search/oauth/callback"
 GROK_REDIRECT_URI = "https://grok.com/connectors-oauth-exchange-code/"
+CURSOR_REDIRECT_URI = "https://www.cursor.com/agents/mcp/oauth/callback"
 ALLOWED_CLIENT_REDIRECT_URIS = [
     "https://chatgpt.com/connector/oauth/*",
     "https://chatgpt.com/connector_platform_oauth_redirect",
     "https://claude.ai/api/mcp/auth_callback",
     GROK_REDIRECT_URI,
+    CURSOR_REDIRECT_URI,
     WORKBUDDY_REDIRECT_URI,
     "http://localhost:*",
     "http://127.0.0.1:*",

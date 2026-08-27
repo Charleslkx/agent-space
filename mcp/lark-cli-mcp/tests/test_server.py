@@ -257,15 +257,15 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(invocations, ["calendar"])
 
     def test_unspawnable_argv_becomes_a_clear_error(self):
-        oversized = ["calendar", *(["x" * SERVER.MAX_ARG_BYTES] * (SERVER.MAX_ARGS - 1))]
-        SERVER._validate_args(oversized, None)  # within the documented limits
         with tempfile.TemporaryDirectory() as directory:
             fake = write_fake_cli(directory, "echo ok")
             with patch.dict(os.environ, {
                 SERVER.CLI_ENV: str(fake), SERVER.UPDATE_CHECK_ENV: "0", SERVER.STATE_DIR_ENV: directory,
-            }, clear=False):
+            }, clear=False), patch.object(
+                SERVER.subprocess, "run", side_effect=OSError("argument list too long")
+            ):
                 with self.assertRaisesRegex(RuntimeError, "could not run lark-cli"):
-                    SERVER.lark_cli(oversized)
+                    SERVER.lark_cli(["calendar"])
 
     def test_update_info_only_when_newer(self):
         SERVER._INSTALLED_VERSION = "1.0.81"

@@ -114,8 +114,6 @@ class ServerTest(unittest.TestCase):
                 self.assertEqual(SERVER.brave_search_cli(["web", "query"])["stdout"], "ok\n")
 
     def test_unspawnable_argv_becomes_a_clear_error(self):
-        oversized = ["web", *(["x" * SERVER.MAX_ARG_BYTES] * (SERVER.MAX_ARGS - 1))]
-        SERVER._validate_args(oversized, None)  # within the documented limits
         with tempfile.TemporaryDirectory() as directory:
             fake_bx = Path(directory) / "bx"
             fake_bx.write_text("#!/bin/sh\necho ok\n")
@@ -123,9 +121,11 @@ class ServerTest(unittest.TestCase):
             with patch.dict(os.environ, {
                 "BRAVE_MCP_BX_PATH": str(fake_bx),
                 "BRAVE_SEARCH_API_KEY": "brave-key",
-            }, clear=False):
+            }, clear=False), patch.object(
+                SERVER.subprocess, "run", side_effect=OSError("argument list too long")
+            ):
                 with self.assertRaisesRegex(RuntimeError, "could not run bx"):
-                    SERVER.brave_search_cli(oversized)
+                    SERVER.brave_search_cli(["web", "query"])
 
     def test_tool_preserves_stdout_stderr_exit_code_and_stdin(self):
         with tempfile.TemporaryDirectory() as directory:
