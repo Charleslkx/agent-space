@@ -17,7 +17,7 @@ description: >
 
 ### 飞书通知协议
 
-Codex、Claude Code、OpenCode、Copilot 使用同一协议：读取各自 `feishu-agent.env` 中的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`、`FEISHU_APPROVAL_RECEIVE_ID_TYPE`；自建应用 IM API 为主通道，webhook 为失败回退。卡片无按钮，字段固定为 Agent、Project、Content、时间；完成为蓝色，需注意为橙色。通知链路不调用 `lark-cli`。
+Codex、Claude Code、OpenCode、Copilot、Cursor 使用同一协议：读取各自 `feishu-agent.env` 中的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`、`FEISHU_APPROVAL_RECEIVE_ID_TYPE`；自建应用 IM API 为主通道，webhook 为失败回退。卡片无按钮，字段固定为 Agent、Project、Content、时间；完成为蓝色，需注意为橙色。通知链路不调用 `lark-cli`。
 
 ## 与 Claude Code / Codex hook 的对比
 
@@ -94,7 +94,7 @@ python3 <skill-dir>/scripts/create_feishu_agent_app.py --manual   # 手工创建
 
 新建应用前必须提供目标会话的 `chat_id`，创建后把机器人加入该会话。`--test` 发送一张连接测试卡片。env 路径可用 `--env-out` 改写。
 
-共用应用时，四个 Agent 各自保存一份 env。飞书重置 App Secret 后，重新运行各自脚本即可从任一已更新配置自动刷新。
+共用应用时，五个 Agent 各自保存一份 env。飞书重置 App Secret 后，重新运行各自脚本即可从任一已更新配置自动刷新。
 
 #### 2b. 手工填写
 

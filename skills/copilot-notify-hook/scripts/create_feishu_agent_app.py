@@ -40,6 +40,13 @@ PROFILES = {
         "env": "~/.copilot/feishu-agent.env",
         "source": "copilot-notify-hook",
     },
+    "cursor-notify-hook": {
+        "agent": "Cursor",
+        "app_name": "Cursor Notify Agent",
+        "description": "Cursor notification bot.",
+        "env": "~/.cursor/feishu-agent.env",
+        "source": "cursor-notify-hook",
+    },
 }
 
 ENV_PATHS = [profile["env"] for profile in PROFILES.values()]
