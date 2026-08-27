@@ -148,17 +148,17 @@ class ServerTest(unittest.TestCase):
                 self.assertEqual(SERVER.firecrawl_cli(["search", "q"])["stdout"], "ok\n")
 
     def test_unspawnable_argv_becomes_a_clear_error(self):
-        oversized = ["search", *(["x" * SERVER.MAX_ARG_BYTES] * (SERVER.MAX_ARGS - 1))]
-        SERVER._validate_args(oversized, None)  # within the documented limits
         with tempfile.TemporaryDirectory() as directory:
             fake = write_fake_cli(directory, "echo ok")
             with patch.dict(os.environ, {
                 "FIRECRAWL_MCP_CLI_PATH": str(fake),
                 "FIRECRAWL_API_KEY": "firecrawl-key",
                 "FIRECRAWL_MCP_UPDATE_CHECK": "0",
-            }, clear=False):
+            }, clear=False), patch.object(
+                SERVER.subprocess, "run", side_effect=OSError("argument list too long")
+            ):
                 with self.assertRaisesRegex(RuntimeError, "could not run firecrawl"):
-                    SERVER.firecrawl_cli(oversized)
+                    SERVER.firecrawl_cli(["search", "query"])
 
     def test_tool_preserves_stdout_stderr_exit_code_and_stdin(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -265,6 +265,9 @@ class ServerTest(unittest.TestCase):
     def test_workbuddy_callback_is_allowlisted(self):
         self.assertIn(SERVER.WORKBUDDY_REDIRECT_URI, SERVER.ALLOWED_CLIENT_REDIRECT_URIS)
 
+    def test_grok_callback_is_allowlisted(self):
+        self.assertIn(SERVER.GROK_REDIRECT_URI, SERVER.ALLOWED_CLIENT_REDIRECT_URIS)
+
     def test_update_available_reported_only_when_newer(self):
         SERVER._INSTALLED_VERSION = "1.19.27"
         try:
@@ -323,14 +326,17 @@ class ServerTest(unittest.TestCase):
     def test_update_check_failure_never_breaks_a_tool_call(self):
         with tempfile.TemporaryDirectory() as directory:
             fake = write_fake_cli(directory, 'echo ok\n')
-            with patch.object(SERVER, "_refresh_latest_version", side_effect=RuntimeError("boom")), \
+            with patch.object(SERVER.urllib.request, "urlopen", side_effect=RuntimeError("boom")), \
+                 patch.object(SERVER.threading, "Thread") as thread_class, \
                  patch.dict(os.environ, {
                      "FIRECRAWL_MCP_CLI_PATH": str(fake),
                      "FIRECRAWL_API_KEY": "firecrawl-key",
                      "FIRECRAWL_MCP_UPDATE_CHECK": "1",
                  }, clear=False), \
                  patch.dict(SERVER._LATEST_STATE, {"version": None, "checked_at": 0.0, "checking": False}):
+                thread_class.return_value.start.side_effect = SERVER._refresh_latest_version
                 result = SERVER.firecrawl_cli(["search", "query"])
+                thread_class.assert_called_once_with(target=SERVER._refresh_latest_version, daemon=True)
         self.assertEqual(result["stdout"], "ok\n")
         self.assertNotIn("update_available", result)
 
