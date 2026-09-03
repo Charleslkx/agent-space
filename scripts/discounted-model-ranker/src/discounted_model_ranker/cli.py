@@ -94,13 +94,16 @@ def discounted_model(model: dict) -> dict | None:
     endpoints = get_json(url)["data"]["endpoints"]
     discounted = []
     for endpoint in endpoints:
-        discount = endpoint.get("pricing", {}).get("discount")
+        pricing = endpoint.get("pricing", {})
+        discount = pricing.get("discount")
         if is_discount(discount):
             discounted.append(
                 {
                     "provider": endpoint.get("provider_name"),
                     "endpoint": endpoint.get("name"),
                     "discount_percent": round(discount * 100, 2),
+                    "input_price_per_token": float(pricing.get("prompt", 0)),
+                    "output_price_per_token": float(pricing.get("completion", 0)),
                 }
             )
     if not discounted:
@@ -152,6 +155,11 @@ def match_models(
             candidates.values(),
             key=lambda item: item["evaluations"].get("artificial_analysis_intelligence_index") or -1,
         )
+        # Find the best discount endpoint to get pricing
+        best_endpoint = max(
+            model["discounted_endpoints"],
+            key=lambda ep: ep["discount_percent"],
+        )
         matches.append(
             {
                 "name": aa_model["name"],
@@ -162,9 +170,9 @@ def match_models(
                 "aa_rank": aa_model["aa_rank"],
                 "openrouter_ids": model["ids"],
                 "canonical_slug": model["canonical_slug"],
-                "best_discount_percent": max(
-                    endpoint["discount_percent"] for endpoint in model["discounted_endpoints"]
-                ),
+                "best_discount_percent": best_endpoint["discount_percent"],
+                "input_price_per_million_tokens": round(best_endpoint["input_price_per_token"] * 1_000_000, 4),
+                "output_price_per_million_tokens": round(best_endpoint["output_price_per_token"] * 1_000_000, 4),
                 "discounted_endpoints": model["discounted_endpoints"],
             }
         )
