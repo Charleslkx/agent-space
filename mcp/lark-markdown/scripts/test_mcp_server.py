@@ -13,7 +13,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastmcp import Client
 
@@ -27,7 +27,7 @@ SPEC.loader.exec_module(SERVER)
 class MCPServerTest(unittest.IsolatedAsyncioTestCase):
     def test_server_name_is_canonical(self) -> None:
         self.assertEqual(SERVER.mcp.name, "Lark-Markdown")
-        self.assertEqual(SERVER.mcp.version, "0.15.0")
+        self.assertEqual(SERVER.mcp.version, "0.16.0")
         instructions = SERVER.mcp.instructions.lower()
         self.assertIn("never configure or start a server", instructions)
         self.assertIn("if it finds multiple targets", instructions)
@@ -40,7 +40,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {tool.name for tool in tools},
             {
-                "check_lark_cli", "begin_lark_auth", "complete_lark_auth", "schedule_mcp_restart", "batch_pull", "find_document_text", "search_documents", "batch_push", "point_update", "batch_point_update",
+                "check_lark_cli", "begin_lark_app_setup", "complete_lark_app_setup", "begin_lark_auth", "complete_lark_auth", "schedule_mcp_restart", "batch_pull", "find_document_text", "search_documents", "batch_push", "point_update", "batch_point_update",
                 "create_document", "create_wiki_node", "create_wiki_space", "scan_document_assets", "insert_media", "whiteboard_query", "whiteboard_update",
             },
         )
@@ -440,6 +440,56 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             status = SERVER._check_lark_cli(use_cache=False)
         self.assertTrue(status["verified"])
 
+    def test_lark_cli_maps_missing_app_to_setup_tool(self) -> None:
+        missing = SERVER.LarkCLIError({
+            "message": json.dumps({"error": {"subtype": "not_configured"}}),
+        })
+        completed = subprocess.CompletedProcess([], 0, "lark-cli version 1.0.56", "")
+        with patch.object(SERVER.shutil, "which", return_value="/bin/lark-cli"), \
+             patch.object(SERVER.subprocess, "run", return_value=completed), \
+             patch.object(SERVER, "_run_cli", side_effect=missing):
+            with self.assertRaises(RuntimeError) as raised:
+                SERVER._check_lark_cli(use_cache=False)
+        error = json.loads(str(raised.exception))
+        self.assertEqual(error["error"], "app_not_configured")
+        self.assertIn("begin_lark_app_setup", error["next_step"])
+
+    def test_app_setup_url_parser_preserves_the_returned_url(self) -> None:
+        stream = SimpleNamespace(fileno=lambda: 7)
+        process = SimpleNamespace(stdout=stream, poll=lambda: None)
+        with patch.object(SERVER.select, "select", return_value=([stream], [], [])), \
+             patch.object(SERVER.os, "read", return_value=b"Open https://example.feishu.cn/setup?x=a%2Fb\n"):
+            result = SERVER._read_lark_app_setup_url(process)
+        self.assertEqual(result, "https://example.feishu.cn/setup?x=a%2Fb")
+
+    def test_begin_lark_app_setup_requires_confirmation_and_starts_cli(self) -> None:
+        process = SimpleNamespace(poll=lambda: None)
+        with self.assertRaisesRegex(ValueError, "confirmation"):
+            SERVER.begin_lark_app_setup("create")
+        with patch.object(SERVER, "_app_setup", None), \
+             patch.object(SERVER, "_lark_app_configured", return_value=False), \
+             patch.object(SERVER, "_start_lark_app_setup", return_value=process) as start, \
+             patch.object(SERVER, "_read_lark_app_setup_url", return_value="https://auth.example/setup"), \
+             patch.object(SERVER, "_lark_auth_qrcode", return_value="cG5n"):
+            result = SERVER.begin_lark_app_setup(SERVER.APP_SETUP_CONFIRMATION)
+        start.assert_called_once_with("feishu", "zh_cn")
+        self.assertEqual(result["status"], "pending")
+        self.assertEqual(result["verification_url"], "https://auth.example/setup")
+
+    def test_complete_lark_app_setup_verifies_saved_binding(self) -> None:
+        process = SimpleNamespace(
+            communicate=Mock(return_value=(b"", None)), returncode=0, poll=lambda: 0,
+        )
+        with patch.object(SERVER, "_app_setup", (process, "https://auth.example/setup")), \
+             patch.object(SERVER, "_auth_cache", (1.0, {"verified": True})), \
+             patch.object(SERVER, "_lark_app_configured", return_value=True):
+            result = SERVER.complete_lark_app_setup()
+            self.assertIsNone(SERVER._auth_cache)
+        self.assertEqual(result["status"], "configured")
+        process.communicate.assert_called_once_with(
+            timeout=SERVER.APP_SETUP_COMPLETE_TIMEOUT_SECONDS,
+        )
+
     def test_begin_lark_auth_returns_link_device_code_and_qr(self) -> None:
         payload = {
             "data": {
@@ -770,6 +820,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(kwargs["base_url"], "https://mcp.example.com")
             self.assertIn("https://chatgpt.com/connector/oauth/*", kwargs["allowed_client_redirect_uris"])
             self.assertIn("https://claude.ai/api/mcp/auth_callback", kwargs["allowed_client_redirect_uris"])
+            self.assertIn(SERVER.GROK_REDIRECT_URI, kwargs["allowed_client_redirect_uris"])
             self.assertIn(SERVER.WORKBUDDY_REDIRECT_URI, kwargs["allowed_client_redirect_uris"])
             self.assertIn("http://localhost:*", kwargs["allowed_client_redirect_uris"])
             self.assertIn("http://127.0.0.1:*", kwargs["allowed_client_redirect_uris"])

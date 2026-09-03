@@ -12,7 +12,7 @@
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
 - Node.js 18+
-- `lark-cli`（不锁定版本，以实际能力检查为准）
+- `lark-cli`（不锁定版本，但必须支持 `config init --new`，以实际能力检查为准）
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -21,14 +21,27 @@ lark-cli --version
 uv --version
 ```
 
-完成飞书用户授权；文档、云空间和 Wiki 操作需要应用后台 scope 与用户授权同时具备：
+## 飞书应用创建与绑定
+
+每个独立部署必须先让服务器端 `lark-cli` 绑定一个飞书应用；该应用提供开放接口凭证与 scope，不是飞书智能体。开发机已有配置不会随项目分发，必须在目标服务器上以最终服务账户完成一次。
+
+推荐通过 MCP 完成无密钥创建流程：
+
+1. `check_lark_cli` 返回 `app_not_configured` 后，先征得用户同意创建应用。
+2. 调用 `begin_lark_app_setup(confirmation="CREATE_LARK_APP")`。服务在后台运行 `lark-cli config init --new`，返回原始配置 URL 和 PNG 二维码；把两者交给用户，本轮不要等待。
+3. 用户确认浏览器显示配置成功后调用 `complete_lark_app_setup`；只有返回 `status=configured` 才算绑定完成。
+4. 再调用 `begin_lark_auth` / `complete_lark_auth`，完成 Docs、Drive、Wiki 用户授权。
+
+`begin_lark_app_setup` 检测到已有配置时返回 `already_configured`，不会覆盖。它只支持独立 MCP 的新应用创建；`lark-cli config bind` 专用于 OpenClaw、Hermes、Lark Channel 等 Agent 工作区，不应拿来绑定本服务。若必须复用已有飞书应用，由管理员在服务器真实终端通过 `config init --app-id ... --app-secret-stdin` 配置，App Secret 不得作为 MCP 参数或写入命令历史。
+
+完成应用绑定后再授权用户身份；文档、云空间和 Wiki 操作需要应用后台 scope 与用户授权同时具备：
 
 ```bash
 lark-cli auth login --domain docs --domain drive --domain wiki --no-wait --json
 lark-cli auth status --json --verify
 ```
 
-授权命令返回验证链接时在浏览器完成授权。缺少 scope 时按 CLI 错误里的 `console_url` 在开发者后台开通，再重新执行最小范围授权。systemd 部署时，必须以服务账户、下文同一组 `HOME`/XDG 路径完成这一次授权；不要以部署账户授权后再切换服务账户。
+授权命令返回验证链接时在浏览器完成授权。缺少 scope 时按 CLI 错误里的 `console_url` 在开发者后台开通，再重新执行最小范围授权。systemd 部署时，应用绑定和用户授权都必须以服务账户、下文同一组 `HOME`/XDG 路径完成；不要以部署账户配置后再切换服务账户。
 
 服务不要求特定 `lark-cli` 版本，也不会自动升级。CLI 在 JSON 中返回 `_notice.update` 时，`check_lark_cli` 会把它作为 `update_notice` 转交客户端；当前操作继续执行，由用户决定是否手动运行 `lark-cli update`。
 
@@ -223,6 +236,8 @@ Claude.ai、Claude Desktop、移动端和 Cowork 使用 OAuth 回调 `https://cl
 
 WorkBuddy 的 Custom MCP 使用固定回调 URI `workbuddy://workbuddy/mcp/custom-mcp%3Alark-markdown/oauth/callback`；服务已将该精确 URI 加入 OAuth 白名单。添加连接器后按 WorkBuddy 的 GitHub 授权流程完成登录。
 
+Grok 自定义连接器使用固定回调 URI `https://grok.com/connectors-oauth-exchange-code/`；服务已将该精确 URI（包括末尾 `/`）加入 OAuth 白名单。
+
 Claude Code 直接添加远程 HTTP MCP；它会发现 OAuth 并在 `/mcp` 中引导认证：
 
 ```bash
@@ -300,6 +315,7 @@ uv run python scripts/test_live_capabilities.py \
 ## MCP 工具
 
 - `check_lark_cli`：检查 CLI、版本和用户登录态。
+- `begin_lark_app_setup`、`complete_lark_app_setup`：经用户明确确认后创建并绑定新飞书应用；分步返回配置 URL/二维码并验收浏览器配置结果，不接收 App Secret。
 - `schedule_mcp_restart`：在当前调用完成后延迟重启固定的 MCP 服务；必须传入确认词 `RESTART_LARK_MARKDOWN_MCP`，延迟范围为 5–300 秒。
 - `begin_lark_auth`、`complete_lark_auth`：发起和完成飞书用户授权。
 - `batch_pull`：批量读取 Markdown/XML 与 revision。普通正文使用 Markdown `simple`；当任务依赖 Markdown 无法可靠呈现的格式或原生结构时，使用 XML `full`，包括高亮、文字/背景颜色、下划线、Callout、分栏、引用、书签、URL 预览、按钮、提醒、画板，以及 block ID、样式属性和引用元数据。高亮在 XML 中表示为 `<span background-color="...">`，在 Markdown 中会降级为纯文本。

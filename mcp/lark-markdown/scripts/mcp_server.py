@@ -10,10 +10,12 @@ import html
 import json
 import os
 import re
+import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import ipaddress
 import time
 from contextlib import contextmanager
@@ -39,10 +41,14 @@ GITHUB_JWT_SIGNING_KEY_ENV = "LARK_MCP_JWT_SIGNING_KEY"
 CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 CLAUDE_CODE_REDIRECT_URI_PATTERN = "http://localhost:*"
 WORKBUDDY_REDIRECT_URI = "workbuddy://workbuddy/mcp/custom-mcp%3Alark-markdown/oauth/callback"
+GROK_REDIRECT_URI = "https://grok.com/connectors-oauth-exchange-code/"
+CURSOR_REDIRECT_URI = "https://www.cursor.com/agents/mcp/oauth/callback"
 ALLOWED_CLIENT_REDIRECT_URIS = [
     "https://chatgpt.com/connector/oauth/*",
     "https://chatgpt.com/connector_platform_oauth_redirect",
     "https://claude.ai/api/mcp/auth_callback",
+    GROK_REDIRECT_URI,
+    CURSOR_REDIRECT_URI,
     WORKBUDDY_REDIRECT_URI,
     "http://localhost:*",
     "http://127.0.0.1:*",
@@ -70,6 +76,10 @@ DISPLAY_FORMULA = re.compile(r"(?ms)^[ \t]*\$\$[ \t]*(?:\n)?(.*?)(?:\n)?[ \t]*\$
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RESTART_CONFIRMATION = "RESTART_LARK_MARKDOWN_MCP"
 RESTART_WORKER = PROJECT_ROOT / "scripts" / "restart_mcp_worker.py"
+APP_SETUP_CONFIRMATION = "CREATE_LARK_APP"
+APP_SETUP_URL_TIMEOUT_SECONDS = 30
+APP_SETUP_COMPLETE_TIMEOUT_SECONDS = 5
+APP_SETUP_URL = re.compile(rb"https://[^\s\x1b]+")
 
 DocFormat = Literal["markdown", "xml"]
 
@@ -262,10 +272,13 @@ TOOL_META = {"securitySchemes": _security_schemes(AUTH_MODE)}
 AUTH_PROVIDER = _auth_provider()
 mcp = FastMCP(
     name="Lark-Markdown",
-    version="0.15.0",
+    version="0.16.0",
     instructions=(
         "For normal document work, use the connected tools and never configure or start a server. "
-        "Call check_lark_cli only when connection or user auth is uncertain; use begin_lark_auth "
+        "Call check_lark_cli only when connection or user auth is uncertain. If it reports "
+        "app_not_configured, ask the user before calling begin_lark_app_setup, return its URL and "
+        "QR code, and call complete_lark_app_setup only after the user finishes browser setup. "
+        "Use begin_lark_auth "
         "and complete_lark_auth only to recover missing user authorization. When the target document "
         "is unknown, call search_documents first to rank candidates by keyword relevance across docs, "
         "wiki, and sheets, then call find_document_text on the chosen doc; never guess a doc token. "
@@ -300,6 +313,9 @@ QUIET_ENV = {
 # document call causes unnecessary refresh attempts without making writes safer.
 AUTH_CACHE_SECONDS = 15 * 60
 _auth_cache: tuple[float, dict] | None = None
+# ponytail: one setup flow per MCP process; persist it only if multi-worker setup is needed.
+_app_setup_lock = threading.Lock()
+_app_setup: tuple[subprocess.Popen[bytes], str] | None = None
 
 
 class LarkCLIError(RuntimeError):
@@ -400,6 +416,102 @@ def _run_cli(args: list[str], context: str = "lark-cli") -> dict:
         }) from error
 
 
+def _not_configured(error: LarkCLIError) -> bool:
+    try:
+        payload = json.loads(str(error.details.get("message", "")))
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and isinstance(payload.get("error"), dict)
+        and payload["error"].get("subtype") == "not_configured"
+    )
+
+
+def _lark_app_configured() -> bool:
+    try:
+        _run_process(["lark-cli", "config", "show"], "check Lark app configuration")
+    except LarkCLIError as error:
+        if _not_configured(error):
+            return False
+        raise
+    return True
+
+
+def _start_lark_app_setup(brand: str, lang: str) -> subprocess.Popen[bytes]:
+    executable = shutil.which("lark-cli")
+    if not executable:
+        raise LarkCLIError({
+            "operation": "start Lark app setup",
+            "error": "not_installed",
+            "message": "lark-cli is not installed or not on PATH",
+        })
+    try:
+        return subprocess.Popen(
+            [executable, "config", "init", "--new", "--brand", brand, "--lang", lang],
+            cwd=PROJECT_ROOT,
+            env={**os.environ, **QUIET_ENV},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=0,
+        )
+    except OSError as error:
+        raise LarkCLIError({
+            "operation": "start Lark app setup",
+            "error": "spawn_failed",
+            "message": str(error),
+        }) from error
+
+
+def _read_lark_app_setup_url(process: subprocess.Popen[bytes]) -> str:
+    if process.stdout is None:
+        raise RuntimeError("lark-cli setup output is unavailable")
+    deadline = time.monotonic() + APP_SETUP_URL_TIMEOUT_SECONDS
+    output = bytearray()
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select(
+            [process.stdout], [], [], max(0, deadline - time.monotonic()),
+        )
+        if ready:
+            chunk = os.read(process.stdout.fileno(), 4096)
+            output.extend(chunk)
+            match = APP_SETUP_URL.search(output)
+            if match:
+                return match.group().decode("utf-8")
+        if process.poll() is not None:
+            break
+    raise LarkCLIError({
+        "operation": "start Lark app setup",
+        "error": "verification_url_unavailable",
+        "exit_code": process.poll(),
+        "timeout_seconds": APP_SETUP_URL_TIMEOUT_SECONDS,
+    })
+
+
+def _stop_lark_app_setup(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def _app_setup_response(status: str, verification_url: str) -> dict:
+    return {
+        "status": status,
+        "verification_url": verification_url,
+        "qr_code_png_base64": _lark_auth_qrcode(verification_url),
+        "next_step": (
+            "Open the verification URL or scan the QR code. After the browser reports success, "
+            "call complete_lark_app_setup, then begin_lark_auth."
+        ),
+    }
+
+
 def _check_lark_cli(use_cache: bool = True) -> dict:
     global _auth_cache
     cache = _auth_cache  # One read: complete_lark_auth may clear it concurrently.
@@ -421,10 +533,20 @@ def _check_lark_cli(use_cache: bool = True) -> dict:
     except LarkCLIError as error:
         version_warning = error.details
     for attempt in range(2):
-        auth = _run_cli(
-            ["auth", "status", "--json", "--verify"],
-            "check lark-cli user authentication",
-        )
+        try:
+            auth = _run_cli(
+                ["auth", "status", "--json", "--verify"],
+                "check lark-cli user authentication",
+            )
+        except LarkCLIError as error:
+            if _not_configured(error):
+                raise LarkCLIError({
+                    "operation": "check Lark app configuration",
+                    "error": "app_not_configured",
+                    "message": "lark-cli is not bound to a Lark app",
+                    "next_step": "ask the user, then call begin_lark_app_setup",
+                }) from error
+            raise
         user = auth.get("identities", {}).get("user", {})
         if auth.get("verified") and user.get("verified") and user.get("available"):
             break
@@ -669,6 +791,82 @@ def _lark_auth_qrcode(verification_url: str) -> str:
                 "error": "missing_output",
                 "message": str(error),
             }) from error
+
+
+@mcp.tool(title="Start Lark app setup", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+def begin_lark_app_setup(
+    confirmation: str,
+    brand: Literal["feishu", "lark"] = "feishu",
+    lang: str = "zh_cn",
+) -> dict:
+    """Create and bind one Lark app after explicit user confirmation."""
+    global _app_setup
+    if confirmation != APP_SETUP_CONFIRMATION:
+        raise ValueError(f"confirmation must exactly equal {APP_SETUP_CONFIRMATION}")
+    if brand not in {"feishu", "lark"}:
+        raise ValueError("brand must be feishu or lark")
+    if not lang.strip():
+        raise ValueError("lang must not be empty")
+    with _app_setup_lock:
+        if _lark_app_configured():
+            return {
+                "status": "already_configured",
+                "next_step": "call begin_lark_auth if user authorization is missing",
+            }
+        if _app_setup and _app_setup[0].poll() is None:
+            return _app_setup_response("pending", _app_setup[1])
+        _app_setup = None
+        process = _start_lark_app_setup(brand, lang)
+        try:
+            verification_url = _read_lark_app_setup_url(process)
+            response = _app_setup_response("pending", verification_url)
+        except Exception:
+            _stop_lark_app_setup(process)
+            raise
+        _app_setup = (process, verification_url)
+        return response
+
+
+@mcp.tool(title="Complete Lark app setup", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+def complete_lark_app_setup() -> dict:
+    """Verify that browser-based app creation finished and lark-cli saved the binding."""
+    global _app_setup, _auth_cache
+    with _app_setup_lock:
+        if not _app_setup:
+            if _lark_app_configured():
+                return {
+                    "status": "configured",
+                    "next_step": "call begin_lark_auth to authorize Docs, Drive, and Wiki",
+                }
+            raise LarkCLIError({
+                "operation": "complete Lark app setup",
+                "error": "setup_not_started",
+                "next_step": "call begin_lark_app_setup after explicit user confirmation",
+            })
+        process, verification_url = _app_setup
+        try:
+            process.communicate(timeout=APP_SETUP_COMPLETE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            return _app_setup_response("pending", verification_url)
+        _app_setup = None
+        if process.returncode:
+            raise LarkCLIError({
+                "operation": "complete Lark app setup",
+                "error": "lark_cli_failed",
+                "exit_code": process.returncode,
+                "next_step": "call begin_lark_app_setup to start a fresh setup flow",
+            })
+        if not _lark_app_configured():
+            raise LarkCLIError({
+                "operation": "complete Lark app setup",
+                "error": "configuration_missing",
+                "next_step": "call begin_lark_app_setup to start a fresh setup flow",
+            })
+        _auth_cache = None
+        return {
+            "status": "configured",
+            "next_step": "call begin_lark_auth to authorize Docs, Drive, and Wiki",
+        }
 
 
 @mcp.tool(title="Start Lark user authorization", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})

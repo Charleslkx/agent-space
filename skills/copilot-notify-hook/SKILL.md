@@ -12,7 +12,7 @@ GitHub Copilot CLI 1.0.78 已支持用户级 hook。`agentStop` 在主代理完�
 `notification` 可按 `permission_prompt|elicitation_dialog` 过滤需要用户处理的事件。
 
 系统通知直接使用 Copilot CLI 的 `notifications` 设置；它会在终端已聚焦时自动静默。
-自定义 hook 只补充飞书投递，使用与 Codex、Claude Code、OpenCode 相同的协议：
+自定义 hook 只补充飞书投递，使用与 Codex、Claude Code、OpenCode、Cursor 相同的协议：
 自建应用 IM API 优先，webhook 失败回退，完成卡片为蓝色，需处理卡片为橙色，均无按钮。
 
 ## 安装

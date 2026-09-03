@@ -164,6 +164,8 @@ OpenCode 的 `opencode.json`：
 
 然后运行 `opencode mcp auth lark-cli`。ChatGPT、Claude.ai 和 Claude Desktop 在远程 Connector 界面添加同一 URL；不要把公网 HTTP MCP 填入只接受本地 stdio 命令的配置项。
 
+Grok 自定义连接器使用固定回调 URI `https://grok.com/connectors-oauth-exchange-code/`；服务已将该精确 URI（包括末尾 `/`）加入 OAuth 白名单。
+
 ## 8. 更新、备份和恢复
 
 工具响应中的 `update_available` 只表示官方发布了较新的稳定版。检查或升级：
