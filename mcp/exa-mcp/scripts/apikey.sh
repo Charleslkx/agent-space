@@ -138,29 +138,47 @@ write_oauth() {
   mv "$tmp" "$ENV_FILE"
 }
 
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+# GitHub logins are ASCII, so this matches server.py's str.casefold().
+fold_login() {
+  printf '%s' "$(trim "$1")" | tr '[:upper:]' '[:lower:]'
+}
+
 # Static tokens live in one comma-separated `login:token` variable, so editing
-# one entry means rewriting the whole list.
+# one entry means rewriting the whole list. Compare logins case-insensitively
+# so `token add`/`token delete` still rotate an entry stored with mixed case.
 tokens_without() {
-  local drop="$1" current entry login rebuilt=""
+  local drop current entry login rebuilt=""
+  drop=$(fold_login "$1")
   current=$(current_value "$TOKENS_VAR") || true
   IFS=',' read -ra entries <<< "${current:-}"
   for entry in "${entries[@]:-}"; do
+    entry=$(trim "$entry")
     [ -n "$entry" ] || continue
     login="${entry%%:*}"
-    [ "$login" = "$drop" ] && continue
+    [ "$(fold_login "$login")" = "$drop" ] && continue
     rebuilt="${rebuilt:+$rebuilt,}$entry"
   done
   printf '%s' "$rebuilt"
 }
 
 assert_allowlisted() {
-  local login="$1" users
+  local login user users
+  login=$(fold_login "$1")
   users=$(current_value "$USERS_VAR") || true
   # The server refuses to boot on a token whose login is not in the allowlist,
-  # so catching it here saves a failed restart.
-  case ",${users}," in
-    *",${login},"*) return 0 ;;
-  esac
+  # so catching it here saves a failed restart. Match server.py: allowlist
+  # entries are compared case-insensitively after stripping whitespace.
+  IFS=',' read -ra user_list <<< "${users:-}"
+  for user in "${user_list[@]:-}"; do
+    [ "$(fold_login "$user")" = "$login" ] && return 0
+  done
   fail "$login is not listed in $USERS_VAR; add it there first or the server will refuse to boot"
 }
 
