@@ -18,6 +18,7 @@
 │   ├── bx-refine
 │   ├── claude-code-notify-hook
 │   ├── codex-notify-hook
+│   ├── codex-usage-status
 │   ├── copilot-notify-hook
 │   ├── cursor-notify-hook
 │   ├── obsidian-vault-governance
