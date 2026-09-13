@@ -2,7 +2,7 @@
   "name": "codex-new-agent-button",
   "displayName": "Codex New Agent Button",
   "description": "Adds New Codex Agent and session history buttons to the editor title bar.",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "publisher": "local",
   "license": "MIT",
   "engines": {
