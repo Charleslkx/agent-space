@@ -10,7 +10,9 @@ IFS=$'\n\t'
 
 readonly SCRIPT_NAME="tmux-setup"
 readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly TEMPLATE_PATH="$SCRIPT_DIR/tmux.conf"
+readonly DEFAULT_TEMPLATE_URL="https://raw.githubusercontent.com/charleslkx/agent-space/main/scripts/tmux-setup/tmux.conf"
+template_path="$SCRIPT_DIR/tmux.conf"
+downloaded_template=""
 
 user_home="${HOME:-}"
 if [ -z "$user_home" ]; then
@@ -88,6 +90,35 @@ while [ "$#" -gt 0 ]; do
 done
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+cleanup() {
+  if [ -n "$downloaded_template" ] && [ -e "$downloaded_template" ]; then
+    rm -f "$downloaded_template"
+  fi
+}
+
+trap cleanup EXIT
+
+prepare_template() {
+  if [ -r "$template_path" ]; then
+    return 0
+  fi
+
+  local template_url="${TMUX_TEMPLATE_URL:-$DEFAULT_TEMPLATE_URL}"
+  downloaded_template="$(mktemp "${TMPDIR:-/tmp}/tmux-setup-template.XXXXXX")" || die "无法创建模板临时文件。"
+  info "本地未找到配置模板，正在下载：$template_url"
+
+  if command_exists curl; then
+    curl -fsSL "$template_url" -o "$downloaded_template" || die "下载配置模板失败：$template_url"
+  elif command_exists wget; then
+    wget -qO "$downloaded_template" "$template_url" || die "下载配置模板失败：$template_url"
+  else
+    die "找不到 curl 或 wget，无法下载配置模板：$template_url"
+  fi
+
+  [ -s "$downloaded_template" ] || die "下载到的配置模板为空：$template_url"
+  template_path="$downloaded_template"
+}
 
 confirm() {
   local prompt="$1"
@@ -212,9 +243,9 @@ ensure_dependencies() {
 render_config() {
   local rendered
   rendered="$(mktemp "${TMPDIR:-/tmp}/tmux-setup-config.XXXXXX")" || die "无法创建临时配置文件。"
-  if ! cp "$TEMPLATE_PATH" "$rendered"; then
+  if ! cp "$template_path" "$rendered"; then
     rm -f "$rendered"
-    die "无法读取模板：$TEMPLATE_PATH"
+    die "无法读取模板：$template_path"
   fi
   printf '%s\n' "$rendered"
 }
@@ -367,7 +398,7 @@ reload_tmux() {
 }
 
 main() {
-  [ -r "$TEMPLATE_PATH" ] || die "找不到配置模板：$TEMPLATE_PATH"
+  prepare_template
   detect_system
   ensure_dependencies
   local rendered

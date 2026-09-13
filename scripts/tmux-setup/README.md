@@ -22,6 +22,14 @@
 ./scripts/tmux-setup/tmux-setup.sh --yes
 ```
 
+也可以不克隆仓库，直接远程执行：
+
+```sh
+bash <(curl -fsSL https://raw.githubusercontent.com/charleslkx/agent-space/main/scripts/tmux-setup/tmux-setup.sh) --yes
+```
+
+通过进程替换远程执行时，脚本会自动下载同仓库中的 `tmux.conf` 到临时文件，并在退出时清理。需要从镜像或其他分支加载模板时，可通过 `TMUX_TEMPLATE_URL` 覆盖默认地址。
+
 脚本会先检查 `tmux` 和 `git`。缺少时，在 Ubuntu/Debian 使用 APT，在 macOS 优先使用 Homebrew、其次 MacPorts；也支持 DNF、YUM、Pacman、Zypper、APK。找不到包管理器时会明确提示手动安装命令，不会偷偷安装未知软件源。
 
 已有 `~/.tmux.conf` 时，脚本只会在确认后替换，并先生成带时间戳的备份，例如 `~/.tmux.conf.backup.20260824-153000`。脚本可重复运行；配置内容未变化时不会重复备份。
