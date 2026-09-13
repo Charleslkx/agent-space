@@ -1,8 +1,8 @@
 {
   "name": "codex-new-agent-button",
   "displayName": "Codex New Agent Button",
-  "description": "Adds a New Codex Agent button to the editor title bar.",
-  "version": "0.0.1",
+  "description": "Adds New Codex Agent and session history buttons to the editor title bar.",
+  "version": "0.0.7",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -18,7 +18,8 @@
   "files": [
     "extension.js",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "resources/*.svg"
   ],
   "contributes": {
     "commands": [
@@ -26,7 +27,16 @@
         "command": "codexNewAgentButton.new",
         "title": "New Codex Agent",
         "category": "Codex",
-        "icon": "$(plus)"
+        "icon": {
+          "light": "resources/blossom-black.svg",
+          "dark": "resources/blossom-white.svg"
+        }
+      },
+      {
+        "command": "codexNewAgentButton.history",
+        "title": "Resume Codex Session",
+        "category": "Codex",
+        "icon": "$(history)"
       }
     ],
     "menus": {
@@ -34,6 +44,10 @@
         {
           "command": "codexNewAgentButton.new",
           "group": "navigation@100"
+        },
+        {
+          "command": "codexNewAgentButton.history",
+          "group": "navigation@99"
         }
       ]
     }
