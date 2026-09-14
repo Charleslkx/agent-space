@@ -2,7 +2,7 @@
   "name": "codex-new-agent-button",
   "displayName": "Codex New Agent Button",
   "description": "Adds New Codex Agent and session history buttons to the editor title bar.",
-  "version": "0.0.8",
+  "version": "0.0.11",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -10,6 +10,9 @@
   },
   "categories": [
     "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
   ],
   "extensionDependencies": [
     "openai.chatgpt"
@@ -19,6 +22,7 @@
     "extension.js",
     "README.md",
     "LICENSE",
+    "bin/*",
     "resources/*.svg"
   ],
   "contributes": {
@@ -37,8 +41,49 @@
         "title": "Resume Codex Session",
         "category": "Codex",
         "icon": "$(history)"
+      },
+      {
+        "command": "codexNewAgentButton.exit",
+        "title": "Exit Codex Session",
+        "category": "Codex",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "codexNewAgentButton.releaseStaleLocks",
+        "title": "Release Stale Codex Locks",
+        "category": "Codex"
+      },
+      {
+        "command": "codexNewAgentButton.enableSharedDaemon",
+        "title": "Use Shared App Server Daemon",
+        "category": "Codex"
+      },
+      {
+        "command": "codexNewAgentButton.disableSharedDaemon",
+        "title": "Restore Bundled App Server",
+        "category": "Codex"
       }
     ],
+    "configuration": {
+      "title": "Codex New Agent Button",
+      "properties": {
+        "codexNewAgentButton.exitOnEditorClose": {
+          "type": "boolean",
+          "default": true,
+          "description": "When a Codex conversation tab closes, run the standard session exit path and release leftover writer locks."
+        },
+        "codexNewAgentButton.releaseStaleWriterLocks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Delete Codex thread-writer lock files that no process still holds. Live locks are left untouched."
+        },
+        "codexNewAgentButton.useSharedDaemon": {
+          "type": "boolean",
+          "default": false,
+          "description": "Route the official Cursor Codex extension through the shared Codex app-server daemon instead of spawning a separate app-server. Enable it with the Use Shared App Server Daemon command so remote-control consent is explicit, then reload the editor."
+        }
+      }
+    },
     "menus": {
       "editor/title": [
         {
@@ -48,6 +93,11 @@
         {
           "command": "codexNewAgentButton.history",
           "group": "navigation@99"
+        },
+        {
+          "command": "codexNewAgentButton.exit",
+          "group": "navigation@98",
+          "when": "resourceScheme == openai-codex"
         }
       ]
     }
