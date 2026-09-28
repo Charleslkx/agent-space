@@ -4,8 +4,8 @@ const { readdirSync } = require("node:fs");
 const { homedir } = require("node:os");
 const path = require("node:path");
 
-const SHARED_DAEMON_SETTING = "useSharedDaemon";
-const PREVIOUS_CLI_EXECUTABLE_KEY = "previousChatgptCliExecutable";
+const LEGACY_SHARED_DAEMON_SETTING = "useSharedDaemon";
+const LEGACY_PREVIOUS_CLI_EXECUTABLE_KEY = "previousChatgptCliExecutable";
 
 const SESSION_QUERY = `
       SELECT id,
@@ -126,16 +126,7 @@ function getConfig() {
   return {
     exitOnEditorClose: configuration.get("exitOnEditorClose", true),
     releaseStaleWriterLocks: configuration.get("releaseStaleWriterLocks", true),
-    useSharedDaemon: configuration.get(SHARED_DAEMON_SETTING, false),
   };
-}
-
-function sharedDaemonWrapperPath(context) {
-  const executable =
-    process.platform === "win32"
-      ? "codex-shared-app-server.cmd"
-      : "codex-shared-app-server";
-  return context.asAbsolutePath(path.join("bin", executable));
 }
 
 async function promptReload(message) {
@@ -148,150 +139,59 @@ async function promptReload(message) {
   }
 }
 
-function codexCliCommands() {
-  return uniqueCommands([
-    process.env.CODEX_SHARED_CLI,
-    path.join(homedir(), ".local", "bin", "codex"),
-    path.join(
-      homedir(),
-      ".codex",
-      "packages",
-      "standalone",
-      "current",
-      "bin",
-      "codex",
-    ),
-    "codex",
-  ]);
+function isLegacySharedDaemonExecutable(value) {
+  if (typeof value !== "string") return false;
+  const normalized = value.replaceAll("\\", "/");
+  const isPluginPath =
+    normalized.includes("/local.codex-new-agent-button-") ||
+    normalized.includes("/vscode/codex-new-agent-button/");
+  const isLegacyWrapper =
+    normalized.endsWith("/bin/codex-shared-app-server") ||
+    normalized.endsWith("/bin/codex-shared-app-server.cmd");
+  return isPluginPath && isLegacyWrapper;
 }
 
-async function enableDaemonRemoteControl() {
-  let lastMissing;
-  for (const command of codexCliCommands()) {
-    try {
-      return await runFile(command, [
-        "app-server",
-        "daemon",
-        "enable-remote-control",
-      ]);
-    } catch (error) {
-      if (!isMissingCommand(error)) throw error;
-      lastMissing = error;
-    }
-  }
-  throw lastMissing || new Error("未找到支持 app-server daemon 的 Codex CLI");
-}
-
-async function canConnectSharedAppServer() {
-  let lastMissing;
-  for (const command of codexCliCommands()) {
-    try {
-      await runFile(command, ["app-server", "daemon", "version"]);
-      return true;
-    } catch (error) {
-      if (!isMissingCommand(error)) return false;
-      lastMissing = error;
-    }
-  }
-  if (lastMissing) throw lastMissing;
-  return false;
-}
-
-async function prepareSharedAppServer() {
-  try {
-    await enableDaemonRemoteControl();
-    return "managed";
-  } catch (error) {
-    // Codex Desktop can own the shared control socket without being managed by
-    // `codex app-server daemon`. In that case daemon configuration is rejected,
-    // but the supported stdio proxy can already attach to the running server.
-    if (await canConnectSharedAppServer()) return "existing";
-    throw error;
-  }
-}
-
-async function enableSharedDaemon(context, { prompt = true } = {}) {
-  if (process.platform === "win32") {
-    throw new Error("共享 Codex daemon 包装器目前仅支持 Linux 和 macOS");
-  }
-
+async function migrateLegacySharedDaemonConfig(context) {
   const chatgptConfig = vscode.workspace.getConfiguration("chatgpt");
-  const wrapper = sharedDaemonWrapperPath(context);
   const current = chatgptConfig.get("cliExecutable", null);
-  if (current === wrapper) return false;
+  const previous = context.globalState.get(
+    LEGACY_PREVIOUS_CLI_EXECUTABLE_KEY,
+  );
+  let restored = false;
 
-  if (!context.globalState.get(PREVIOUS_CLI_EXECUTABLE_KEY)) {
-    await context.globalState.update(PREVIOUS_CLI_EXECUTABLE_KEY, {
-      recorded: true,
-      value: current,
-    });
+  if (isLegacySharedDaemonExecutable(current)) {
+    const previousValue =
+      previous?.recorded &&
+      !isLegacySharedDaemonExecutable(previous.value)
+        ? previous.value
+        : undefined;
+    await chatgptConfig.update(
+      "cliExecutable",
+      previousValue,
+      vscode.ConfigurationTarget.Global,
+    );
+    restored = true;
   }
 
-  await chatgptConfig.update(
-    "cliExecutable",
-    wrapper,
-    vscode.ConfigurationTarget.Global,
+  await context.globalState.update(
+    LEGACY_PREVIOUS_CLI_EXECUTABLE_KEY,
+    undefined,
   );
 
-  if (prompt) {
-    await promptReload(
-      "已配置 Cursor Codex 使用共享 app-server daemon；重新加载窗口后生效。",
+  const legacyConfig = vscode.workspace.getConfiguration(
+    "codexNewAgentButton",
+  );
+  if (
+    legacyConfig.inspect(LEGACY_SHARED_DAEMON_SETTING)?.globalValue !==
+    undefined
+  ) {
+    await legacyConfig.update(
+      LEGACY_SHARED_DAEMON_SETTING,
+      undefined,
+      vscode.ConfigurationTarget.Global,
     );
   }
-  return true;
-}
-
-async function disableSharedDaemon(context) {
-  const chatgptConfig = vscode.workspace.getConfiguration("chatgpt");
-  const previous = context.globalState.get(PREVIOUS_CLI_EXECUTABLE_KEY);
-  await chatgptConfig.update(
-    "cliExecutable",
-    previous?.recorded ? previous.value : undefined,
-    vscode.ConfigurationTarget.Global,
-  );
-  await context.globalState.update(PREVIOUS_CLI_EXECUTABLE_KEY, undefined);
-  await vscode.workspace
-    .getConfiguration("codexNewAgentButton")
-    .update(SHARED_DAEMON_SETTING, false, vscode.ConfigurationTarget.Global);
-  await promptReload(
-    "已恢复 Cursor Codex 原有的独立 app-server 配置；重新加载窗口后生效。",
-  );
-}
-
-async function enableSharedDaemonFromCommand(context) {
-  try {
-    const consent = await vscode.window.showWarningMessage(
-      "共享模式会持久启用 Codex daemon 的 remote-control 接入，使本机其他客户端能够连接同一 App Server。只应在受信任的账户和主机上启用。",
-      { modal: true },
-      "启用共享模式",
-    );
-    if (consent !== "启用共享模式") return;
-
-    const serverKind = await prepareSharedAppServer();
-    await vscode.workspace
-      .getConfiguration("codexNewAgentButton")
-      .update(SHARED_DAEMON_SETTING, true, vscode.ConfigurationTarget.Global);
-    const changed = await enableSharedDaemon(context);
-    if (!changed) {
-      vscode.window.showInformationMessage(
-        "Cursor Codex 已配置为使用共享 app-server daemon",
-      );
-    } else if (serverKind === "existing") {
-      vscode.window.showInformationMessage(
-        "已连接当前 Codex App Server；它由 Codex Desktop 管理，无需转换为 daemon。",
-      );
-    }
-  } catch (error) {
-    vscode.window.showErrorMessage(`无法启用共享 Codex daemon：${error.message}`);
-  }
-}
-
-async function disableSharedDaemonFromCommand(context) {
-  try {
-    await disableSharedDaemon(context);
-  } catch (error) {
-    vscode.window.showErrorMessage(`无法恢复独立 Codex 服务：${error.message}`);
-  }
+  return restored;
 }
 
 function codexHome() {
@@ -655,35 +555,28 @@ async function activate(context) {
       "codexNewAgentButton.releaseStaleLocks",
       releaseAllStaleLocks,
     ),
-    vscode.commands.registerCommand(
-      "codexNewAgentButton.enableSharedDaemon",
-      () => enableSharedDaemonFromCommand(context),
-    ),
-    vscode.commands.registerCommand(
-      "codexNewAgentButton.disableSharedDaemon",
-      () => disableSharedDaemonFromCommand(context),
-    ),
     vscode.window.tabGroups.onDidChangeTabs(onTabsClosed),
   );
 
-  if (getConfig().useSharedDaemon) {
-    try {
-      await enableSharedDaemon(context, { prompt: true });
-    } catch (error) {
-      vscode.window.showErrorMessage(
-        `无法配置共享 Codex daemon：${error.message}`,
+  try {
+    if (await migrateLegacySharedDaemonConfig(context)) {
+      await promptReload(
+        "已移除旧的共享 Codex daemon 配置；重新加载窗口后将恢复使用官方 App Server。",
       );
     }
+  } catch (error) {
+    vscode.window.showErrorMessage(
+      `无法清理旧的共享 Codex daemon 配置：${error.message}`,
+    );
   }
 }
 
 module.exports = {
   activate,
-  disableSharedDaemon,
-  enableDaemonRemoteControl,
-  enableSharedDaemon,
   exitSession,
   inspectWriterLocks,
+  isLegacySharedDaemonExecutable,
+  migrateLegacySharedDaemonConfig,
   querySessions,
   releaseStaleWriterLocks,
   resumeSession,
