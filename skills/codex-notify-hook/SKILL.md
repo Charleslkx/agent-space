@@ -64,17 +64,11 @@ python3 <skill-dir>/scripts/create_feishu_agent_app.py --live --home-channel oc_
 
 `--app-id cli_xxx` 选择指定现有应用；`--new` 跳过自动复用并创建独立应用；`--manual` 打印手工创建步骤。新建应用前必须提供目标会话的 `chat_id`，创建后把机器人加入该会话。`--test` 发送一张连接测试卡片。不要在对话中发送密钥。
 
-脚本与三个 Python 文件必须一并放入 hook 目录：
-
-```bash
-mkdir -p ~/.codex/hooks
-cp <skill-dir>/scripts/{notify.sh,feishu_send_approval.py,feishu_approval_common.py} ~/.codex/hooks/
-chmod +x ~/.codex/hooks/notify.sh
-```
-
 完成事件发蓝色完成卡片；需要注意事件发橙色通知卡片。两类卡片均不含按钮。
 
 ### 1. 放置脚本
+
+脚本与两个 Python 文件必须一并放入 hook 目录：
 
 ```bash
 mkdir -p ~/.codex/hooks

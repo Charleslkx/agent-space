@@ -60,9 +60,9 @@ lark_notify() {
 import base64, hashlib, hmac, json, os, sys, time, urllib.request
 agent, project, content, kind = sys.argv[1:5]
 if kind == "approval":
-    title, template = f"⚠️ {agent} · 需要注意", "orange"
+    title, template = f"{agent} · 需要注意", "orange"
 else:
-    title, template = f"🤖 {agent} · 任务完成", "blue"
+    title, template = f"{agent} · 任务完成", "blue"
 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 card = {
     "schema": "2.0",
@@ -148,9 +148,9 @@ if tok.get("code") != 0:
     sys.exit(1)
 
 if kind == "approval":
-    title, template = f"⚠️ {agent} · 需要注意", "orange"
+    title, template = f"{agent} · 需要注意", "orange"
 else:
-    title, template = f"🤖 {agent} · 任务完成", "blue"
+    title, template = f"{agent} · 任务完成", "blue"
 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 card = {
     "schema": "2.0",

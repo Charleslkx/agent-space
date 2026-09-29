@@ -40,7 +40,7 @@ def tenant_token(env: dict[str, str]) -> str:
 
 def card(args: argparse.Namespace, *, resolved: bool = False, decision: str | None = None) -> dict:
     notification = args.notification
-    title = f"🤖 {args.agent} · 任务完成" if notification else f"⚠️ {args.agent} · 需要注意"
+    title = f"{args.agent} · 任务完成" if notification else f"{args.agent} · 需要注意"
     template = "blue" if notification else "orange"
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     card_body: dict = {

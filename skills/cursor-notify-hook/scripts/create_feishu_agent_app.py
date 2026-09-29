@@ -175,7 +175,7 @@ def test_connection(env: dict[str, str], agent: str) -> None:
         raise RuntimeError(f"tenant token failed: {token.get('code')} {token.get('msg')}")
     card = {
         "schema": "2.0",
-        "header": {"title": {"tag": "plain_text", "content": f"🤖 {agent} · 配置成功"}, "template": "blue"},
+        "header": {"title": {"tag": "plain_text", "content": f"{agent} · 配置成功"}, "template": "blue"},
         "body": {"elements": [{"tag": "markdown", "content": "通知机器人连接测试成功。"}]},
     }
     result = post(

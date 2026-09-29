@@ -130,7 +130,7 @@ FEISHU_HOME_CHANNEL=oc_xxx           # 或 FEISHU_APPROVAL_RECEIVE_ID
 
 `notify.sh` 会读取该文件、用 `app_id/app_secret` 取 `tenant_access_token`，再经 `im/v1/messages` 直接投递飞书**交互卡片**（`msg_type=interactive`），全程只用 Python 标准库。env 缺失或凭证不全时自动跳过，不影响本地通知。env 路径可用 `FEISHU_ENV` 覆盖（默认 `~/.claude/feishu-agent.env`）。
 
-卡片按事件着色：任务完成（`stop`）蓝色标题 `🤖 ClaudeCode · 任务完成`，需要注意（`notification`）橙色标题 `⚠️ ClaudeCode · 需要注意`；正文含 `Agent` / `Project` 两个字段、通知内容和时间戳 note。
+卡片按事件着色：任务完成（`stop`）蓝色标题 `ClaudeCode · 任务完成`，需要注意（`notification`）橙色标题 `ClaudeCode · 需要注意`；正文含 `Agent` / `Project` 两个字段、通知内容和时间戳 note。
 
 当前行为：只发送飞书通知卡片（**无操作按钮**），不记录选择、不等待结果、不替代 Claude Code 原生审批提示。
 

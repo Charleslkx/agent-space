@@ -109,7 +109,7 @@ FEISHU_HOME_CHANNEL=oc_xxx           # 或 FEISHU_APPROVAL_RECEIVE_ID
 
 插件读取该文件、用 `app_id/app_secret` 取 `tenant_access_token`，再经 `im/v1/messages` 直接投递飞书**交互卡片**（`msg_type=interactive`）。env 缺失或凭证不全时自动跳过，不影响本地通知。env 路径可用 `FEISHU_ENV` 覆盖。
 
-`permission.asked` 与 `session.idle` 都会发卡片：完成（`session.idle`）蓝色标题 `🤖 OpenCode · 任务完成`，需要注意（`permission.asked`）橙色标题 `⚠️ OpenCode · 需要注意`；正文含 `Agent` / `Project` 两个字段、通知内容和时间戳 note。
+`permission.asked` 与 `session.idle` 都会发卡片：完成（`session.idle`）蓝色标题 `OpenCode · 任务完成`，需要注意（`permission.asked`）橙色标题 `OpenCode · 需要注意`；正文含 `Agent` / `Project` 两个字段、通知内容和时间戳 note。
 
 当前行为：只发送飞书通知卡片（**无操作按钮**），不记录选择、不等待结果、不替代 OpenCode 原生审批提示。
 
@@ -158,89 +158,16 @@ python3 <skill-dir>/scripts/test_feishu_setup.py
 
 - **ESM 格式**：使用 `export const` 具名导出，opencode 插件系统要求 ESM。
 - **同步试投检测崩溃**：terminal-notifier 在 macOS 26 上崩溃会立即返回非零，同步等待才能检测到并降级；异步 fire-and-forget 会漏掉崩溃。
-- **焦点识别**：见下方「ASN 问题与焦点检测」一节。
+- **焦点识别**：见「焦点检测」一节。
 - **`event.properties` 防御**：不同 opencode 版本的事件 payload 字段名可能有差异，`extractPermissionMsg` 多重 fallback 兜底，最终退到"需要授权"默认文案。
 - **通知内容保持简单**：本地通知 title 是 `OpenCode`，subtitle 是项目根目录名称，body 是通知内容；飞书发通知卡片（蓝=完成/橙=授权），卡片只含 agent、project、content、时间戳，不加按钮。
 - **不 `throw`**：插件内所有路径 `.catch(() => {})` 兜底，确保通知失败不中断 opencode 会话。
 
-## ASN 问题与焦点检测
+## 焦点检测
 
-焦点检测决定「用户正盯着会话窗口时是否静默」。实现上有个 macOS `lsappinfo` 的坑必须避开。
+焦点检测决定用户正盯着会话窗口时是否静默。macOS `lsappinfo front` 只返回 ASN，需再用 ASN 查 bundle ID，并与 `__CFBundleIdentifier` 比较。修改或调试焦点逻辑前先读 [references/focus-detection.md](references/focus-detection.md)。
 
-### 问题
-
-`lsappinfo front` **不返回 bundle ID**，只返回一个 ASN 标识符：
-
-```
-$ lsappinfo front
-ASN:0x0-0x1829828:
-```
-
-旧版代码用 `/__CFBundleIdentifier="([^"]+)"/` 正则直接匹配 `lsappinfo front` 的输出，**永远匹配不上** —— `bundleId` 恒为空，`isFocused()` 恒返回 `false`，焦点检测完全失效（无论用户是否在看终端，都会弹通知）。
-
-### 修复：两步 lsappinfo
-
-正确做法是分两步：先拿 ASN，再用 ASN 查 bundle ID。
-
-```js
-// 1. 拿前台 ASN
-const { stdout: asn } = await run("lsappinfo", ["front"])   // "ASN:0x0-0x1829828:"
-
-// 2. 用 ASN 查 bundle ID
-const { stdout: info } = await run("lsappinfo", ["info", "-only", "bundleid", asn.trim()])
-// 输出: "CFBundleIdentifier"="com.exafunction.windsurf"
-const front = info.match(/"CFBundleIdentifier"="([^"]+)"/)?.[1] ?? ""
-```
-
-### owner vs front 比较
-
-光知道前台 app 的 bundle ID 还不够 —— 旧代码只判断「前台是不是任意终端」
-（`TERMINAL_BUNDLES.some(b => bundleId.startsWith(b))`），会导致 opencode 跑在
-Terminal 里、用户切到 iTerm2 时也被误判为「聚焦」而静默。
-
-修复后引入 `owner = process.env.__CFBundleIdentifier`（macOS 注入的、承载 opencode
-的那个终端的 bundle ID），只有 `front === owner` 时才静默：
-
-```js
-async function isFocused() {
-  const owner = process.env.__CFBundleIdentifier
-  if (!owner) return false          // SSH/远程拿不到 owner → 永远通知
-  const front = await frontBundleId()
-  if (!front) return false
-  return TERMINAL_BUNDLES.includes(owner) && front === owner
-}
-```
-
-### 为什么不用 opencode 的 `$` helper
-
-插件内所有 shell 调用都走 `node:child_process`（`stdio: ignore/pipe`），而不是 opencode
-的 `$` 模板 helper。原因：
-
-1. `$` 会把命令输出回显到 opencode TUI —— `lsappinfo` 的 ASN 输出会变成「顶层消息」
-   遮盖终端界面。
-2. 两步 `lsappinfo` 需要把第一步的 ASN 传给第二步，用 `child_process` 的 `run()` 封装
-   更直观。
-
-`child_process` 对 opencode TUI 完全不可见，不会污染界面。
-
-### 调试
-
-```bash
-# 确认 lsappinfo 输出格式
-lsappinfo front                      # 应输出 ASN:0x...
-lsappinfo info -only bundleid $(lsappinfo front)   # 应输出 "CFBundleIdentifier"="..."
-
-# 确认 owner
-echo $__CFBundleIdentifier            # 承载 opencode 的终端 bundle ID
-
-# 在 node 里直接测插件
-node --input-type=module <<'EOF'
-import { OpenCodeNotifyPlugin } from "./plugins/notify.js"
-const plugin = await OpenCodeNotifyPlugin()
-console.log("plugin hooks:", Object.keys(plugin))
-EOF
-```
-
+## 自定义
 
 - **改提示音**：修改插件顶部 `SOUND = "Glass"`，可换 `/System/Library/Sounds/` 下任意名。
 - **改标题**：修改 `TITLE = "OpenCode"`。

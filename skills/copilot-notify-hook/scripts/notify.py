@@ -87,7 +87,7 @@ def api_base(env: dict[str, str]) -> str:
 
 def card(project: str, content: str, kind: str) -> dict:
     attention = kind == "attention"
-    title = f"⚠️ {AGENT} · 需要注意" if attention else f"🤖 {AGENT} · 任务完成"
+    title = f"{AGENT} · 需要注意" if attention else f"{AGENT} · 任务完成"
     return {
         "schema": "2.0",
         "config": {"wide_screen_mode": True},
