@@ -11,13 +11,14 @@ services:
       - ALL
     cap_add:
       - CHOWN
+      - DAC_READ_SEARCH
     restart: "no"
 
   mcp:
     build:
       context: .
       args:
-        LARK_CLI_VERSION: "1.0.81"
+        LARK_CLI_VERSION: "1.0.96"
     env_file: ${LARK_CLI_MCP_ENV_FILE:-/etc/lark-cli-mcp.env}
     environment:
       LARK_CLI_MCP_REDIS_HOST: redis
@@ -67,6 +68,7 @@ services:
       - ALL
     cap_add:
       - CHOWN
+      - DAC_READ_SEARCH
     restart: "no"
 
   redis:

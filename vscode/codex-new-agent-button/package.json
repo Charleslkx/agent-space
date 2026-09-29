@@ -2,7 +2,7 @@
   "name": "codex-new-agent-button",
   "displayName": "Codex New Agent Button",
   "description": "Adds New Codex Agent and session history buttons to the editor title bar.",
-  "version": "0.0.11",
+  "version": "0.0.14",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -22,7 +22,6 @@
     "extension.js",
     "README.md",
     "LICENSE",
-    "bin/*",
     "resources/*.svg"
   ],
   "contributes": {
@@ -52,16 +51,6 @@
         "command": "codexNewAgentButton.releaseStaleLocks",
         "title": "Release Stale Codex Locks",
         "category": "Codex"
-      },
-      {
-        "command": "codexNewAgentButton.enableSharedDaemon",
-        "title": "Use Shared App Server Daemon",
-        "category": "Codex"
-      },
-      {
-        "command": "codexNewAgentButton.disableSharedDaemon",
-        "title": "Restore Bundled App Server",
-        "category": "Codex"
       }
     ],
     "configuration": {
@@ -76,11 +65,6 @@
           "type": "boolean",
           "default": true,
           "description": "Delete Codex thread-writer lock files that no process still holds. Live locks are left untouched."
-        },
-        "codexNewAgentButton.useSharedDaemon": {
-          "type": "boolean",
-          "default": false,
-          "description": "Route the official Cursor Codex extension through the shared Codex app-server daemon instead of spawning a separate app-server. Enable it with the Use Shared App Server Daemon command so remote-control consent is explicit, then reload the editor."
         }
       }
     },
