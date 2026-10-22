@@ -1,5 +1,6 @@
 ```text
 .
+├── .cursor
 ├── .gitignore
 ├── AGENTS.md
 ├── CLAUDE.md
@@ -11,8 +12,7 @@
 │   ├── lark-cli-mcp
 │   └── lark-markdown
 ├── scripts
-│   ├── discounted-model-ranker
-│   └── tmux-setup
+│   └── discounted-model-ranker
 ├── skills
 │   ├── a-share-etf-feishu-brief
 │   ├── bx-refine
