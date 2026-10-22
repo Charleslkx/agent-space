@@ -6,8 +6,9 @@
 
 - `lark_cli(args, stdin?)`：执行允许的 `lark-cli` 命令，返回原始 stdout、stderr、退出码和超时状态。
 - `lark_cli_skill(action, path?)`：逐层列出或读取 CLI 内嵌 Skill。
+- `begin_lark_auth(domains?)` / `complete_lark_auth(device_code)`：发起飞书用户设备授权，透传登录链接和二维码，默认 `--domain all`；用户确认授权后完成登录。
 
-服务器保留一份共享飞书应用和用户登录态。GitHub OAuth 白名单中的用户都使用这份飞书身份，因此白名单只能包含互相信任的人。
+服务器保留一份共享飞书应用和用户登录态。GitHub OAuth 白名单中的用户都使用这份飞书身份，任何白名单用户都能通过授权工具替换这份登录态，因此白名单只能包含互相信任的人。
 
 ## 部署入口
 

@@ -47,7 +47,13 @@
 
 ## 2. 身份、权限和写操作
 
-`--as user` 使用服务器共享的飞书用户授权，适合个人日历、云空间等用户资源；`--as bot` 使用应用身份。bot 权限不足时去开发者后台开 scope，不能运行 `auth login`。user 权限不足时由管理员补 scope 或重新授权。
+`--as user` 使用服务器共享的飞书用户授权，适合个人日历、云空间等用户资源；`--as bot` 使用应用身份。bot 权限不足时去开发者后台开 scope。user 未登录或权限不足时，先确认后台已开通 scope，再调用 `begin_lark_auth` 重新授权：
+
+```json
+{"domains":["all"]}
+```
+
+返回 `verification_url`、`device_code` 和 `qr_code_png_base64`（PNG，生成失败时为 null）。打开链接或扫码完成授权后，调用 `complete_lark_auth` 传入同一个 `device_code`。新登录会替换所有调用方共享的飞书用户身份。`lark_cli` 中的 `auth` 命令仍不可用。
 
 高风险写操作不带 `--yes` 时会返回退出码 10：
 
@@ -89,7 +95,7 @@
 
 ## 4. 远程限制
 
-不可用能力包括 `auth`、`config`、`profile`、`update`、`doctor`，服务器本地文件、输出路径、剪贴板、本地 Apps 初始化和 Git 凭据，以及事件总线 daemon 管理。`event consume` 必须包含不超过 150 秒的 `--timeout`：
+不可用能力包括通过 `lark_cli` 调用 `auth`（改用授权工具）、`config`、`profile`、`update`、`doctor`，服务器本地文件、输出路径、剪贴板、本地 Apps 初始化和 Git 凭据，以及事件总线 daemon 管理。`event consume` 必须包含不超过 150 秒的 `--timeout`：
 
 ```json
 {"args":["event","consume","im.message.receive_v1","--as","bot","--timeout","30s","--max-events","1"]}

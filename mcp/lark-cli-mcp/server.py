@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import os
@@ -72,7 +73,7 @@ ACQUIRE_TIMEOUT_SECONDS = 5
 _CALL_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_CALLS)
 
 BLOCKED_COMMANDS = {
-    "auth": "authentication is managed by the deployment administrator",
+    "auth": "use begin_lark_auth and complete_lark_auth to (re)authorize the shared Lark user",
     "config": "server configuration is managed by the deployment administrator",
     "doctor": "diagnoses the server host and is not a remote business operation",
     "profile": "all callers use the deployment's shared Lark profile",
@@ -84,6 +85,7 @@ BLOCKED_FILE_FLAGS = {
 BLOCKED_APPS_COMMANDS = {"+init", "+env-pull", "+git-credential-init", "+git-credential-list", "+git-credential-remove"}
 SAFE_BARE_FLAGS = {"--help", "-h", "--version", "-v"}
 _DURATION_RE = re.compile(r"^(\d+)(ms|s|m|h)$")
+_AUTH_DOMAIN_RE = re.compile(r"^[a-z][a-z_-]*$")
 
 
 class _OriginCompatibleGitHubProvider(GitHubProvider):
@@ -171,7 +173,9 @@ mcp = FastMCP(
         "Use lark_cli for Lark business commands and lark_cli_skill to browse the embedded, "
         "version-matched skill system. Arguments are an array after the lark-cli binary, with the "
         "command as args[0] and its subcommand as args[1]; flags may not precede them. "
-        "Never add --yes until the user explicitly confirms a confirmation_required response."
+        "Never add --yes until the user explicitly confirms a confirmation_required response. "
+        "When user authorization is missing or a user scope is insufficient, call begin_lark_auth, give "
+        "the user its verification URL and QR code, and call complete_lark_auth only after they approve."
     ),
     website_url=_base_url(),
     auth=AUTH_PROVIDER,
@@ -298,7 +302,9 @@ def _child_env(workdir: str) -> dict[str, str]:
     }
 
 
-def _execute(args: list[str], stdin: str | None = None, timeout: float | None = None) -> dict:
+def _execute(
+    args: list[str], stdin: str | None = None, timeout: float | None = None, read_output: str | None = None,
+) -> dict:
     if not _CALL_SLOTS.acquire(timeout=ACQUIRE_TIMEOUT_SECONDS):
         raise RuntimeError(
             f"server is at capacity ({MAX_CONCURRENT_CALLS} concurrent lark-cli calls); "
@@ -321,9 +327,18 @@ def _execute(args: list[str], stdin: str | None = None, timeout: float | None = 
                 }
             except OSError as error:
                 raise RuntimeError(f"could not run lark-cli: {error}") from error
+            # The workdir is deleted on exit, so a file the CLI wrote must be read here.
+            output_base64 = None
+            if read_output and result.returncode == 0:
+                try:
+                    output_base64 = base64.b64encode((Path(workdir) / read_output).read_bytes()).decode("ascii")
+                except OSError:
+                    pass
     finally:
         _CALL_SLOTS.release()
     response = {"exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr, "timed_out": False}
+    if read_output:
+        response["output_base64"] = output_base64
     for key in ("stdout", "stderr"):
         text = response[key]
         # 4 bytes is UTF-8's per-character ceiling, so anything shorter than a
@@ -456,9 +471,9 @@ def lark_cli(args: list[str], stdin: str | None = None) -> dict:
     """Run a supported lark-cli command and return raw stdout, stderr, and exit metadata.
 
     Pass arguments after the `lark-cli` binary as an array. **The command must be args[0] and its
-    subcommand args[1]** -- flags may not precede either. Server authentication, profiles, updates,
-    local files (`@file` in any form, including `--flag=@path`), clipboard access, and unbounded
-    event consumers are unavailable; `event consume` requires `--timeout` of 150s or less, and every
+    subcommand args[1]** -- flags may not precede either. `auth` goes through begin_lark_auth and
+    complete_lark_auth. Server configuration, profiles, updates, local files (`@file` in any form,
+    including `--flag=@path`), clipboard access, and unbounded event consumers are unavailable; `event consume` requires `--timeout` of 150s or less, and every
     `--timeout` you pass must satisfy that.
     Exit code 10 with `confirmation_required` must be shown to the user; append `--yes` only after
     explicit confirmation. `update_available`, when present, is informational for the administrator.
@@ -493,6 +508,74 @@ def lark_cli_skill(action: str = "list", path: str | None = None) -> dict:
         except json.JSONDecodeError:
             response["result"] = response["stdout"]
     return _attach_update(response)
+
+
+def _find_auth_value(payload: object, names: tuple[str, ...]) -> str | None:
+    if isinstance(payload, dict):
+        for name in names:
+            value = payload.get(name)
+            if isinstance(value, str) and value:
+                return value
+        payload = list(payload.values())
+    if isinstance(payload, list):
+        for value in payload:
+            found = _find_auth_value(value, names)
+            if found:
+                return found
+    return None
+
+
+@mcp.tool(
+    title="Start Lark user authorization",
+    meta=TOOL_META,
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+)
+def begin_lark_auth(domains: list[str] | None = None) -> dict:
+    """Start a Lark device authorization for the deployment's shared user identity.
+
+    `domains` defaults to `["all"]`; pass names such as `["calendar", "im"]` to request fewer.
+    Show the user `verification_url` (and `qr_code_png_base64`, a PNG, when present), wait until
+    they say authorization succeeded, then call complete_lark_auth with `device_code`. Completing
+    it replaces the shared Lark login used by every caller of this server.
+    """
+    domains = domains or ["all"]
+    for domain in domains:
+        if not isinstance(domain, str) or not _AUTH_DOMAIN_RE.fullmatch(domain):
+            raise ValueError("each domain must be a lowercase lark-cli domain name such as 'all' or 'calendar'")
+    response = _execute(["auth", "login", "--domain", ",".join(domains), "--no-wait", "--json"], timeout=30)
+    if response["exit_code"] != 0:
+        return response
+    try:
+        payload = json.loads(response["stdout"])
+    except json.JSONDecodeError:
+        payload = None
+    verification_url = _find_auth_value(payload, ("verification_url", "verification_uri_complete"))
+    device_code = _find_auth_value(payload, ("device_code",))
+    if not verification_url or not verification_url.startswith("https://") or not device_code:
+        response["hint"] = "lark-cli did not return an HTTPS verification URL and a device code"
+        return response
+    # ponytail: the QR is a convenience; a failed render still returns the URL.
+    qrcode = _execute(["auth", "qrcode", verification_url, "--output", "qr.png"], timeout=30, read_output="qr.png")
+    return {
+        "verification_url": verification_url,
+        "device_code": device_code,
+        "qr_code_png_base64": qrcode.get("output_base64"),  # absent when the render timed out
+        "next_step": "Open the verification URL or scan the QR code, approve, then call complete_lark_auth with device_code.",
+    }
+
+
+@mcp.tool(
+    title="Complete Lark user authorization",
+    meta=TOOL_META,
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+)
+def complete_lark_auth(device_code: str) -> dict:
+    """Finish a device authorization from begin_lark_auth after the user has approved it."""
+    device_code = device_code.strip()
+    if not device_code:
+        raise ValueError("device_code must not be empty")
+    # The = form keeps a code that starts with '-' from being parsed as a flag.
+    return _execute(["auth", "login", f"--device-code={device_code}"])
 
 
 def main() -> None:

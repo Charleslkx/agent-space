@@ -104,6 +104,8 @@ sudo docker compose exec mcp lark-cli auth login --device-code '<device_code>'
 sudo docker compose exec mcp lark-cli auth status --json --verify
 ```
 
+应用配置完成后，用户授权也可以远程完成：任一白名单用户调用 `begin_lark_auth` 拿到链接和二维码，授权后调用 `complete_lark_auth`。`config init` 仍只能由管理员在服务器上执行。
+
 不得把 URL 或 device code 写入配置文件。若返回权限错误，按错误中的 `console_url` 在飞书开发者后台给应用开通缺失 scope，再重新执行最小范围或 `--domain all` 授权。bot 身份只依赖应用后台 scope；用户身份同时要求后台 scope 和用户授权。
 
 重建容器不会删除 `lark-state`。删除该卷会清除飞书配置和用户登录态。
@@ -189,7 +191,7 @@ sudo scripts/update-cli.sh 1.0.82
 | OAuth callback 404 | GitHub callback、`BASE_URL`、Nginx 全路径代理必须一致 |
 | GitHub 登录后没有工具 | 检查白名单使用 login 且大小写无关 |
 | 重启后重新 OAuth | Redis 卷、JWT/Fernet 密钥是否变化 |
-| 飞书用户未登录 | `sudo docker compose exec mcp lark-cli auth status --json --verify` |
+| 飞书用户未登录 | `sudo docker compose exec mcp lark-cli auth status --json --verify`，或远程调用 `begin_lark_auth` 重新授权 |
 | 飞书 403/scope 错误 | 根据身份检查后台 bot scope 或用户授权，使用错误中的 `console_url` |
 | 退出码 10 | 高风险写操作等待用户确认；确认后原 argv 末尾追加 `--yes` |
 | 502 | `sudo docker compose ps`、`sudo docker compose logs mcp`、Nginx error log、宿主 8768 |

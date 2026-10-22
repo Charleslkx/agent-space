@@ -41,7 +41,7 @@ lark_cli_skill(action: "list" | "read", path?: string)
 
 开放全部飞书业务域以及 `api`、`schema`、`help`、`skills`。固定拒绝会修改服务器状态或依赖客户端本机环境的入口：
 
-- 禁止 `auth`、`config`、`profile`、`update`、`doctor` 和全局 `--profile`；飞书认证由部署管理员在服务器上完成。
+- `lark_cli` 禁止 `auth`、`config`、`profile`、`update`、`doctor` 和全局 `--profile`；飞书应用配置由部署管理员在服务器上完成，用户授权另由 `begin_lark_auth` / `complete_lark_auth` 透传设备授权链接。
 - Apps 保留云端业务命令，禁止 `+init`、`+env-pull`、`+git-credential-*` 等本地工程与凭据操作。
 - Event 保留 `list`、`schema`；禁止 `status`、`stop`。`event consume` 必须显式包含不超过 150 秒的 `--timeout`，禁止无界监听和 `--output-dir`。
 - 禁止 `--from-clipboard`、`--file`、`--output`、`--output-dir`、`--local-dir` 及 `@本地文件` 等服务器文件入口。
@@ -69,7 +69,7 @@ GitHub OAuth App、Redis、JWT、Fernet 密钥和状态卷必须独立，不能�
 
 首版使用单一共享飞书身份。所有 GitHub 白名单用户共享服务器上的飞书应用配置、用户授权和 bot 身份，可在业务命令中选择 `--as user` 或 `--as bot`。白名单只能包含互相信任的用户。
 
-飞书配置、refresh token 和 profile 保存到独立 `lark-state` Docker volume。管理员通过挂载同一 volume 的 Compose 命令依次执行 `lark-cli config init --new`、`lark-cli auth login --domain all` 和 `lark-cli auth status --json --verify`。MCP 调用方不能远程发起、替换或注销这份共享认证。
+飞书配置、refresh token 和 profile 保存到独立 `lark-state` Docker volume。管理员通过挂载同一 volume 的 Compose 命令依次执行 `lark-cli config init --new`、`lark-cli auth login --domain all` 和 `lark-cli auth status --json --verify`。白名单调用方可通过 `begin_lark_auth` / `complete_lark_auth` 远程重新授权并替换这份共享用户登录态，但不能修改应用配置或注销登录。
 
 ### 3.3 容器和网络
 
