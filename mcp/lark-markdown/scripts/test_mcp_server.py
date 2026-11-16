@@ -27,12 +27,15 @@ SPEC.loader.exec_module(SERVER)
 class MCPServerTest(unittest.IsolatedAsyncioTestCase):
     def test_server_name_is_canonical(self) -> None:
         self.assertEqual(SERVER.mcp.name, "Lark-Markdown")
-        self.assertEqual(SERVER.mcp.version, "0.16.0")
+        self.assertEqual(SERVER.mcp.version, "0.17.0")
         instructions = SERVER.mcp.instructions.lower()
         self.assertIn("never configure or start a server", instructions)
         self.assertIn("if it finds multiple targets", instructions)
         self.assertIn("use batch_pull only", instructions)
         self.assertIn("after point_update, verify with find_document_text", instructions)
+        self.assertIn('seq="auto"', instructions)
+        self.assertIn("never __text__", instructions)
+        self.assertIn("block_update", instructions)
 
     async def test_tools_are_registered(self) -> None:
         async with Client(SERVER.mcp) as client:
@@ -41,7 +44,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             {tool.name for tool in tools},
             {
                 "check_lark_cli", "begin_lark_app_setup", "complete_lark_app_setup", "begin_lark_auth", "complete_lark_auth", "schedule_mcp_restart", "batch_pull", "find_document_text", "search_documents", "batch_push", "point_update", "batch_point_update",
-                "create_document", "create_wiki_node", "create_wiki_space", "scan_document_assets", "insert_media", "whiteboard_query", "whiteboard_update",
+                "create_document", "create_wiki_node", "create_wiki_space", "scan_document_assets", "insert_media", "whiteboard_query", "whiteboard_update", "block_update",
             },
         )
         self.assertTrue(all(tool.title for tool in tools))
@@ -596,7 +599,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
              patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
              patch.object(SERVER, "_check_lark_cli"), \
-             patch.object(SERVER, "_run_cli", return_value={"ok": True}) as run_cli:
+             patch.object(SERVER, "_run_cli", return_value={"ok": True, "data": {"block_id": "blk-img"}}) as run_cli:
             async with Client(SERVER.mcp) as client:
                 await client.call_tool("create_document", {
                     "content": "# title", "parent_token": "folder-token",
@@ -604,14 +607,160 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
                 await client.call_tool("insert_media", {
                     "doc": "doc-token", "filename": "pixel.png",
                     "content_base64": base64.b64encode(b"png").decode(),
-                    "selection": "marker", "before": True,
+                    "after_block_id": "blk-anchor",
                 })
-            self.assertEqual(run_cli.call_count, 2)
+            self.assertEqual(run_cli.call_count, 3)
             media_args = run_cli.call_args_list[1].args[0]
             media_path = media_args[media_args.index("--file") + 1]
             self.assertTrue(media_path.startswith("./"))
             self.assertFalse(Path(media_path).is_absolute())
+            self.assertNotIn("--selection-with-ellipsis", media_args)
+            move_args = run_cli.call_args_list[2].args[0]
+            self.assertEqual(move_args[move_args.index("--command") + 1], "block_move_after")
+            self.assertEqual(move_args[move_args.index("--block-id") + 1], "blk-anchor")
+            self.assertEqual(move_args[move_args.index("--src-block-ids") + 1], "blk-img")
             self.assertEqual(list(SERVER.WORKDIR.glob(".run-*")), [])
+
+    def test_insert_media_move_failure_is_not_reported_as_upload_failure(self) -> None:
+        failure = SERVER.LarkCLIError({"operation": "insert_media move", "error": "lark_cli_failed"})
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
+             patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", side_effect=[{"ok": True, "data": {"block_id": "blk-img"}}, failure]):
+            with self.assertRaises(SERVER.LarkCLIError) as raised:
+                SERVER.insert_media("doc", "a.png", "eA==", after_block_id="blk-anchor")
+        self.assertEqual(raised.exception.details["error"], "media_inserted_not_moved")
+        self.assertEqual(raised.exception.details["media_block_id"], "blk-img")
+
+    def test_block_update_replaces_heading_with_revision_guard(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
+             patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", return_value={"ok": True, "data": {"result": "success"}}) as run_cli:
+            SERVER.block_update(
+                "doc", "block_replace", content='<h2 seq="auto">Title</h2>',
+                block_id="blk-h2", expected_revision_id=9,
+            )
+            args = run_cli.call_args.args[0]
+            self.assertEqual(args[args.index("--command") + 1], "block_replace")
+            self.assertEqual(args[args.index("--block-id") + 1], "blk-h2")
+            self.assertEqual(args[args.index("--revision-id") + 1], "9")
+            self.assertEqual(args[args.index("--doc-format") + 1], "xml")
+            self.assertTrue(args[args.index("--content") + 1].startswith("@./"))
+            self.assertEqual(list(SERVER.WORKDIR.glob(".run-*")), [])
+
+    def test_block_update_validates_arguments_before_calling_cli(self) -> None:
+        cases = [
+            ({"command": "block_replace", "block_id": "a"}, "requires content"),
+            ({"command": "block_delete", "block_id": "a", "content": "<p/>"}, "does not take content"),
+            ({"command": "block_replace", "content": "<p/>"}, "requires block_id"),
+            ({"command": "block_delete", "start_block_id": "a"}, "passed together"),
+            ({"command": "block_delete", "block_id": "a", "start_block_id": "a", "end_block_id": "b"}, "not both"),
+            ({"command": "block_move_after", "start_block_id": "a", "end_block_id": "b", "src_block_ids": "c"}, "ranges only"),
+            ({"command": "block_move_after", "block_id": "a"}, "requires src_block_ids"),
+            ({"command": "overwrite", "content": "x", "block_id": "a"}, "command must be one of"),
+        ]
+        with patch.object(SERVER, "_run_cli") as run_cli:
+            for kwargs, message in cases:
+                with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, message):
+                    SERVER.block_update("doc", **kwargs)
+        run_cli.assert_not_called()
+
+    def test_block_update_raises_on_lark_failed_write(self) -> None:
+        degraded = {"ok": True, "data": {"result": "failed", "warnings": ["block not found"]}}
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
+             patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", return_value=degraded):
+            with self.assertRaises(SERVER.LarkCLIError) as raised:
+                SERVER.block_update("doc", "block_delete", block_id="blk")
+        self.assertEqual(raised.exception.details["error"], "lark_write_failed")
+
+    def test_markdown_emphasis_moves_breaking_punctuation_outside(self) -> None:
+        cases = {
+            'abc**"quote"**def': 'abc"**quote**"def',
+            "文字*“斜体”*文字": "文字“*斜体*”文字",
+            "**重点：**说明": "**重点**：说明",
+            "中文 **“引用”** 中文": "中文 **“引用”** 中文",
+            "`a**\"b\"**c`": "`a**\"b\"**c`",
+            "***粗斜***": "***粗斜***",
+            "**：**x": "**：**x",
+            "2 * 3 * 4": "2 * 3 * 4",
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.assertEqual(SERVER._fix_emphasis_line(source), expected)
+
+    def test_markdown_numbered_headings_use_lark_auto_numbering(self) -> None:
+        source = (
+            "# 1. Title\n\n## 1. 行内**样式** `x<y`\n\n### 1.2 子节\n\n## 2024 年总结\n\n"
+            "```\n## 1. code\n```\n"
+        )
+        rendered = SERVER._render(source, "markdown", document_start=True)
+        self.assertIn("# 1. Title\n", rendered)
+        self.assertIn('<h2 seq="auto">行内<b>样式</b> <code>x&lt;y</code></h2>', rendered)
+        self.assertIn('<h3 seq="auto">子节</h3>', rendered)
+        self.assertIn("## 2024 年总结", rendered)
+        self.assertIn("## 1. code", rendered)
+        self.assertIn('<h1 seq="auto">Appended</h1>', SERVER._render("# 1. Appended\n", "markdown"))
+        self.assertEqual(SERVER._render("## 1. x", "xml"), "## 1. x")
+
+    def test_point_updates_reject_block_markup(self) -> None:
+        with patch.object(SERVER, "_run_cli") as run_cli:
+            with self.assertRaisesRegex(ValueError, "block_update"):
+                SERVER.point_update("doc", "old", '<h2 seq="auto">new</h2>', doc_format="xml")
+            with self.assertRaisesRegex(ValueError, "block markup <p>"):
+                SERVER.point_update("doc", "<p>old</p>", "new")
+            with self.assertRaisesRegex(SERVER.LarkCLIError, "block_update"):
+                SERVER.batch_point_update("doc", [{"pattern": "a", "replacement": "<callout>b</callout>"}])
+            SERVER._reject_block_markup('<b>x</b> <span text-color="red">y</span> <button>z</button>', "replacement")
+        run_cli.assert_not_called()
+
+    def test_batch_pull_scope_arguments(self) -> None:
+        response = {"data": {"document": {"revision_id": 1, "content": "x"}}}
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", return_value=response) as run_cli:
+            SERVER.batch_pull(["doc"], scope="section", start_block_id="blk-h2", max_depth=1)
+            args = run_cli.call_args.args[0]
+            self.assertEqual(args[args.index("--scope") + 1], "section")
+            self.assertEqual(args[args.index("--start-block-id") + 1], "blk-h2")
+            self.assertEqual(args[args.index("--max-depth") + 1], "1")
+            SERVER.batch_pull(["doc"])
+            self.assertNotIn("--scope", run_cli.call_args.args[0])
+        cases = [
+            ({"scope": "section"}, "start_block_id is required"),
+            ({"scope": "range", "start_block_id": "a"}, "end_block_id is required"),
+            ({"scope": "keyword"}, "keyword is required"),
+            ({"scope": "outline", "keyword": "x"}, "only valid"),
+            ({"scope": "outline", "max_depth": -2}, "max_depth"),
+        ]
+        with patch.object(SERVER, "_check_lark_cli"):
+            for kwargs, message in cases:
+                with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, message):
+                    SERVER.batch_pull(["doc"], **kwargs)
+            with self.assertRaisesRegex(ValueError, "exactly one document"):
+                SERVER.batch_pull(["a", "b"], scope="section", start_block_id="x")
+
+    def test_callout_emoji_fallback_is_reported_without_failing_the_write(self) -> None:
+        stored = {"data": {"document": {"revision_id": 2, "content": '<callout emoji="💡"></callout><callout emoji="🔥"></callout>'}}}
+        with patch.object(SERVER, "_run_cli", return_value=stored):
+            warnings = SERVER._callout_emoji_warnings("doc", '<callout emoji="⚠️"></callout><callout emoji="🔥"></callout>')
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("⚠️", warnings[0])
+        with patch.object(SERVER, "_run_cli") as run_cli:
+            self.assertEqual(SERVER._callout_emoji_warnings("doc", '<callout emoji="💡"></callout>'), [])
+        run_cli.assert_not_called()
+        with patch.object(SERVER, "_run_cli", side_effect=SERVER.LarkCLIError({"error": "x"})):
+            self.assertEqual(SERVER._callout_emoji_warnings("doc", '<callout emoji="⚠️"></callout>'), [])
+
+    def test_find_document_text_can_return_block_ids(self) -> None:
+        response = {"data": {"document": {"revision_id": 3, "content": '<h2 id="blk">Title</h2>'}}}
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", return_value=response) as run_cli:
+            result = SERVER.find_document_text("doc", "Title", doc_format="xml", detail="with-ids")
+        args = run_cli.call_args.args[0]
+        self.assertEqual(args[args.index("--detail") + 1], "with-ids")
+        self.assertIn('id="blk"', result["matches"][0]["before"])
 
     def test_create_wiki_node_uses_explicit_parent_or_space(self) -> None:
         with patch.object(SERVER, "_check_lark_cli"), \

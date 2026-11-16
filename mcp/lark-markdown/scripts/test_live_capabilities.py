@@ -98,12 +98,16 @@ async def run(url: str, doc: str) -> None:
             "documents": [doc], "doc_format": "markdown",
         })).data[0]["content"]
         assert "plain-updated" in updated
+        anchor = (await client.call_tool("find_document_text", {
+            "doc": doc, "query": "plain-updated", "doc_format": "xml", "detail": "with-ids",
+            "context_chars": 200, "max_matches": 1,
+        })).data["matches"][0]["before"]
+        anchor_id = re.findall(r'id="([^"]+)"', anchor)[-1]
         await client.call_tool("insert_media", {
             "doc": doc,
             "filename": "mcp-media-test.png",
             "content_base64": base64.b64encode(PNG).decode(),
-            "selection": "plain-updated",
-            "before": True,
+            "after_block_id": anchor_id,
         })
 
         token = document_token(doc)

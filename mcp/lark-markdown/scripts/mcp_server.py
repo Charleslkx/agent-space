@@ -18,6 +18,7 @@ import tempfile
 import threading
 import ipaddress
 import time
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Literal
@@ -73,6 +74,16 @@ XML_WHITEBOARD = re.compile(
 )
 MARKDOWN_FENCE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})")
 DISPLAY_FORMULA = re.compile(r"(?ms)^[ \t]*\$\$[ \t]*(?:\n)?(.*?)(?:\n)?[ \t]*\$\$[ \t]*$")
+INLINE_CODE = re.compile(r"(`+)(.+?)\1")
+EMPHASIS_RUN = re.compile(r"(?<!\*)\*{1,2}(?!\*)")
+BLOCK_TAG = re.compile(
+    r"</?(h[1-9]|p|ul|ol|li|table|thead|tbody|tr|td|th|blockquote|pre|callout|grid|column|"
+    r"checkbox|hr|img|whiteboard|bookmark|sheet|task|chat_card|title)\b",
+    re.IGNORECASE,
+)
+CALLOUT_EMOJI = re.compile(r'<callout\b[^>]*?\bemoji="([^"]+)"')
+# "## 1. Title", "### 1.2 Title"; a bare "## 2024 年" has no dot and is left alone.
+NUMBERED_HEADING = re.compile(r"(?m)^(#{1,9})[ \t]+\d+\.(?:\d+\.?)*[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RESTART_CONFIRMATION = "RESTART_LARK_MARKDOWN_MCP"
 RESTART_WORKER = PROJECT_ROOT / "scripts" / "restart_mcp_worker.py"
@@ -84,15 +95,101 @@ APP_SETUP_URL = re.compile(rb"https://[^\s\x1b]+")
 DocFormat = Literal["markdown", "xml"]
 
 
+def _is_punct(char: str) -> bool:
+    return unicodedata.category(char)[0] in "PS"
+
+
+def _fix_emphasis_line(line: str) -> str:
+    """Move edge punctuation outside */** pairs whose outer side touches text.
+
+    CommonMark (and Lark, verified for abc**"x"**def and 文字*“x”*文字) refuses to
+    open/close emphasis there, leaving literal asterisks. Moving the punctuation out
+    keeps the meaning and always renders. ponytail: pairs within one line only.
+    """
+    code = [match.span() for match in INLINE_CODE.finditer(line)]
+    stack: list[re.Match[str]] = []
+    pairs: list[tuple[re.Match[str], re.Match[str]]] = []
+    for run in EMPHASIS_RUN.finditer(line):
+        if any(start <= run.start() < end for start, end in code):
+            continue
+        before = line[run.start() - 1] if run.start() else " "
+        after = line[run.end()] if run.end() < len(line) else " "
+        if stack and len(stack[-1].group()) == len(run.group()) and not before.isspace():
+            pairs.append((stack.pop(), run))
+        elif not after.isspace():
+            stack.append(run)
+    edits: list[tuple[int, int, str]] = []
+    for opener, closer in pairs:
+        marker = opener.group()
+        inner = line[opener.end():closer.start()]
+        lead = next((i for i, c in enumerate(inner) if not _is_punct(c)), len(inner))
+        trail = next((i for i, c in enumerate(reversed(inner)) if not _is_punct(c)), len(inner))
+        if lead == len(inner):
+            continue
+        outside_before = line[opener.start() - 1] if opener.start() else " "
+        outside_after = line[closer.end()] if closer.end() < len(line) else " "
+        if trail and not outside_after.isspace() and not _is_punct(outside_after):
+            edits.append((closer.start() - trail, closer.end(), marker + inner[len(inner) - trail:]))
+        if lead and not outside_before.isspace() and not _is_punct(outside_before):
+            edits.append((opener.start(), opener.end() + lead, inner[:lead] + marker))
+    for start, end, text in sorted(edits, reverse=True):
+        line = line[:start] + text + line[end:]
+    return line
+
+
+def _inline_markdown_to_xml(text: str) -> str:
+    """Convert the inline Markdown a heading may carry; Lark does not parse it inside XML tags."""
+    parts: list[str] = []
+    last = 0
+    for match in INLINE_CODE.finditer(text):
+        parts.append(_inline_prose_to_xml(text[last:match.start()]))
+        parts.append(f"<code>{html.escape(match.group(2), quote=False)}</code>")
+        last = match.end()
+    parts.append(_inline_prose_to_xml(text[last:]))
+    return "".join(parts)
+
+
+def _inline_prose_to_xml(text: str) -> str:
+    text = html.escape(text, quote=False)
+    text = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", lambda m: f'<a href="{m.group(2).replace(chr(34), "&quot;")}">{m.group(1)}</a>', text)
+    for pattern, tag in (
+        (r"\*\*(.+?)\*\*", "b"), (r"__(.+?)__", "b"), (r"~~(.+?)~~", "del"),
+        (r"\*(.+?)\*", "em"), (r"\$(.+?)\$", "latex"),
+    ):
+        text = re.sub(pattern, rf"<{tag}>\1</{tag}>", text)
+    return text
+
+
+def _auto_number_headings(prose: str, *, document_start: bool) -> str:
+    """Turn hand-numbered headings (## 1.2 Title) into Lark auto-numbered headings.
+
+    The leading H1 of a document becomes its title, so it is left alone.
+    """
+    first_line = prose.lstrip("\n").split("\n", 1)[0] if document_start else None
+
+    def replace(match: re.Match[str]) -> str:
+        if match.group(0) == first_line and len(match.group(1)) == 1:
+            return match.group(0)
+        level = len(match.group(1))
+        return f'<h{level} seq="auto">{_inline_markdown_to_xml(match.group(2))}</h{level}>'
+
+    return NUMBERED_HEADING.sub(replace, prose)
+
+
+def _center_formulas(prose: str) -> str:
+    return DISPLAY_FORMULA.sub(
+        lambda match: f'<p align="center"><latex>{html.escape(match.group(1).strip(), quote=False)}</latex></p>',
+        prose,
+    )
+
+
 def _center_display_math(content: str) -> str:
     """Convert standalone Markdown display formulas, excluding fenced code blocks."""
-    def convert(prose: str) -> str:
-        def replace(match: re.Match[str]) -> str:
-            formula = html.escape(match.group(1).strip(), quote=False)
-            return f'<p align="center"><latex>{formula}</latex></p>'
+    return _map_prose(content, lambda prose, _: _center_formulas(prose))
 
-        return DISPLAY_FORMULA.sub(replace, prose)
 
+def _map_prose(content: str, convert) -> str:
+    """Apply convert(prose, is_document_start) to text outside fenced code blocks."""
     output: list[str] = []
     prose: list[str] = []
     closing: re.Pattern[str] | None = None
@@ -104,20 +201,33 @@ def _center_display_math(content: str) -> str:
             continue
         match = MARKDOWN_FENCE.match(line)
         if match:
-            output.append(convert("".join(prose)))
+            output.append(convert("".join(prose), not output))
             prose.clear()
             marker = match.group(1)
             closing = re.compile(rf"^[ ]{{0,3}}{re.escape(marker[0])}{{{len(marker)},}}[ \t]*$")
             output.append(line)
         else:
             prose.append(line)
-    output.append(convert("".join(prose)))
+    output.append(convert("".join(prose), not output))
     return "".join(output)
 
 
-def _render(content: str, doc_format: DocFormat) -> str:
-    """Return exactly what will be stored, so preflight can simulate against it."""
-    return _center_display_math(content) if doc_format == "markdown" else content
+def _normalize_markdown(content: str, *, document_start: bool) -> str:
+    def convert(prose: str, is_start: bool) -> str:
+        prose = "".join(_fix_emphasis_line(line) for line in prose.splitlines(keepends=True))
+        prose = _auto_number_headings(prose, document_start=document_start and is_start)
+        return _center_formulas(prose)
+
+    return _map_prose(content, convert)
+
+
+def _render(content: str, doc_format: DocFormat, *, document_start: bool = False) -> str:
+    """Return exactly what will be stored, so preflight can simulate against it.
+
+    Markdown only: fixes emphasis next to punctuation, turns hand-numbered headings
+    into Lark auto numbering, and centers standalone $$ formulas.
+    """
+    return _normalize_markdown(content, document_start=document_start) if doc_format == "markdown" else content
 
 
 def _auth_mode() -> str:
@@ -272,7 +382,7 @@ TOOL_META = {"securitySchemes": _security_schemes(AUTH_MODE)}
 AUTH_PROVIDER = _auth_provider()
 mcp = FastMCP(
     name="Lark-Markdown",
-    version="0.16.0",
+    version="0.17.0",
     instructions=(
         "For normal document work, use the connected tools and never configure or start a server. "
         "Call check_lark_cli only when connection or user auth is uncertain. If it reports "
@@ -296,7 +406,19 @@ mcp = FastMCP(
         "After point_update, verify with find_document_text using the "
         "replacement (or the removed text for deletion); use batch_pull only after partial_success, an error, "
         "a format-sensitive operation, or an explicit verification request. Use scan_document_assets to list "
-        "images and whiteboards in a Lark document without returning its full XML."
+        "images and whiteboards in a Lark document without returning its full XML. "
+        "point_update only replaces text and cannot change block attributes; to replace, insert, delete, "
+        "or move whole blocks (headings, paragraphs, lists, tables), call find_document_text with "
+        "doc_format=xml and detail=with-ids to get block IDs, then call block_update. "
+        "Headings: prefer Lark auto numbering with heading levels that never skip (h1, then h2, ...). "
+        "In XML write <h2 seq=\"auto\">Title</h2> without a typed number; Markdown writes convert "
+        "hand-numbered headings such as \"## 1. Title\" or \"### 1.2 Title\" automatically (except a "
+        "document-opening \"# \" title). "
+        "Emphasis in Markdown: write bold as **text**, never __text__, which does not render between "
+        "CJK characters. Markdown writes move punctuation out of */** when the outer side touches text "
+        "(abc**\"q\"**def becomes abc\"**q**\"def), so that punctuation is not bolded; to bold it, use "
+        "XML <b>…</b>. "
+        "batch_push and block_update return format_warnings when Lark replaced a callout emoji."
     ),
     website_url=os.environ.get(BASE_URL_ENV),
     auth=AUTH_PROVIDER,
@@ -643,6 +765,16 @@ def _validate_pattern(pattern: str) -> None:
         raise ValueError(f"pattern exceeds {MAX_PATTERN_BYTES} bytes")
 
 
+def _reject_block_markup(text: str, field: str) -> None:
+    """str_replace edits inline text only; block tags in it are dropped while the write reports success."""
+    match = BLOCK_TAG.search(text)
+    if match:
+        raise ValueError(
+            f"{field} contains block markup <{match.group(1)}>; point updates only change inline text. "
+            "Use find_document_text(doc_format=\"xml\", detail=\"with-ids\") and block_update instead"
+        )
+
+
 def _validate_batch(items: list, name: str) -> None:
     if not items:
         raise ValueError(f"{name} must contain at least one item")
@@ -728,6 +860,26 @@ def _assert_write_succeeded(result: dict, operation: str) -> None:
                 "when the document state shows the write did not apply."
             ),
         })
+
+
+def _callout_emoji_warnings(doc: str, content: str) -> list[str]:
+    """Lark silently swaps unsupported callout emoji (e.g. ⚠️) for 💡; report it after a write.
+
+    Best effort: the write already succeeded, so a failed check returns no warnings
+    instead of raising and inviting a duplicate retry.
+    """
+    requested = {emoji for emoji in CALLOUT_EMOJI.findall(content) if emoji != "💡"}
+    if not requested:
+        return []
+    try:
+        stored = _fetch_document(doc, "xml", "full", "callout emoji check").get("content", "")
+    except Exception:  # noqa: BLE001 - verification must never fail a completed write
+        return []
+    present = set(CALLOUT_EMOJI.findall(stored if isinstance(stored, str) else ""))
+    return [
+        f"callout emoji {emoji!r} is not supported by Lark and was replaced with 💡; pick another emoji"
+        for emoji in sorted(requested - present)
+    ]
 
 
 def _assess_document_state(
@@ -910,11 +1062,12 @@ def complete_lark_auth(device_code: str) -> dict:
 
 def _fetch_document(
     doc: str, doc_format: DocFormat, detail: Literal["simple", "with-ids", "full"], operation: str,
+    scope_args: list[str] | None = None,
 ) -> dict:
     result = _run_cli([
         "docs", "+fetch", "--api-version", "v2", "--as", "user",
         "--doc", doc, "--doc-format", doc_format, "--detail", detail,
-        "--format", "json",
+        *(scope_args or []), "--format", "json",
     ], operation)
     try:
         return result["data"]["document"]
@@ -959,14 +1112,52 @@ def check_lark_cli() -> dict:
     return _check_lark_cli(use_cache=False)
 
 
+def _scope_args(
+    scope: str, start_block_id: str | None, end_block_id: str | None,
+    keyword: str | None, max_depth: int | None, document_count: int,
+) -> list[str]:
+    if scope not in {"full", "outline", "section", "range", "keyword"}:
+        raise ValueError("scope must be full, outline, section, range, or keyword")
+    if max_depth is not None and (isinstance(max_depth, bool) or not isinstance(max_depth, int) or max_depth < -1):
+        raise ValueError("max_depth must be an integer >= -1")
+    needs_start = scope in {"section", "range"}
+    if needs_start and document_count != 1:
+        raise ValueError(f"scope={scope} uses block IDs and takes exactly one document")
+    if needs_start != bool(start_block_id):
+        raise ValueError(f"start_block_id is {'required' if needs_start else 'only valid'} for section and range")
+    if (scope == "range") != bool(end_block_id):
+        raise ValueError(f"end_block_id is {'required' if scope == 'range' else 'only valid'} for range")
+    if (scope == "keyword") != bool(keyword):
+        raise ValueError(f"keyword is {'required' if scope == 'keyword' else 'only valid'} for scope=keyword")
+    if scope == "full":
+        return []
+    args = ["--scope", scope]
+    for flag, value in (("--start-block-id", start_block_id), ("--end-block-id", end_block_id), ("--keyword", keyword)):
+        if value:
+            args.extend([flag, value])
+    if max_depth is not None:
+        args.extend(["--max-depth", str(max_depth)])
+    return args
+
+
 @mcp.tool(title="Batch pull Lark documents", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
 def batch_pull(
     documents: list[str],
     doc_format: DocFormat = "markdown",
     detail: Literal["simple", "with-ids", "full"] = "simple",
     concurrency: int = DEFAULT_BATCH_CONCURRENCY,
+    scope: Literal["full", "outline", "section", "range", "keyword"] = "full",
+    start_block_id: str | None = None,
+    end_block_id: str | None = None,
+    keyword: str | None = None,
+    max_depth: int | None = None,
 ) -> list[dict]:
     """Fetch documents concurrently; results remain in input order.
+
+    Scope avoids pulling a whole long document: "outline" lists headings (max_depth caps
+    the level), "keyword" returns blocks matching keyword ("a|b" for OR), "section" expands
+    from heading start_block_id, "range" reads start_block_id..end_block_id. section and
+    range need block IDs, so they take exactly one document.
 
     Use Markdown/simple for ordinary text. Use XML/full when the task depends on
     formatting or native structure that Markdown cannot reliably expose, including
@@ -981,6 +1172,7 @@ def batch_pull(
     if detail not in {"simple", "with-ids", "full"}:
         raise ValueError("detail must be simple, with-ids, or full")
     _validate_batch(documents, "documents")
+    scope_args = _scope_args(scope, start_block_id, end_block_id, keyword, max_depth, len(documents))
     workers = _batch_workers(concurrency, len(documents))
     for index, doc in enumerate(documents):
         if not isinstance(doc, str) or not doc.strip():
@@ -990,7 +1182,7 @@ def batch_pull(
     def pull_one(index: int, doc: str) -> dict:
         try:
             document = _fetch_document(
-                doc, doc_format, detail, f"batch_pull documents[{index}]",
+                doc, doc_format, detail, f"batch_pull documents[{index}]", scope_args,
             )
         except RuntimeError as error:
             raise _batch_failure("batch_pull", index, doc, 0, error) from error
@@ -1021,20 +1213,26 @@ def find_document_text(
     context_chars: int = 240,
     max_matches: int = 3,
     doc_format: DocFormat = "markdown",
+    detail: Literal["simple", "with-ids"] = "simple",
 ) -> dict:
-    """Return bounded context around exact text matches without returning the full document."""
+    """Return bounded context around exact text matches without returning the full document.
+
+    Use doc_format="xml" with detail="with-ids" to get the block IDs that block_update needs.
+    """
     if not doc.strip():
         raise ValueError("doc must not be empty")
     if not query:
         raise ValueError("query must not be empty")
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")
+    if detail not in {"simple", "with-ids"}:
+        raise ValueError("detail must be simple or with-ids")
     if type(context_chars) is not int or not 0 <= context_chars <= MAX_SNIPPET_CONTEXT_CHARS:
         raise ValueError(f"context_chars must be an integer between 0 and {MAX_SNIPPET_CONTEXT_CHARS}")
     if type(max_matches) is not int or not 1 <= max_matches <= MAX_SNIPPET_MATCHES:
         raise ValueError(f"max_matches must be an integer between 1 and {MAX_SNIPPET_MATCHES}")
     _check_lark_cli()
-    document = _fetch_document(doc, doc_format, "simple", "find_document_text")
+    document = _fetch_document(doc, doc_format, detail, "find_document_text")
     content = document.get("content", "")
     if not isinstance(content, str):
         raise LarkCLIError({
@@ -1129,6 +1327,10 @@ def batch_push(
 
     mode="append" is not idempotent: a retry after a reported failure can append
     the same content twice. Verify with find_document_text before retrying.
+
+    Markdown is normalized before writing: hand-numbered headings ("## 1. Title") become
+    Lark auto-numbered headings, punctuation that would break */** is moved outside the
+    markers, and standalone $$ formulas are centered. Use **bold**, never __bold__.
     """
     _validate_batch(documents, "documents")
     workers = _batch_workers(concurrency, len(documents))
@@ -1156,7 +1358,7 @@ def batch_push(
                 ValueError("doc appears more than once; concurrent writes would overwrite each other"),
             )
         seen.add(doc)
-        content = _render(content, doc_format)
+        content = _render(content, doc_format, document_start=mode == "overwrite")
         if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
             raise _batch_failure(
                 "batch_push", index, doc, 0,
@@ -1181,7 +1383,11 @@ def batch_push(
                 _assert_write_succeeded(result, f"batch_push documents[{index}]")
             except RuntimeError as error:
                 raise _batch_failure("batch_push", index, doc, 0, error) from error
-            return {"doc": doc, "result": result}
+            pushed = {"doc": doc, "result": result}
+            warnings = _callout_emoji_warnings(doc, prepared[index][1])
+            if warnings:
+                pushed["format_warnings"] = warnings
+            return pushed
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(push_one, index) for index in range(len(prepared))]
@@ -1243,6 +1449,8 @@ def point_update(
     if not doc.strip():
         raise ValueError("doc must not be empty")
     _validate_pattern(pattern)
+    _reject_block_markup(pattern, "pattern")
+    _reject_block_markup(replacement, "replacement")
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")
     _check_lark_cli()
@@ -1293,12 +1501,14 @@ def batch_point_update(
         replacement = update.get("replacement")
         if not isinstance(pattern, str):
             raise _batch_failure("batch_point_update", index, doc, 0, ValueError("pattern must not be empty"))
-        try:
-            _validate_pattern(pattern)
-        except ValueError as error:
-            raise _batch_failure("batch_point_update", index, doc, 0, error) from error
         if not isinstance(replacement, str):
             raise _batch_failure("batch_point_update", index, doc, 0, ValueError("replacement must be a string"))
+        try:
+            _validate_pattern(pattern)
+            _reject_block_markup(pattern, "pattern")
+            _reject_block_markup(replacement, "replacement")
+        except ValueError as error:
+            raise _batch_failure("batch_point_update", index, doc, 0, error) from error
         # Simulate against what will actually be stored, not the raw replacement.
         prepared.append((pattern, _render(replacement, doc_format)))
     _check_lark_cli()
@@ -1363,6 +1573,114 @@ def batch_point_update(
     return results
 
 
+BLOCK_COMMANDS = {
+    "block_replace", "block_insert_after", "block_delete", "block_move_after", "block_copy_insert_after",
+}
+
+
+def _run_block_command(
+    doc: str,
+    command: str,
+    *,
+    content: str | None = None,
+    block_id: str | None = None,
+    start_block_id: str | None = None,
+    end_block_id: str | None = None,
+    src_block_ids: str | None = None,
+    doc_format: DocFormat = "xml",
+    revision_id: int | None = None,
+    operation: str = "block_update",
+) -> dict:
+    args = [
+        "docs", "+update", "--api-version", "v2", "--as", "user",
+        "--doc", doc, "--command", command, "--doc-format", doc_format, "--format", "json",
+    ]
+    for flag, value in (
+        ("--block-id", block_id), ("--start-block-id", start_block_id),
+        ("--end-block-id", end_block_id), ("--src-block-ids", src_block_ids),
+    ):
+        if value:
+            args.extend([flag, value])
+    if revision_id is not None:
+        args.extend(["--revision-id", str(revision_id)])
+    with _hidden_run() as run:
+        if content is not None:
+            args.extend(["--content", _payload(run / ".content", _render(content, doc_format))])
+        result = _run_cli(args, operation)
+    _assert_write_succeeded(result, operation)
+    return result
+
+
+@mcp.tool(title="Update document blocks", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+def block_update(
+    doc: str,
+    command: Literal[
+        "block_replace", "block_insert_after", "block_delete", "block_move_after", "block_copy_insert_after",
+    ],
+    content: str | None = None,
+    block_id: str | None = None,
+    start_block_id: str | None = None,
+    end_block_id: str | None = None,
+    src_block_ids: str | None = None,
+    doc_format: DocFormat = "xml",
+    expected_revision_id: int | None = None,
+) -> dict:
+    """Replace, insert, delete, move, or copy whole blocks by block ID.
+
+    Get IDs first with find_document_text(doc_format="xml", detail="with-ids"); IDs go
+    stale after structural edits, so refetch before reusing them. Commands:
+    block_replace (content + block_id, or start/end_block_id sibling range),
+    block_insert_after (content + block_id; "0" = document start, "-1" = end),
+    block_delete (block_id or start/end range), block_move_after and
+    block_copy_insert_after (block_id anchor + comma-separated src_block_ids).
+    Use this, not point_update, to change block attributes, e.g. turn a heading into
+    <h2 seq="auto">Title</h2> for Lark auto numbering. Keep <img>, <whiteboard>,
+    <cite>, and other token-bearing tags intact when replacing around them.
+    """
+    if not doc.strip():
+        raise ValueError("doc must not be empty")
+    if command not in BLOCK_COMMANDS:
+        raise ValueError(f"command must be one of {sorted(BLOCK_COMMANDS)}")
+    if doc_format not in {"markdown", "xml"}:
+        raise ValueError("doc_format must be markdown or xml")
+    if expected_revision_id is not None and (
+        isinstance(expected_revision_id, bool) or not isinstance(expected_revision_id, int)
+        or expected_revision_id < 0
+    ):
+        raise ValueError("expected_revision_id must be a non-negative integer")
+    has_range = bool(start_block_id or end_block_id)
+    if has_range and not (start_block_id and end_block_id):
+        raise ValueError("start_block_id and end_block_id must be passed together")
+    if has_range and block_id:
+        raise ValueError("pass block_id or start_block_id/end_block_id, not both")
+    if has_range and command not in {"block_replace", "block_delete"}:
+        raise ValueError("start/end ranges only apply to block_replace and block_delete")
+    if not (block_id or has_range):
+        raise ValueError(f"{command} requires block_id" + (
+            " or start_block_id/end_block_id" if command in {"block_replace", "block_delete"} else ""
+        ))
+    needs_content = command in {"block_replace", "block_insert_after"}
+    if needs_content and not content:
+        raise ValueError(f"{command} requires content")
+    if not needs_content and content is not None:
+        raise ValueError(f"{command} does not take content")
+    needs_src = command in {"block_move_after", "block_copy_insert_after"}
+    if needs_src and not src_block_ids:
+        raise ValueError(f"{command} requires src_block_ids")
+    if not needs_src and src_block_ids:
+        raise ValueError(f"{command} does not take src_block_ids")
+    _check_lark_cli()
+    result = _run_block_command(
+        doc, command, content=content, block_id=block_id,
+        start_block_id=start_block_id, end_block_id=end_block_id,
+        src_block_ids=src_block_ids, doc_format=doc_format, revision_id=expected_revision_id,
+    )
+    warnings = _callout_emoji_warnings(doc, content or "")
+    if warnings and isinstance(result, dict):
+        result["format_warnings"] = warnings
+    return result
+
+
 @mcp.tool(title="Create a Lark document", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 def create_document(
     content: str,
@@ -1374,7 +1692,7 @@ def create_document(
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")
     with _hidden_run() as run:
-        payload = _payload(run / ".document", _render(content, doc_format))
+        payload = _payload(run / ".document", _render(content, doc_format, document_start=True))
         args = [
             "docs", "+create", "--api-version", "v2", "--as", "user",
             "--doc-format", doc_format, "--content", payload, "--format", "json",
@@ -1455,17 +1773,19 @@ def insert_media(
     filename: str,
     content_base64: str,
     media_type: str = "image",
-    selection: str | None = None,
-    before: bool = False,
+    after_block_id: str | None = None,
 ) -> dict:
-    """Insert a base64 image or file, then delete its hidden local payload."""
+    """Insert a base64 image or file, then delete its hidden local payload.
+
+    lark-cli always appends media to the document end. Pass after_block_id (from
+    find_document_text with doc_format="xml", detail="with-ids"; "0" = document start)
+    to move the new block there afterwards.
+    """
     _check_lark_cli()
     if media_type not in {"image", "file"}:
         raise ValueError("media_type must be image or file")
     if not filename or Path(filename).name != filename:
         raise ValueError("filename must be a plain file name without directories")
-    if before and not selection:
-        raise ValueError("before requires selection")
     try:
         data = base64.b64decode(content_base64, validate=True)
     except (binascii.Error, ValueError) as error:
@@ -1480,13 +1800,32 @@ def insert_media(
             "--file", "./" + path.resolve().relative_to(PROJECT_ROOT).as_posix(),
             "--type", media_type, "--format", "json",
         ]
-        if selection:
-            args.extend(["--selection-with-ellipsis", selection])
-        if before:
-            args.append("--before")
         result = _run_cli(args, "insert_media")
         _assert_write_succeeded(result, "insert_media")
+    if not after_block_id:
         return result
+    new_block = result.get("data", {}).get("block_id") if isinstance(result, dict) else None
+    if not new_block:
+        raise LarkCLIError({
+            "operation": "insert_media",
+            "error": "media_inserted_not_moved",
+            "message": "media was appended to the document end but lark-cli returned no block_id to move",
+            "result": result,
+        })
+    try:
+        _run_block_command(
+            doc, "block_move_after", block_id=after_block_id, src_block_ids=new_block,
+            operation="insert_media move",
+        )
+    except LarkCLIError as error:
+        # The upload succeeded; never let a caller retry and duplicate the media.
+        error.details.update({
+            "error": "media_inserted_not_moved",
+            "media_block_id": new_block,
+            "next_step": "Media is at the document end; retry only the move with block_update, not insert_media.",
+        })
+        raise
+    return result
 
 
 @mcp.tool(title="Read a Lark whiteboard", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
