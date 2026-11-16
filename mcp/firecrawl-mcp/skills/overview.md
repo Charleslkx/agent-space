@@ -1,40 +1,28 @@
-# firecrawl (via this MCP)
+# Firecrawl MCP reference
 
-Trimmed, remote-server version of Firecrawl's own CLI skills (upstream: [firecrawl/cli](https://github.com/firecrawl/cli), ISC license, `skills/firecrawl-cli/SKILL.md` and friends). Call through the `firecrawl_cli(args, stdin?)` tool, not a local `firecrawl` binary — `args` is the argument array after `firecrawl`, no shell string.
+Adapted from [firecrawl/cli](https://github.com/firecrawl/cli), ISC-licensed; provenance is recorded in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). These examples target this server's pinned CLI, not every upstream release.
 
-## MCP boundary
+## 1. MCP boundary
 
-This server exposes a fixed subset of the CLI over a shared, credential-holding connection:
+Use `firecrawl_cli(args, stdin?)`, with the subcommand at `args[0]`. General connection, output handling and server boundaries are in [AGENTS.md](../AGENTS.md). Supported commands are `search`, `scrape`, `map`, `crawl`, `agent`, `research`, and `credit-usage`.
 
-- **Allowed commands**: `search`, `scrape`, `map`, `crawl`, `agent`, `research`, `credit-usage`.
-- **Blocked commands** (with reason): `monitor` (persistent scheduled jobs + webhooks/email), `feedback`/`search-feedback` (sends usage data — this server also sets `FIRECRAWL_NO_SEARCH_FEEDBACK=1`/`FIRECRAWL_NO_ENDPOINT_FEEDBACK=1`, so don't bother sending it), `browser`/`launch`/`interact` (persistent remote browser session), `download`/`experimental`/`x` (writes to local disk), `parse` (needs a local file), `config`/`view-config`/`login`/`logout` (the server holds the API key), `init`/`setup`/`make`/`env`/`doctor` (local-machine only).
-- **Blocked flags**: `-k/--api-key`, `--api-url` (server-managed credentials), `-o/--output` (results come back via the tool response's `stdout` field — there is no shared filesystem between this server and you), `--schema-file`/`--actions-file`/`--scrape-options-file` (pass inline JSON instead), `--webhook` (no outbound webhooks), `--profile`/`--no-save-changes` (no persistent browser state).
-- **Limits**: 128 args, 16KiB per arg, 1MiB stdin, 10MiB stdout/stderr each (truncated with `truncated: true` if exceeded, not discarded), 180s per call.
-- **No `.firecrawl/` directory, no `-o`, no `jq` on files.** Everything the upstream skills describe as "write to `.firecrawl/` then grep/jq" instead comes back directly in the tool response; read it from there. Use `--limit`/`--format` to keep it small instead of writing to disk.
-- **No `--wait` on `crawl`/`agent`.** This tool times out at 180s. Call once without `--wait` to get a job id, then poll with `["crawl", "<jobId>", "--status"]` (or `["agent", "<jobId>", "--status"]`).
+Remote callers retrieve these references with `firecrawl_skill("search")`, `firecrawl_skill("scrape")`, and the corresponding command name; relative file links are for repository readers.
 
-## Workflow escalation (unchanged from upstream)
+Calls have a 180-second timeout and 10 MiB output-stream limits. Results return in stdout; server-local file paths, credential overrides, webhooks and persistent browser profiles are blocked. For long crawl／agent jobs, retain the returned ID and poll instead of waiting inside one call.
 
-1. **search** — no specific URL yet; find pages or answer a question.
-2. **scrape** — you have a URL; get its content directly.
-3. **map + scrape** — large site, need a specific subpage: `map --search` to find the URL, then `scrape` it.
-4. **crawl** — need bulk content from a whole site section (e.g. all of `/docs/`).
-5. **agent** — need AI-driven structured extraction from a complex, multi-page site.
+## 2. Command references
 
-Deeper reference for each: `firecrawl_skill("search")`, `firecrawl_skill("scrape")`, `firecrawl_skill("map")`, `firecrawl_skill("crawl")`, `firecrawl_skill("agent")`.
+| Task | Reference |
+|---|---|
+| Discover pages | [search](search.md) |
+| Fetch known URLs | [scrape](scrape.md) |
+| Locate a subpage | [map](map.md) |
+| Collect a site section | [crawl](crawl.md) |
+| Structured extraction | [agent](agent.md) |
 
-## research (arXiv / GitHub)
-
-Nested subcommand, not in the table above because it's rarely needed: `research search-papers "<query>"`, `research inspect-paper <arxivId>`, `research related-papers <arxivId> --intent "..."`, `research read-paper <arxivId> --question "..."`, `research search-github "<query>"`. All read-only, same stdout-only rule applies (`-o` is blocked here too).
-
-```
-firecrawl_cli(["research", "search-papers", "diffusion image synthesis", "--limit", "10"])
+```jsonl
+{"args":["research","search-papers","diffusion image synthesis","--limit","10"]}
+{"args":["credit-usage","--json"]}
 ```
 
-## Credits
-
-```
-firecrawl_cli(["credit-usage", "--json"])
-```
-
-`search` costs 2 credits/call; `crawl` is billed per page; `agent` is billed per run, cap it with `--max-credits`.
+Check current account usage before large jobs; pricing and included allowances come from the upstream account, not a fixed value in this document. Flags and return schemas follow the deployed tool description and CLI help.

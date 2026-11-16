@@ -1,18 +1,26 @@
 # Codex New Agent Button
 
-Adds buttons to the right side of VS Code's editor tab bar:
+为 VS Code／兼容宿主的编辑器标题栏提供 Codex 按钮，依赖官方 `openai.chatgpt` 扩展。
 
-- `+` runs `Codex: New Codex Agent`.
-- The history button lists local Codex sessions and opens the selected session, including its existing messages, in a new Codex editor tab. Session listing uses `sqlite3` when present, and falls back to `python3`'s standard library so Linux TUI hosts without the CLI still work.
-- The sign-out button exits the current Codex session: it closes the conversation tab so the official extension can `thread/unsubscribe`, then removes leftover `~/.codex/thread-writer-locks/*.lock` files that no process still holds.
+## 1. 安装与使用
 
-Settings:
+```bash
+code --install-extension ./codex-new-agent-button-0.0.14.vsix
+```
 
-- `codexNewAgentButton.exitOnEditorClose` (default `true`) runs that exit path when a Codex tab is closed.
-- `codexNewAgentButton.releaseStaleWriterLocks` (default `true`) only deletes stale writer locks, never live ones.
+命令在本目录执行；远程工作区需在实际运行扩展的宿主安装。当前包版本以 `package.json` 为准。
 
-Migration:
+| 按钮／命令 | 行为 |
+|---|---|
+| New Codex Agent（花形图标） | 调用官方新会话命令 |
+| Resume Codex Session（历史图标） | 从本机 Codex 数据库列出会话，使用 sqlite3 或 Python 标准库读取，再交给官方扩展打开 |
+| Exit Codex Session（退出图标） | 关闭当前会话标签，让官方扩展处理退订，并清理不再被进程持有的 writer 锁；不退出账号登录 |
+| Release Stale Codex Locks | 手动清理未被持有的 writer 锁 |
 
-- Version `0.0.14` removes the legacy shared-daemon wrapper and leaves App Server lifecycle management to the official Codex clients.
-- On first activation, the extension removes its old `useSharedDaemon` preference. If `chatgpt.cliExecutable` still points to this extension's legacy wrapper, it restores the value recorded before shared mode was enabled, or clears the override when no safe previous value exists.
-- Upgrade the extension on every local and remote VS Code or Cursor host where it is installed, because the application-scoped CLI override can live on the client machine.
+## 2. 设置与迁移
+
+`codexNewAgentButton.exitOnEditorClose` 和 `codexNewAgentButton.releaseStaleWriterLocks` 默认均为 `true`，分别控制关闭标签后的退出处理和过期锁清理；活跃锁保持不变。
+
+`0.0.14` 移除了旧共享 daemon 包装器。激活时清理旧 `useSharedDaemon` 偏好；若 `chatgpt.cliExecutable` 仍指向该包装器，恢复已记录的旧值，无法恢复时清除覆盖。曾安装旧版本的本地和远程宿主都需升级。
+
+官方扩展负责 App Server 生命周期；内部命令或数据库格式变化后，需重新验证兼容性。

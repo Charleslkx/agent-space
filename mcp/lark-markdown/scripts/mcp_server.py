@@ -313,7 +313,7 @@ QUIET_ENV = {
 # document call causes unnecessary refresh attempts without making writes safer.
 AUTH_CACHE_SECONDS = 15 * 60
 _auth_cache: tuple[float, dict] | None = None
-# ponytail: one setup flow per MCP process; persist it only if multi-worker setup is needed.
+# one setup flow per MCP process; persist it only if multi-worker setup is needed.
 _app_setup_lock = threading.Lock()
 _app_setup: tuple[subprocess.Popen[bytes], str] | None = None
 
@@ -617,7 +617,7 @@ def _cleanup_stale_runs() -> None:
         raise RuntimeError("refusing to clean a symlinked .lark_publish directory")
     if not WORKDIR.exists():
         return
-    # ponytail: age heuristic, not a lock. It keeps a second instance sharing
+    # age heuristic, not a lock. It keeps a second instance sharing
     # PROJECT_ROOT from deleting payloads it is still writing, because no call
     # outlives CLI_TIMEOUT_SECONDS. Use a lockfile only if sharing is by design.
     cutoff = time.time() - CLI_TIMEOUT_SECONDS * 2

@@ -6,8 +6,9 @@ FROM python:3.12-slim
 
 RUN useradd --system --uid 10001 --create-home app
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
-RUN pip install --no-cache-dir uv==0.10.9 \
+COPY deploy/python/pyproject.toml deploy/python/uv.lock ./
+COPY deploy/python/uv-version.txt /tmp/uv-version.txt
+RUN pip install --no-cache-dir --index-url https://pypi.org/simple "uv==$(cat /tmp/uv-version.txt)" \
     && uv sync --frozen --no-dev
 COPY server.py ./
 USER app

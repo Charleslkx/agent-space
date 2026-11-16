@@ -51,7 +51,7 @@ is_wsl() {
 }
 
 is_codex_desktop() {
-  [ "${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-}" = "Codex Desktop" ] && \
+  [ "${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-}" = "Codex Desktop" ] || \
     [ "${__CFBundleIdentifier:-}" = "com.openai.codex" ]
 }
 

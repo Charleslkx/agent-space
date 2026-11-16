@@ -19,10 +19,12 @@ valid_hostname() {
 }
 
 [[ $EUID -eq 0 ]] || fail 'run this script with sudo'
-command -v docker >/dev/null || fail 'Docker is not installed; run scripts/ubuntu.sh install first'
+command -v docker >/dev/null || fail 'Docker is not installed; install Docker using its official apt repository first; keep the existing Caddy ingress'
 docker compose version >/dev/null || fail 'Docker Compose is not available'
 command -v caddy >/dev/null || fail 'Caddy is not installed'
 systemctl is-active --quiet caddy || fail 'Caddy is not running'
+
+bash "$base_dir/../scripts/check-python.sh" --setup
 
 read -r -p 'Public MCP hostname (for example, lark.example.com): ' domain
 valid_hostname "$domain" || fail 'hostname must be a DNS hostname such as lark.example.com'
@@ -50,7 +52,7 @@ printf '\n'
 [[ $github_secret != *$'\n'* && $github_secret != *$'\r'* ]] || fail 'GitHub OAuth client secret must be one line'
 
 jwt_key=$(openssl rand -hex 32)
-storage_key=$(openssl rand -base64 32)
+storage_key=$(openssl rand -base64 32 | tr '+/' '-_')
 redis_password=$(openssl rand -hex 32)
 umask 077
 {
@@ -68,6 +70,8 @@ chmod 600 "$env_file" "$redis_env_file"
 unset github_secret jwt_key storage_key redis_password github_client_id github_users
 
 cd "$base_dir"
+python3 ../scripts/prepare-python.py lark-cli-mcp
+bash scripts/prepare-cli.sh
 docker compose build
 docker compose up -d
 docker compose ps

@@ -63,7 +63,7 @@ MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 TIMEOUT_SECONDS = 180
 MAX_EVENT_TIMEOUT_SECONDS = 150
 
-# ponytail: caps concurrent lark-cli processes, not requests -- the anyio worker
+# caps concurrent lark-cli processes, not requests -- the anyio worker
 # pool still admits 40 callers, they just queue here. Every process shares one
 # HOME/XDG state dir (the lark-state volume), so this also bounds how many can
 # touch the credential store at once. If token corruption is ever observed,
@@ -381,7 +381,7 @@ def _installed_version() -> str | None:
     if _parse_version(configured):
         _INSTALLED_VERSION = configured
         return _INSTALLED_VERSION
-    # ponytail: the lock collapses a cold start's concurrent callers onto one
+    # the lock collapses a cold start's concurrent callers onto one
     # probe instead of one each. Held across a subprocess, which is fine because
     # it now runs at most once per process.
     with _PROBE_LOCK:
@@ -554,7 +554,7 @@ def begin_lark_auth(domains: list[str] | None = None) -> dict:
     if not verification_url or not verification_url.startswith("https://") or not device_code:
         response["hint"] = "lark-cli did not return an HTTPS verification URL and a device code"
         return response
-    # ponytail: the QR is a convenience; a failed render still returns the URL.
+    # the QR is a convenience; a failed render still returns the URL.
     qrcode = _execute(["auth", "qrcode", verification_url, "--output", "qr.png"], timeout=30, read_output="qr.png")
     return {
         "verification_url": verification_url,

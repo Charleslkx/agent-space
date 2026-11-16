@@ -37,13 +37,9 @@
 }
 ```
 
-超限时增加 `truncated`、`original_bytes` 和 `hint`。发现稳定新版本时增加：
+超限时增加 `truncated`、`original_bytes` 和 `hint`。发现稳定新版本时增加 `update_available`，其中 `current_version`、`latest_version` 分别是当前与发现的版本，`upgrade_command` 是管理员升级入口；这些字段以运行时响应为准。
 
-```json
-{"update_available":{"current_version":"1.0.81","latest_version":"1.0.82","upgrade_command":"sudo scripts/update-cli.sh 1.0.82"}}
-```
-
-该字段供服务器管理员处理。普通用户或 Agent只报告更新，不执行升级。
+该字段供服务器管理员处理。普通用户或 Agent 只报告更新，不执行升级。
 
 ## 2. 身份、权限和写操作
 
@@ -86,7 +82,7 @@
 
 读取主文件或 reference：
 
-```json
+```jsonl
 {"action":"read","path":"lark-doc"}
 {"action":"read","path":"lark-doc/references/lark-doc-fetch.md"}
 ```

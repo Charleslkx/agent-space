@@ -1,0 +1,29 @@
+[Unit]
+Description=Lark Markdown MCP
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=lark-markdown
+Group=lark-markdown
+WorkingDirectory=/opt/mcp/lark-markdown
+EnvironmentFile=/etc/lark-markdown.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HOME=/var/lib/lark-markdown
+Environment=XDG_CONFIG_HOME=/var/lib/lark-markdown/config
+Environment=XDG_DATA_HOME=/var/lib/lark-markdown/data
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+StateDirectory=lark-markdown
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/opt/mcp/lark-markdown/deploy/python/.venv/bin/python scripts/mcp_server.py --transport http --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

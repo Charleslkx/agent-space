@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-ARG FIRECRAWL_VERSION=1.19.27
+COPY deploy/firecrawl-cli.version /tmp/cli.version
 
 # Resolved from `uname -m` at build time rather than Docker's ARG TARGETARCH,
 # which is only auto-populated under BuildKit/buildx -- this stays correct
@@ -13,6 +13,7 @@ RUN apt-get update \
          aarch64) fc_arch=arm64 ;; \
          *) echo "unsupported build architecture: $(uname -m)" >&2; exit 1 ;; \
        esac \
+    && FIRECRAWL_VERSION="$(cat /tmp/cli.version)" \
     && fc_tarball="firecrawl-linux-${fc_arch}.tar.gz" \
     && fc_url="https://github.com/firecrawl/cli/releases/download/v${FIRECRAWL_VERSION}/${fc_tarball}" \
     && fc_checksums_url="https://github.com/firecrawl/cli/releases/download/v${FIRECRAWL_VERSION}/checksums.txt" \
@@ -29,8 +30,9 @@ RUN apt-get update \
 
 RUN useradd --system --uid 10001 --create-home app
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
-RUN pip install --no-cache-dir uv==0.10.9 \
+COPY deploy/python/pyproject.toml deploy/python/uv.lock ./
+COPY deploy/python/uv-version.txt /tmp/uv-version.txt
+RUN pip install --no-cache-dir --index-url https://pypi.org/simple "uv==$(cat /tmp/uv-version.txt)" \
     && uv sync --frozen --no-dev
 COPY server.py ./
 COPY skills ./skills

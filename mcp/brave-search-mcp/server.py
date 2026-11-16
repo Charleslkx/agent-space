@@ -58,7 +58,7 @@ BLOCKED_FLAGS = ("--api-key", "--base-url", "--config")
 ALLOWED_COMMANDS = {"web", "news", "images", "videos"}
 NO_COMMAND_FLAGS = {"--help", "-h", "--version", "-V"}
 
-# ponytail: caps concurrent bx processes, not requests -- the anyio worker pool
+# caps concurrent bx processes, not requests -- the anyio worker pool
 # still admits 40 callers, they just queue here. Raise only together with the
 # container's mem_limit/pids_limit.
 MAX_CONCURRENT_CALLS = max(1, int(os.environ.get("BRAVE_MCP_MAX_CONCURRENCY", "16")))

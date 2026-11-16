@@ -1,18 +1,12 @@
 # 配置与部署
 
+部署入口：[统一 Linux 部署运行手册](../DEPLOYMENT.md)。首次部署与升级以该手册为准；本文保留服务配置、工具边界和客户端参考。
+
 ## 1. 架构与前提
 
 请求路径为：MCP 客户端 → Nginx/TLS → FastMCP → GitHub OAuth 白名单 → `lark-cli` → 飞书 OpenAPI。Redis 只保存加密的 MCP OAuth 状态；`lark-state` 卷保存共享飞书配置和用户 refresh token。
 
-服务器要求 Ubuntu x86_64 或 arm64、至少 1 GiB 内存和 2 GiB 可用磁盘。DNS 必须预先把 `lark.{基础域名}` 指向服务器。用户只提供基础域名，所有脚本和示例固定添加 `lark.` 前缀。
-
-```bash
-BASE_DOMAIN=example.com scripts/ubuntu.sh check
-sudo -E BASE_DOMAIN=example.com scripts/ubuntu.sh install
-```
-
-脚本拒绝协议、路径、端口和已经带 `lark.` 的值。环境检查不会修改系统；`install` 只安装 Docker Compose、Nginx 和 Certbot。
-安装脚本验证 root 可以连接 Docker daemon。后续 Docker 和 Compose 命令统一使用 `sudo`；这同时满足 Docker socket 与 0600 环境文件的权限要求，不需要把部署用户加入等同 root 权限的 `docker` 组。
+Ubuntu／Debian、完整目录复制、依赖安装与同机共存按 [统一部署运行手册](../DEPLOYMENT.md)执行。统一使用完整 `DOMAIN`；旧 `BASE_DOMAIN` 兼容入口仍可用。
 
 如果服务器已经运行 Caddy，可使用仓库中的 scripts/deploy-caddy.sh 辅助部署。该脚本是通用模板，运行时会要求管理员手动输入以下值：
 
@@ -25,15 +19,7 @@ sudo -E BASE_DOMAIN=example.com scripts/ubuntu.sh install
 
 ## 2. GitHub OAuth App
 
-在 GitHub Developer Settings 创建独立 OAuth App：
-
-| 字段 | 值 |
-|---|---|
-| Application name | Lark CLI MCP |
-| Homepage URL | `https://lark.example.com` |
-| Authorization callback URL | `https://lark.example.com/auth/callback` |
-
-不能复用其他 MCP 的 OAuth App，因为 GitHub OAuth App 只有一个 callback。服务只申请 `read:user`，登录后再按 `LARK_CLI_MCP_GITHUB_USERS` 检查 GitHub login；这里填写登录名，不填显示名或邮箱。
+按 [统一部署手册第 3 节](../DEPLOYMENT.md)创建独立 App，Homepage 使用当前公开 origin，callback 为该 origin 下的 `/auth/callback`。服务请求 `read:user`，登录后按 `LARK_CLI_MCP_GITHUB_USERS` 检查 GitHub login。
 
 ## 3. 环境文件
 
@@ -41,7 +27,7 @@ sudo -E BASE_DOMAIN=example.com scripts/ubuntu.sh install
 
 ```bash
 openssl rand -hex 32       # JWT signing key
-openssl rand -base64 32    # Fernet storage key
+openssl rand -base64 32 | tr '+/' '-_'    # Fernet storage key
 openssl rand -hex 32       # Redis password
 ```
 
@@ -51,7 +37,7 @@ openssl rand -hex 32       # Redis password
 LARK_CLI_MCP_BASE_URL=https://lark.example.com
 LARK_CLI_MCP_GITHUB_CLIENT_ID=GitHub OAuth App Client ID
 LARK_CLI_MCP_GITHUB_CLIENT_SECRET=GitHub OAuth App Client Secret
-LARK_CLI_MCP_GITHUB_USERS=alice,bob
+LARK_CLI_MCP_GITHUB_USERS=your-github-login,another-github-login
 LARK_CLI_MCP_JWT_SIGNING_KEY=64位十六进制值
 LARK_CLI_MCP_STORAGE_KEY=Fernet URL-safe base64值
 LARK_CLI_MCP_REDIS_PASSWORD=Redis密码
@@ -78,15 +64,7 @@ JWT 或 Fernet 密钥轮换会让全部 MCP 会话失效。恢复 Redis 备份�
 
 ## 4. 构建并启动
 
-在本目录执行：
-
-```bash
-sudo docker compose build
-sudo docker compose up -d
-sudo docker compose ps
-```
-
-MCP 只监听宿主 `127.0.0.1:8768`，Redis没有宿主端口。`state-init` 和 `redis-init` 只修复命名卷权限，完成后正常退出。
+按 [部署运行手册第 4 节](../DEPLOYMENT.md)启动并等待健康检查。首次准备选择官方最新稳定 CLI，后续代码重建复用 `deploy/lark-cli.version` 中的本机版本；已安装实例的调试和修改不自动升级。准备入口为 `sudo bash scripts/prepare-cli.sh`，记录文件不随源码分发，部署更新时保留。MCP 回环端口为 8768，`lark-state` 保存飞书应用与用户身份；`state-init`、`redis-init` 正常完成后退出。
 
 ## 5. 配置飞书应用与共享身份
 
@@ -112,28 +90,7 @@ sudo docker compose exec mcp lark-cli auth status --json --verify
 
 ## 6. Nginx 与 TLS
 
-把模板中的 `YOUR_BASE_DOMAIN` 替换为基础域名；保留 `lark.` 前缀：
-
-```bash
-sudo cp deploy/lark-mcp.bootstrap.nginx.conf /etc/nginx/sites-available/lark-cli-mcp
-sudo sed -i 's/YOUR_BASE_DOMAIN/example.com/g' /etc/nginx/sites-available/lark-cli-mcp
-sudo ln -s /etc/nginx/sites-available/lark-cli-mcp /etc/nginx/sites-enabled/lark-cli-mcp
-sudo nginx -t
-sudo systemctl reload nginx
-sudo certbot --nginx -d lark.example.com
-```
-
-证书签发后用 `deploy/lark-mcp.nginx.conf` 替换站点文件、再次替换域名、运行 `nginx -t` 并 reload。Nginx 必须代理所有路径，不能只代理 `/mcp`，否则 OAuth discovery、注册或 callback 会失败。
-
-验证：
-
-```bash
-curl -fsS https://lark.example.com/.well-known/oauth-protected-resource/mcp
-curl -fsS https://lark.example.com/.well-known/oauth-authorization-server
-curl -i https://lark.example.com/mcp
-```
-
-最后一条未认证请求应返回 401；这表示服务可达且正在要求 OAuth。
+执行 [统一部署运行手册第 5、6 节](../DEPLOYMENT.md)，脚本替换模板域名、检查 Nginx、签证后发布并验收。端口为 8768。
 
 ## 7. 客户端连接
 
@@ -175,12 +132,13 @@ Grok 自定义连接器使用固定回调 URI `https://grok.com/connectors-oauth
 ```bash
 sudo scripts/update-cli.sh --dry-run
 sudo scripts/update-cli.sh
-sudo scripts/update-cli.sh 1.0.82
+CLI_VERSION=your-release-version   # 替换为实际目标版本
+sudo scripts/update-cli.sh "$CLI_VERSION"
 ```
 
-升级脚本核对 amd64、arm64 和 checksums 资产，修改固定版本，重建并等待健康检查，再验证容器内版本；失败时恢复旧版本。服务不会自行运行此脚本。设置 `LARK_CLI_MCP_UPDATE_CHECK=0` 并重建容器可关闭后台检查。
+升级脚本核对 amd64、arm64 和 checksums 资产，更新本机版本记录，重建并等待健康检查，再验证容器内版本；失败时恢复旧记录和已保存的原镜像，不通过重新下载来回滚。服务不会自行运行此脚本。设置 `LARK_CLI_MCP_UPDATE_CHECK=0` 并重建容器可关闭后台检查。
 
-备份 `lark-state`、`redis-data` 和两个 `/etc` 环境文件。环境文件必须单独加密保存。恢复时先恢复环境文件和卷，再启动 Compose；Fernet 密钥与 Redis 内容不匹配时，旧 OAuth 状态无法解密，客户端必须重新登录。
+备份 `lark-state`、`redis-data`、两个 `/etc` 环境文件和 `deploy/lark-cli.version`。环境文件必须单独加密保存。恢复时先恢复环境文件和卷，再启动 Compose；Fernet 密钥与 Redis 内容不匹配时，旧 OAuth 状态无法解密，客户端必须重新登录。
 
 ## 9. 故障定位
 
@@ -197,9 +155,9 @@ sudo scripts/update-cli.sh 1.0.82
 | 502 | `sudo docker compose ps`、`sudo docker compose logs mcp`、Nginx error log、宿主 8768 |
 | 容器反复重启，日志第一条是 `lark-cli is not installed` 或 `must exist and be readable/writable` | 启动前置检查失败。补齐镜像里的 lark-cli，或检查 `lark-state` 卷的属主（`state-init` 应已 chown 到 10001） |
 | `server is at capacity` | 并发子进程已满（`LARK_CLI_MCP_MAX_CONCURRENCY`，默认 8）。**本次没有执行任何请求**，直接重试 |
-| 参数被拒且提示 `args[0]` / `args[1]` | 命令和子命令必须分别是 args[0]、args[1]，标志不能前置。这不是风格要求：标志的值会顶替命令位置，让校验器和 Cobra 对「哪个 token 是命令」产生分歧 |
+| 参数被拒且提示 `args[0]` / `args[1]` | 命令和子命令必须分别是 args[0]、args[1]，标志不能前置。保持校验器与 CLI 的命令位置一致 |
 | 首次连接时 `/register` 返回 429 | nginx 对 DCR 注册端点限流（每 IP 10 次/分，可突发 6 次）。正常客户端每次安装只注册一次，等一分钟重试 |
-| `nginx: [emerg] limit_req_zone "..." is already bound` | 同机多个 MCP 用了相同 zone 名。本服务用 `lark_cli_register`，注意不要和 lark-markdown 的 `lark_register` 重名 |
+| `nginx: [emerg] limit_req_zone "..." is already bound` | 同机多个 MCP 用了相同 zone 名。本服务用 `lark_cli_register`，注意不要和 lark-markdown 的 `lark_markdown_register` 重名 |
 | `update_available` 长时间不出现 | 检查开关、GitHub 出网和缓存周期；不影响业务调用 |
 
-部署完成后按 [USAGE.md](USAGE.md) 验证两个工具。
+部署完成后按 [USAGE.md](USAGE.md) 验证 CLI、Skill 浏览和分步授权工具。

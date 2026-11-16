@@ -1,9 +1,6 @@
 services:
   mcp:
-    build:
-      context: .
-      args:
-        BX_VERSION: "1.5.0"
+    build: .
     env_file: ${BRAVE_MCP_ENV_FILE:-/etc/brave-search-mcp.env}
     environment:
       BRAVE_MCP_REDIS_HOST: redis

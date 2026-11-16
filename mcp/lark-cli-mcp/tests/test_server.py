@@ -18,7 +18,7 @@ def load_server():
         "LARK_CLI_MCP_BASE_URL": "https://lark.example.com",
         "LARK_CLI_MCP_GITHUB_CLIENT_ID": "client",
         "LARK_CLI_MCP_GITHUB_CLIENT_SECRET": "secret",
-        "LARK_CLI_MCP_GITHUB_USERS": "Charles, AnotherUser",
+        "LARK_CLI_MCP_GITHUB_USERS": "Your-GitHub-Login, AnotherUser",
         "LARK_CLI_MCP_JWT_SIGNING_KEY": "a" * 64,
         "LARK_CLI_MCP_STORAGE_KEY": FERNET_KEY,
         "LARK_CLI_MCP_REDIS_PASSWORD": "redis-password",
@@ -101,9 +101,9 @@ class ServerTest(unittest.TestCase):
         self.assertIn(SERVER.GROK_REDIRECT_URI, SERVER.ALLOWED_CLIENT_REDIRECT_URIS)
 
     def test_github_allowlist_is_case_insensitive(self):
-        token = type("Token", (), {"claims": {"login": "cHaRlEs"}})()
+        token = type("Token", (), {"claims": {"login": "Your-GitHub-Login"}})()
         context = type("Context", (), {"token": token})()
-        with patch.dict(os.environ, {SERVER.GITHUB_USERS_ENV: "Charles, AnotherUser"}):
+        with patch.dict(os.environ, {SERVER.GITHUB_USERS_ENV: "Your-GitHub-Login, AnotherUser"}):
             self.assertTrue(SERVER._authorized_github_user(context))
             token.claims["login"] = "outside"
             self.assertFalse(SERVER._authorized_github_user(context))

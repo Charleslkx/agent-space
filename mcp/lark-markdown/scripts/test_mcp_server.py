@@ -811,7 +811,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             SERVER.GITHUB_CLIENT_ID_ENV: "client",
             SERVER.GITHUB_CLIENT_SECRET_ENV: "secret",
             SERVER.GITHUB_JWT_SIGNING_KEY_ENV: "stable-signing-key",
-            SERVER.GITHUB_USERS_ENV: "Charles, AnotherUser",
+            SERVER.GITHUB_USERS_ENV: "Your-GitHub-Login, AnotherUser",
         }
         with patch.dict(SERVER.os.environ, env, clear=True), \
              patch.object(SERVER, "_OriginCompatibleGitHubProvider", return_value="provider") as provider:
@@ -826,7 +826,7 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("http://127.0.0.1:*", kwargs["allowed_client_redirect_uris"])
             self.assertEqual(kwargs["allowed_client_redirect_uris"], SERVER.ALLOWED_CLIENT_REDIRECT_URIS)
             allowed = SERVER._authorized_github_user(SimpleNamespace(token=SimpleNamespace(
-                claims={"login": "charles"},
+                claims={"login": "your-github-login"},
             )))
             self.assertTrue(allowed)
             allowed = SERVER._authorized_github_user(SimpleNamespace(token=SimpleNamespace(
@@ -840,17 +840,17 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             SERVER.GITHUB_CLIENT_ID_ENV: "client",
             SERVER.GITHUB_CLIENT_SECRET_ENV: "secret",
             SERVER.GITHUB_JWT_SIGNING_KEY_ENV: "stable-signing-key",
-            SERVER.GITHUB_USERS_ENV: "charles",
+            SERVER.GITHUB_USERS_ENV: "your-github-login",
         }
         with patch.dict(SERVER.os.environ, env, clear=True):
             with self.assertRaisesRegex(RuntimeError, "HTTPS origin"):
                 SERVER._auth_provider("github")
 
     def test_github_user_list_supports_legacy_setting_without_ambiguity(self) -> None:
-        with patch.dict(SERVER.os.environ, {SERVER.GITHUB_USER_ENV: "Charles"}, clear=True):
-            self.assertEqual(SERVER._github_users(), frozenset({"charles"}))
+        with patch.dict(SERVER.os.environ, {SERVER.GITHUB_USER_ENV: "Your-GitHub-Login"}, clear=True):
+            self.assertEqual(SERVER._github_users(), frozenset({"your-github-login"}))
         with patch.dict(SERVER.os.environ, {
-            SERVER.GITHUB_USERS_ENV: "Charles, AnotherUser",
+            SERVER.GITHUB_USERS_ENV: "Your-GitHub-Login, AnotherUser",
             SERVER.GITHUB_USER_ENV: "LegacyUser",
         }, clear=True):
             with self.assertRaisesRegex(RuntimeError, "set only one"):

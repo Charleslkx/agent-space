@@ -1,84 +1,40 @@
 ---
 name: codex-notify-hook
-description: >
-  为 Codex 搭建任务完成通知 hook：macOS/WSL 同时发送系统通知和飞书；
-  原生 Linux 只发送飞书。
-  支持焦点识别（正盯着会话窗口时不打扰）、通知 subtitle 显示项目根目录名称、
-  使用飞书自建应用发送通知，webhook 仅作可选降级。
-  当用户提到"完成后通知我""Codex 通知 hook""任务做完弹个通知"
-  "后台跑任务想被叫一下"、terminal-notifier 或 osascript 通知时，务必使用本 skill。
+description: 配置或排查 Codex 的 Stop 完成通知、系统通知和可选飞书卡片。
 ---
 
-# Codex 完成通知 Hook
+# Codex 完成通知
 
-为 Codex 配置 `Stop` hook，在一轮回答结束时发送通知。
+涉及 Python 的操作先按[安装预检](references/installation.md#11-python-与工具预检)验证环境；运行检查用 `--runtime`，SDK 安装用 `--setup`。未通过时先补齐依赖，不继续写配置。
 
-### 飞书通知协议
+## 1. 范围与系统
 
-五个 agent 使用同一协议：读取各自 `feishu-agent.env` 中的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`、`FEISHU_APPROVAL_RECEIVE_ID_TYPE`；自建应用 IM API 为主通道，webhook 为失败回退。卡片无按钮，字段固定为 Agent、Project、Content、时间；完成为蓝色，需注意为橙色。通知链路不调用 `lark-cli`。
+macOS 使用系统通知，WSL 使用 Windows Toast，原生 Linux 只发飞书。缺失焦点信息时继续投递；macOS 焦点识别为应用级。 Codex App 检测到 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` 或 `__CFBundleIdentifier=com.openai.codex` 时，本地通知静默，飞书仍发送。
 
-完成卡片的正文必须使用真实换行来分隔 Agent、Project、Content；不得把 `\n` 作为普通文本发送。时间应作为弱化的说明文字显示。
+原生 Linux 需要完成飞书配置才能产生通知；没有投递通道的 hook 不计为安装验收成功。
 
-## 工作原理
+## 2. 前提与 Skill 安装
 
-```text
-Codex CLI 结束一轮回答
-  -> Stop hook
-  -> notify.sh
-  -> macOS 系统通知 / WSL Windows Toast / 飞书
-```
-
-本 skill 不注册 `PermissionRequest`。该事件发生在自动审批之前，载荷没有自动审批结果，无法区分自动通过和需要人工授权；注册它会产生错误提醒。只有 Codex 提供后置人工授权事件或 `requires_user_input` 字段后，才重新启用。
-
-## 安装步骤
-
-### 0. 先检查环境
+首次安装先按 [installation.md](references/installation.md)完成系统依赖和 Skill 发现。需要 Bash 3.2+、Python 3.10+（应用配置／Python 投递）；已有客户端先验证版本，GUI 安装没有命令行入口时在其版本页核对，并确保 hook 子进程能找到 Bash／Python。
 
 ```bash
-case "$(uname -s)" in
-  Darwin) echo 'macOS：系统通知 + 飞书通知' ;;
-  Linux)
-    if [ -n "${WSL_INTEROP:-}" ] || grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
-      echo 'WSL：Windows 系统通知 + 飞书通知'
-    else
-      echo 'Linux：仅飞书通知'
-    fi
-    ;;
-  *) echo '不支持本地通知；仅在已配置时发送飞书通知' ;;
-esac
+codex --version
+python3 --version
+# 替换为当前实际包含 SKILL.md 的目录，路径含空格时保留双引号。
+export SKILL_DIR="/path/to/installed/codex-notify-hook"
 ```
 
-原生 Linux 仍需安装 Stop hook，用它触发飞书；脚本不会尝试 `terminal-notifier`、`osascript` 或终端响铃。Codex App 会通过 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` 和 `__CFBundleIdentifier=com.openai.codex` 被识别，跳过本地通知，只保留飞书；App 自身负责系统提醒。
+## 3. 运行文件与注册
 
-### 飞书配置：一键绑定自建应用
-
-通知不调用 `lark-cli`，也不读取其用户登录态。它使用 `feishu-agent.env` 中的应用凭证，先换取 tenant access token，再调用飞书 IM API 向 `FEISHU_HOME_CHANNEL` 发卡片。
-
-每个通知 Skill 都包含完整的 `create_feishu_agent_app.py`，运行期只读取自己的 env，不调用其他 Skill。安装脚本依次使用 Codex 自己的完整配置、自动复制其他 Agent 的完整配置，或在完全没有配置时扫码创建应用。复用会写入 Codex 自己的 mode-`600` env，不创建软链接。
+修改前将现有运行文件及相关注册备份到客户端扫描目录之外的私有目录；只替换本 Skill 的文件及注册。
 
 ```bash
-python3 <skill-dir>/scripts/create_feishu_agent_app.py
-python3 -m pip install 'lark-oapi>=1.5.5'
-python3 <skill-dir>/scripts/create_feishu_agent_app.py --live --home-channel oc_xxx --test
+mkdir -p "$HOME/.codex/hooks"
+cp "$SKILL_DIR"/scripts/{notify.sh,feishu_send_approval.py,feishu_approval_common.py} "$HOME/.codex/hooks/"
+chmod +x "$HOME/.codex/hooks/notify.sh"
 ```
 
-`--app-id cli_xxx` 选择指定现有应用；`--new` 跳过自动复用并创建独立应用；`--manual` 打印手工创建步骤。新建应用前必须提供目标会话的 `chat_id`，创建后把机器人加入该会话。`--test` 发送一张连接测试卡片。不要在对话中发送密钥。
-
-完成事件发蓝色完成卡片；需要注意事件发橙色通知卡片。两类卡片均不含按钮。
-
-### 1. 放置脚本
-
-脚本与两个 Python 文件必须一并放入 hook 目录：
-
-```bash
-mkdir -p ~/.codex/hooks
-cp <skill-dir>/scripts/{notify.sh,feishu_send_approval.py,feishu_approval_common.py} ~/.codex/hooks/
-chmod +x ~/.codex/hooks/notify.sh
-```
-
-### 2. 注册 Stop hook
-
-先读取 `~/.codex/config.toml`，合并下面的配置，不要整体覆盖：
+读取 `~/.codex/config.toml` 并合并下面的定义，保留其他设置：
 
 ```toml
 [[hooks.Stop]]
@@ -88,86 +44,35 @@ type = "command"
 command = "~/.codex/hooks/notify.sh stop"
 ```
 
-如果使用 `~/.codex/hooks.json`：
+也可使用 `~/.codex/hooks.json`，同一层只选一种表示：
 
 ```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.codex/hooks/notify.sh stop"
-          }
-        ]
-      }
-    ]
-  }
-}
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"~/.codex/hooks/notify.sh stop"}]}]}}
 ```
 
-删除已有的 `PermissionRequest` 注册，不要把 `notify.sh permission-request` 挂载到任何 hook。
+在 CLI `/hooks` 中审阅并信任当前定义，变更后按实际提示重新审阅。只为本方案注册 `Stop`；迁移时只移除本通知脚本的重复或 `permission-request` 注册。`PermissionRequest` 在审批流程中触发，不能证明最终需要人工处理。
 
-### 3. 信任 hook
+配置格式依据 [官方文档](https://developers.openai.com/codex/hooks)。GUI／后台客户端不会自动继承交互终端的 PATH；运行环境缺少 Python／Bash 时，在该处理器的启动环境中加入实际安装目录，或使用这些可执行文件的绝对路径，重新验证加载。
 
-Codex 对非托管 hook 要求审核并信任：
+## 4. 飞书应用与通道
 
-1. 在 Codex CLI 中运行 `/hooks`。
-2. 审阅新增的 `Stop` hook。
-3. trust 当前脚本；脚本内容变化后需要重新信任。
+飞书为可选通道，需要时读取随包的 [feishu-setup.md](references/feishu-setup.md)，先运行只读 `--check` 验证 SDK 与 `lark-cli` 能力，再选择复用、手工配置或 SDK 扫码创建。通知运行不依赖 CLI 或用户登录态；创建应用、改动已有应用与发送测试卡片按用户授权的范围执行。
 
-### 4. 校验
+env、App ID／Secret、chat_id、webhook 和授权 URL 只保存在目标账户的私有运行环境，源码、示例和部署报告使用占位符。卡片只展示通知，不包含审批按钮。
+
+## 5. 验收与排障
 
 ```bash
-rg -n '"Stop"|PermissionRequest' ~/.codex/hooks.json
-bash <skill-dir>/scripts/test_notify.sh
-python3 <skill-dir>/scripts/test_feishu_setup.py
+bash "$SKILL_DIR/scripts/test_notify.sh"
+python3 "$SKILL_DIR/scripts/test_feishu_setup.py"
 ```
 
-预期：配置中存在 `Stop`，不存在 `PermissionRequest`；测试输出 `ok: Stop notification delivered`。
+离线测试使用替身，不发送真实通知。安装后重新加载客户端，触发一次完成事件；支持待处理事件的客户端再触发一次。启用飞书的实例按配置参考单独验证真实卡片投递。
 
-## 可选：配置飞书 webhook
+未投递时依次检查：客户端加载／信任、当前作用域与账户、事件状态、子进程 PATH、焦点过滤、飞书 env／租户权限。`NOTIFY_DEBUG=1` 输出诊断，`NOTIFY_FORCE=1` 可在受控测试时绕过焦点过滤。通知输出和错误不要污染协议 stdout。
 
-未配置时自动跳过飞书，不影响本地通知。持久化配置优先使用上方脚本；仅临时测试时可导出：
+## 6. 更新、回滚与卸载
 
-```bash
-export LARK_WEBHOOK_URL="https://open.feishu.cn/open-apis/bot/v2/hook/..."
-export LARK_WEBHOOK_SECRET="..."
-```
+先备份旧 Skill、运行文件和本通知的配置；更新完整 Skill 后重新复制第 3 节的运行文件、合并注册并重复验收。失败时只恢复本通知的备份，保留用户其他设置；Codex 等客户端按提示重新审阅定义。
 
-当自建应用发送失败时，hook 才回退到 webhook。
-
-## 可选：安装 terminal-notifier
-
-安装第三方软件前先征得用户同意：
-
-```bash
-brew install terminal-notifier
-```
-
-脚本自动降级：`terminal-notifier` 失败后使用 `osascript`，再失败则使用终端响铃。
-
-## 脚本设计要求
-
-- 不使用 `set -e/-u/pipefail`；hook 结尾恒定 `exit 0`，不能中断 Codex。
-- stdin 只读一次并复用。
-- 焦点识别使用 `lsappinfo`，避免触发自动化权限弹窗。
-- `NOTIFY_DEBUG=1` 输出调试信息；`NOTIFY_FORCE=1` 跳过焦点检查。
-- 本地通知 title 为 `Codex`，subtitle 为项目根目录名称，body 为 `任务已完成`。
-
-## 验证
-
-```bash
-SH=~/.codex/hooks/notify.sh
-bash <skill-dir>/scripts/test_notify.sh
-python3 <skill-dir>/scripts/test_feishu_setup.py
-echo '{"hook_event_name":"Stop"}' | NOTIFY_DEBUG=1 NOTIFY_FORCE=1 "$SH" stop
-echo '{"hook_event_name":"Stop"}' | NOTIFY_FORCE=1 PATH=/usr/bin:/bin "$SH" stop
-```
-
-每条都应 `exit 0`。`NOTIFY_FORCE=1` 用于测试时绕过焦点检查。
-
-## 平台说明
-
-Codex CLI 在 macOS 使用 `terminal-notifier` / `osascript`，WSL 使用 Windows Toast；Codex App 与原生 Linux 不发本地通知，只走飞书。
+卸载移除本通知的注册、独占运行文件和 Skill 目录。共享机器人和其他 Agent 的私有 env 不随之删除。完整安装与目录约定见 [installation.md](references/installation.md)。

@@ -18,7 +18,7 @@ def load_server():
         "BRAVE_MCP_BASE_URL": os.environ.get("BRAVE_MCP_BASE_URL", "https://brave.example.com"),
         "BRAVE_MCP_GITHUB_CLIENT_ID": "client",
         "BRAVE_MCP_GITHUB_CLIENT_SECRET": "secret",
-        "BRAVE_MCP_GITHUB_USERS": "Charles, AnotherUser",
+        "BRAVE_MCP_GITHUB_USERS": "Your-GitHub-Login, AnotherUser",
         "BRAVE_MCP_JWT_SIGNING_KEY": "a" * 64,
         "BRAVE_MCP_STORAGE_KEY": FERNET_KEY,
         "BRAVE_MCP_REDIS_PASSWORD": "redis-password",
@@ -37,12 +37,12 @@ SERVER = load_server()
 
 class ServerTest(unittest.TestCase):
     def test_whitelist_is_case_insensitive(self):
-        token = type("Token", (), {"claims": {"login": "cHaRlEs"}})()
+        token = type("Token", (), {"claims": {"login": "Your-GitHub-Login"}})()
         context = type("Context", (), {"token": token})()
-        with patch.dict(os.environ, {SERVER.GITHUB_USERS_ENV: "Charles, AnotherUser"}):
+        with patch.dict(os.environ, {SERVER.GITHUB_USERS_ENV: "Your-GitHub-Login, AnotherUser"}):
             self.assertTrue(SERVER._authorized_github_user(context))
         token.claims["login"] = "outside"
-        with patch.dict(os.environ, {SERVER.GITHUB_USERS_ENV: "Charles"}):
+        with patch.dict(os.environ, {SERVER.GITHUB_USERS_ENV: "Your-GitHub-Login"}):
             self.assertFalse(SERVER._authorized_github_user(context))
 
     def test_search_boundary_rejects_server_configuration_and_files(self):

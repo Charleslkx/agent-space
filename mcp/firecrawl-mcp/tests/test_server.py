@@ -19,7 +19,7 @@ def load_server():
         "FIRECRAWL_MCP_BASE_URL": os.environ.get("FIRECRAWL_MCP_BASE_URL", "https://firecrawl.example.com"),
         "FIRECRAWL_MCP_GITHUB_CLIENT_ID": "client",
         "FIRECRAWL_MCP_GITHUB_CLIENT_SECRET": "secret",
-        "FIRECRAWL_MCP_GITHUB_USERS": "Charles, AnotherUser",
+        "FIRECRAWL_MCP_GITHUB_USERS": "Your-GitHub-Login, AnotherUser",
         "FIRECRAWL_MCP_JWT_SIGNING_KEY": "a" * 64,
         "FIRECRAWL_MCP_STORAGE_KEY": FERNET_KEY,
         "FIRECRAWL_MCP_REDIS_PASSWORD": "redis-password",
@@ -46,12 +46,12 @@ def write_fake_cli(directory: str, body: str) -> Path:
 
 class ServerTest(unittest.TestCase):
     def test_whitelist_is_case_insensitive(self):
-        token = type("Token", (), {"claims": {"login": "cHaRlEs"}})()
+        token = type("Token", (), {"claims": {"login": "Your-GitHub-Login"}})()
         context = type("Context", (), {"token": token})()
-        with patch.dict(os.environ, {SERVER.GITHUB_USERS_ENV: "Charles, AnotherUser"}):
+        with patch.dict(os.environ, {SERVER.GITHUB_USERS_ENV: "Your-GitHub-Login, AnotherUser"}):
             self.assertTrue(SERVER._authorized_github_user(context))
         token.claims["login"] = "outside"
-        with patch.dict(os.environ, {SERVER.GITHUB_USERS_ENV: "Charles"}):
+        with patch.dict(os.environ, {SERVER.GITHUB_USERS_ENV: "Your-GitHub-Login"}):
             self.assertFalse(SERVER._authorized_github_user(context))
 
     def test_allowed_commands_pass(self):

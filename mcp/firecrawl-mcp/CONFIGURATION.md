@@ -1,6 +1,8 @@
 # 配置与运维
 
-## 1 架构
+部署入口：[统一 Linux 部署运行手册](../DEPLOYMENT.md)。首次部署与升级以该手册为准；本文保留服务配置、工具边界和客户端参考。
+
+## 1. 架构
 
 ```mermaid
 sequenceDiagram
@@ -25,19 +27,11 @@ sequenceDiagram
 
 Nginx 代理所有路径。`/mcp`、`/.well-known/*`、`/auth/callback` 和 OAuth 的 DCR/CIMD 路径不能只代理部分 location。
 
-## 2 GitHub OAuth App
+## 2. GitHub OAuth App
 
-在 GitHub Developer Settings 创建**独立**的 OAuth App（不要复用同一台服务器上其他 MCP 的 App，一个 OAuth App 只能配一个 callback）：
+按 [统一部署手册第 3 节](../DEPLOYMENT.md)创建独立 App，Homepage 使用当前公开 origin，callback 为该 origin 下的 `/auth/callback`。服务请求 `read:user`，登录后按 `FIRECRAWL_MCP_GITHUB_USERS` 检查 GitHub login。
 
-| 字段 | 值 |
-|---|---|
-| Application name | Firecrawl CLI MCP |
-| Homepage URL | `https://{your-domain}` |
-| Authorization callback URL | `https://{your-domain}/auth/callback` |
-
-OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `FIRECRAWL_MCP_GITHUB_USERS` 执行本地白名单检查，未在白名单里的账号即使登录成功也看不到任何工具。
-
-## 3 环境文件
+## 3. 环境文件
 
 把 `.env.example` 复制为 `/etc/firecrawl-mcp.env`，权限 0600。把 `.redis.env.example` 复制为 `/etc/firecrawl-mcp.redis.env`，只保留同一份 `FIRECRAWL_MCP_REDIS_PASSWORD`。Redis 容器不接收 GitHub 或 Firecrawl 密钥。两个文件都不进入 Git、镜像或日志。
 
@@ -45,23 +39,23 @@ OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `FIRECRAW
 |---|---|---|---|
 | `FIRECRAWL_MCP_BASE_URL` | 公开 HTTPS origin | 部署前替换为实际域名，如 `https://{your-domain}` | 改了要同步 nginx/OAuth App |
 | `FIRECRAWL_MCP_GITHUB_CLIENT_ID` / `_SECRET` | GitHub OAuth App | GitHub 开发者设置 | 换 App 后所有会话失效 |
-| `FIRECRAWL_MCP_GITHUB_USERS` | 允许访问的 GitHub login，逗号分隔，不区分大小写 | 自定 | 增删即时生效（下次请求） |
+| `FIRECRAWL_MCP_GITHUB_USERS` | 允许访问的 GitHub login，逗号分隔，不区分大小写 | 自定 | 重建容器后生效 |
 | `FIRECRAWL_MCP_JWT_SIGNING_KEY` | MCP OAuth JWT 签名密钥 | `openssl rand -hex 32` | 轮换后**所有会话失效**，需重新授权 |
-| `FIRECRAWL_MCP_STORAGE_KEY` | Redis 中 OAuth 内容的 Fernet 密钥 | `openssl rand -base64 32` | 轮换后**所有会话失效**；备份 Redis 卷时必须同时备份这个密钥，否则无法解密恢复 |
+| `FIRECRAWL_MCP_STORAGE_KEY` | Redis 中 OAuth 内容的 Fernet 密钥 | `openssl rand -base64 32 \| tr '+/' '-_'` | 轮换后**所有会话失效**；备份 Redis 卷时必须同时备份这个密钥，否则无法解密恢复 |
 | `FIRECRAWL_MCP_REDIS_PASSWORD` | 内部 Redis 密码，两个 env 文件都要有且必须相同 | `openssl rand -hex 32` | 两边不一致会导致 MCP 容器连不上 Redis |
 | `FIRECRAWL_API_KEY` | Firecrawl API Key | [firecrawl.dev API Keys](https://www.firecrawl.dev/app/api-keys) | 缺失时进程**启动即失败**；失效时每次调用报明确错误，不会静默降级到 keyless 免费额度 |
 | `FIRECRAWL_MCP_UPDATE_CHECK` | 可选，设为 `0` 关闭后台版本检测 | 默认开启 | 关闭后 `update_available` 字段永不出现，本地 `--version` 探测也不再执行 |
 | `FIRECRAWL_MCP_MAX_CONCURRENCY` | 可选，同时运行的 firecrawl 子进程上限，默认 8 | 自定 | 只在同步调大 compose 的 `mem_limit` / `pids_limit` 后才提高 |
 
-日常改 Key 用 `scripts/apikey.sh`，不要手改这个文件（见 §8）。
+日常 Key 管理使用 `sudo scripts/apikey.sh`（见 §8），也可编辑环境文件后重建容器。
 
-## 4 命令白名单与被拦参数
+## 4. 命令白名单与被拦参数
 
 工具名 `firecrawl_cli(args, stdin?)`。`args` 是 `firecrawl` 后的参数数组，不能传 shell 字符串。
 
 **允许的命令**：`search`、`scrape`、`map`、`crawl`、`agent`、`research`（含其 `search-papers`/`inspect-paper`/`related-papers`/`read-paper`/`search-github` 子命令）、`credit-usage`；不带子命令时只允许 `--help`/`--version`/`--status`。
 
-命令必须是 `args[0]`，标志不能出现在它之前。这是结构性约束而非风格要求：如果靠扫描第一个非标志 token 来推断命令，那么任何接受值的根级选项都会吞掉这个 token，校验器看到的是 `search`、而 CLI 实际执行的是下一个——被拦命令就这样绕过白名单。把命令固定在 `args[0]`，两边看到的第一个 token 必然相同，与 CLI 有哪些根选项无关。
+命令必须是 `args[0]`，标志放在命令之后，保持校验器与 CLI 的命令位置一致。
 
 **拒绝的命令及理由**：
 
@@ -83,7 +77,7 @@ OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `FIRECRAW
 
 **并发**：同时运行的 firecrawl 子进程上限为 `FIRECRAWL_MCP_MAX_CONCURRENCY`（默认 8），超出的调用排队最多 5 秒，之后返回 `server is at capacity`——该错误表示**本次没有执行任何请求**，可安全重试。这个上限管的是子进程数（内存、pid 和 tmpfs 的实际消耗方），不是请求数：FastMCP 的工作线程池仍会接纳 40 个并发调用，它们在这里排队。默认值配合 `mem_limit: 512m` / `pids_limit: 128` 留了余量，两者要一起调。
 
-## 5 CLI 版本检测
+## 5. CLI 版本检测
 
 服务端每 6 小时后台异步查一次 GitHub Releases API（无认证，60 次/小时/IP 配额），发现新版本时给该次工具响应加一个 `update_available` 字段，不阻塞、不影响调用结果；查询失败静默重试，不抛出。CLI 自带的更新检查（会打 npm registry、写 `~/.firecrawl`、往 stderr 打通知）已通过 `FIRECRAWL_NO_UPDATE_CHECK=1` 关闭。设 `FIRECRAWL_MCP_UPDATE_CHECK=0` 可整体关闭本服务端的检测（离线部署），包括本地版本探测。
 
@@ -91,36 +85,33 @@ OAuth 仅请求 `read:user`。GitHub 登录成功后，服务仍会对 `FIRECRAW
 
 看到 `update_available` 后用 `scripts/update-cli.sh` 升级，见 §7。
 
-## 6 Ubuntu 部署与 TLS
+## 6. Ubuntu／Debian 部署与 TLS
 
-部署前设置 `DOMAIN` 环境变量（`export DOMAIN=firecrawl.your-domain.com`），然后执行 `scripts/ubuntu.sh check`。它检查 Ubuntu、架构、DNS、80/443/8767 端口、磁盘、内存和所需命令。仅在检查通过后执行 `sudo scripts/ubuntu.sh install` 安装 Docker、Compose、Nginx 和 Certbot。
+执行 [统一部署运行手册](../DEPLOYMENT.md)，端口为 8767。
 
-Compose 只将应用端口绑定到 `127.0.0.1:8767`（容器内仍为 8765），Redis 没有宿主机端口。防火墙只开放 80 和 443。先安装 `deploy/firecrawl-mcp.bootstrap.nginx.conf` 并通过 `nginx -t`，再运行 `certbot --nginx -d {your-domain}`；证书签发后替换为 TLS 模板 `deploy/firecrawl-mcp.nginx.conf`。
-
-Compose 的 `redis-init` 仅在启动时把命名卷归属设为官方 Redis 镜像的服务 UID/GID，随后退出；Redis 主容器以该非 root UID/GID 运行，保留只读根文件系统和全部 capability drop。MCP 容器同样 `read_only: true`，`/tmp` 是 128MiB 的 `noexec,nosuid` tmpfs（比 8766 端口上那套 brave-search-mcp 的 32MiB 大，用来容纳 crawl 的中间数据）。
-
-## 7 升级 firecrawl CLI
+## 7. 升级 firecrawl CLI
 
 ```bash
-scripts/update-cli.sh --dry-run    # 只报告当前/最新版本，不改任何东西
-scripts/update-cli.sh              # 升级到最新版本
-scripts/update-cli.sh 1.19.28      # 升级到指定版本
+sudo scripts/update-cli.sh --dry-run    # 只报告当前/最新版本，不改任何东西
+sudo scripts/update-cli.sh              # 升级到最新版本
+CLI_VERSION=your-release-version   # 替换为实际目标版本
+sudo scripts/update-cli.sh "$CLI_VERSION"
 ```
 
-流程：确认目标 release 的三个资产（两个架构的 tarball + `checksums.txt`）都存在 → 改 `Dockerfile` 的 `ARG FIRECRAWL_VERSION`（sha256 校验在构建内完成，校验不过构建直接失败）→ `docker compose build && up -d --force-recreate` → 轮询容器 healthy → 冒烟 `firecrawl --version` 与一次真实 `search`。构建、healthcheck 或版本冒烟失败会自动还原 `Dockerfile` 并重建回滚，退出码非零；只有最后的 `search` 冒烟失败是警告，不回滚（可能只是这次查询本身的问题）。不配 cron/systemd timer——升级由你在看到工具响应里的 `update_available` 后手动触发。
+首次 `scripts/prepare-cli.sh` 解析官方最新稳定 release 并记录在 `deploy/firecrawl-cli.version`；正常代码重建沿用该版本。显式升级脚本验证 release 资产、更新本机记录、重建并验证版本与健康状态；失败时恢复原记录和原镜像，不改写源码版本。真实业务调用按部署手册验收。
 
-## 8 管理 Firecrawl API Key
+## 8. 管理 Firecrawl API Key
 
 ```bash
-scripts/apikey.sh show      # 掩码查看当前 key，不泄露完整值
-scripts/apikey.sh set       # 交互式输入新 key（隐藏，不进 shell history），校验后写入并重建容器
-scripts/apikey.sh verify    # 只校验当前生效的 key，不改任何东西
-scripts/apikey.sh delete    # 删除 key；此后每次工具调用都会报明确的缺失错误
+sudo scripts/apikey.sh show      # 掩码查看当前 key，不泄露完整值
+sudo scripts/apikey.sh set       # 交互式输入新 key（隐藏，不进 shell history），校验后写入并重建容器
+sudo scripts/apikey.sh verify    # 只校验当前生效的 key，不改任何东西
+sudo scripts/apikey.sh delete    # 删除 key；缺少该项的 MCP 进程无法启动
 ```
 
 `set`/`delete` 之后必须 `docker compose up -d --force-recreate`（脚本已自动做）——`env_file` 只在容器创建时读取，`docker compose restart` 不会重新加载。
 
-## 9 客户端连接
+## 9. 客户端连接
 
 Codex：
 
@@ -141,7 +132,7 @@ WorkBuddy Custom MCP 使用固定回调 URI `workbuddy://workbuddy/mcp/custom-mc
 
 Grok 自定义连接器使用固定回调 URI `https://grok.com/connectors-oauth-exchange-code/`；服务已将该精确 URI（包括末尾 `/`）加入 OAuth 白名单。
 
-## 10 故障处理
+## 10. 故障处理
 
 | 现象 | 检查项 |
 |---|---|
@@ -152,26 +143,12 @@ Grok 自定义连接器使用固定回调 URI `https://grok.com/connectors-oauth
 | `missing required environment variable: FIRECRAWL_API_KEY` | 容器**启动**时就会报这条并退出（不再是每次调用才报）。用 `scripts/apikey.sh show` 确认 key 是否被删除或 env 文件没挂对；`restart: unless-stopped` 会让它反复重启，`docker compose logs mcp` 看第一条 |
 | `server is at capacity` | 并发子进程已满（`FIRECRAWL_MCP_MAX_CONCURRENCY`，默认 8）。**本次没有执行任何请求**，客户端直接重试即可；持续出现说明调用方并发过高或单次 crawl 过慢 |
 | 首次连接时 `/register` 返回 429 | nginx 对 DCR 注册端点限流（每 IP 10 次/分，可突发 6 次）。正常客户端每次安装只注册一次；等一分钟重试。多人同时从同一出口 IP 首次接入才可能撞上，需要时调大 `deploy/*.nginx.conf` 里的 `rate` |
-| `nginx: [emerg] limit_req_zone "..." is already bound` | 同机多个 MCP 的站点配置用了相同的 zone 名。每个服务必须用自己的 `map` 变量名和 zone 名（`brave_register` / `firecrawl_register` / `lark_register`），否则整台机器上所有站点一起起不来 |
+| `nginx: [emerg] limit_req_zone "..." is already bound` | 同机多个 MCP 的站点配置用了相同的 zone 名。每个服务必须用自己的 `map` 变量名和 zone 名（各服务正式模板中的独立 zone），否则整台机器上所有站点一起起不来 |
 | stderr 出现 401/403 或 "unauthorized" | 服务端 Key 无效或权限不足，`scripts/apikey.sh verify` 排查 |
 | stderr 出现 402 或 "credit" | 账号额度用尽，去 Firecrawl 控制台充值/等待重置 |
 | stderr 出现 429 或 "rate limit" | 触发限流，客户端退避重试 |
 | 502 | `docker compose ps`、`docker compose logs mcp`、Nginx error log 和宿主机 8767 监听状态 |
 
-## 11 与同机其他 MCP（如 brave-search-mcp）共存的检查
+## 11. 同机共存
 
-这台服务器如果已经跑着别的同架构 MCP（例如占用宿主 8766 端口的 brave-search-mcp），部署完成后逐项确认：
-
-| 项 | 检查方式 | 期望 |
-|---|---|---|
-| 宿主端口 | `ss -ltnp \| grep 876` | 各 MCP 端口不同（本服务 8767），无第三者占用 |
-| compose 项目 | `docker compose ls` | 目录名不同 → 独立 project，互不干扰 |
-| 容器/网络/卷 | `docker ps -a`、`docker volume ls`、`docker network ls` | volume 名带各自项目前缀，未共用；default network 互不连通 |
-| nginx | `nginx -t`、`ls /etc/nginx/sites-enabled/` | 各 server_name 独立 block，同一 80/443 监听不冲突 |
-| 证书 | `certbot certificates` | 每个域名一张独立证书，续期钩子都在 |
-| env 文件 | `ls -l /etc/*mcp*.env` | 各自 600，变量前缀不同（`FIRECRAWL_MCP_*` vs 其他）天然隔离 |
-| 内存 | `free -m` 对比各 `mem_limit` 之和 | 有余量；不足则下调本服务的 `mem_limit`（compose.yaml 里 mcp/redis 各 512m/256m） |
-| GitHub OAuth App | GitHub 设置页 | 每个 MCP 独立 App，callback 各自一条，不共用 |
-| 客户端命名 | `claude mcp list` | 各 MCP 条目、工具名（如 `firecrawl_cli` 与 `brave_search_cli`）不撞 |
-
-全部检查完后，回归测试一次其他 MCP 的工具调用，确认没被本次部署影响。
+统一检查项、端口及限流区名称见 [部署运行手册](../DEPLOYMENT.md)。部署后回归同机已有服务的连接与工具调用。

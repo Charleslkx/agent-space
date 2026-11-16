@@ -1,30 +1,10 @@
-# firecrawl map
+# Firecrawl map
 
-Discover URLs on a site. Use `--search` to find one specific page within a large site.
+Use to locate a subpage or inspect URLs before fetching a site section.
 
-Trimmed from upstream `firecrawl-map/SKILL.md`. Ignore its `-o` section — the URL list comes back directly in the tool response.
-
-## When to use
-
-You need to find a specific subpage on a large site, or want the full URL list before scraping/crawling. Step 3 of search → scrape → map → crawl.
-
-## Examples
-
-```
-firecrawl_cli(["map", "https://docs.example.com", "--search", "authentication"])
-firecrawl_cli(["map", "https://example.com", "--limit", "500", "--json"])
+```jsonl
+{"args":["map","https://docs.example.com","--search","authentication"]}
+{"args":["map","https://example.com","--limit","500","--json"]}
 ```
 
-## Options
-
-| Option | Description |
-|---|---|
-| `--search <query>` | Filter URLs by query |
-| `--limit <n>` | Max URLs to return |
-| `--sitemap <only\|include\|skip>` | Sitemap handling strategy |
-| `--include-subdomains` | Include subdomain URLs |
-| `--json` | JSON output |
-
-## Tips
-
-Map + scrape is the common pattern: `map --search "auth"` finds `/docs/api/authentication`, then `scrape` that URL directly — cheaper than crawling the whole site when you only need one page.
+For a single subpage, map with a search term and then scrape the returned URL. Reserve crawl for collecting multiple pages. Results return in stdout; sitemap and subdomain options follow the deployed tool description.
