@@ -766,8 +766,6 @@ def _cleanup_stale_runs() -> None:
     for path in WORKDIR.glob(".run-*"):
         if path.stat().st_mtime < cutoff:
             shutil.rmtree(path)
-    if not any(WORKDIR.iterdir()):
-        WORKDIR.rmdir()
 
 
 def _payload(path: Path, content: str) -> str:
