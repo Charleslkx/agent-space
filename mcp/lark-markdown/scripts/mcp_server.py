@@ -418,7 +418,7 @@ mcp = FastMCP(
         "CJK characters. Markdown writes move punctuation out of */** when the outer side touches text "
         "(abc**\"q\"**def becomes abc\"**q**\"def), so that punctuation is not bolded; to bold it, use "
         "XML <b>…</b>. "
-        "batch_push and block_update return format_warnings when Lark replaced a callout emoji."
+        "batch_push, block_update, and create_document return format_warnings when Lark replaced a callout emoji."
     ),
     website_url=os.environ.get(BASE_URL_ENV),
     auth=AUTH_PROVIDER,
@@ -1670,6 +1670,21 @@ def block_update(
     if not needs_src and src_block_ids:
         raise ValueError(f"{command} does not take src_block_ids")
     _check_lark_cli()
+    if expected_revision_id is not None:
+        # lark-cli does not reject stale --revision-id on block commands (verified live:
+        # revision 3 replaced a block at revision 5), so compare before writing.
+        # ponytail: a write landing between this read and ours still slips through.
+        current = _revision_id(
+            _fetch_document(doc, "markdown", "simple", "block_update preflight"), "block_update preflight",
+        )
+        if current != expected_revision_id:
+            raise LarkCLIError({
+                "operation": "block_update",
+                "error": "revision_conflict",
+                "expected_revision_id": expected_revision_id,
+                "actual_revision_id": current,
+                "message": "document changed since the block IDs were read; refetch them and retry",
+            })
     result = _run_block_command(
         doc, command, content=content, block_id=block_id,
         start_block_id=start_block_id, end_block_id=end_block_id,
@@ -1701,7 +1716,13 @@ def create_document(
             args.extend(["--parent-token", parent_token])
         result = _run_cli(args, "create_document")
         _assert_write_succeeded(result, "create_document")
-        return result
+    document = result.get("data", {}).get("document", {}) if isinstance(result, dict) else {}
+    document_id = document.get("document_id") if isinstance(document, dict) else None
+    if document_id:
+        warnings = _callout_emoji_warnings(document_id, _render(content, doc_format, document_start=True))
+        if warnings:
+            result["format_warnings"] = warnings
+    return result
 
 
 @mcp.tool(title="Create a Lark Wiki node", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})

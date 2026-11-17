@@ -636,11 +636,15 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
              patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
              patch.object(SERVER, "_check_lark_cli"), \
-             patch.object(SERVER, "_run_cli", return_value={"ok": True, "data": {"result": "success"}}) as run_cli:
+             patch.object(SERVER, "_run_cli", side_effect=[
+                 {"data": {"document": {"revision_id": 9, "content": "x"}}},
+                 {"ok": True, "data": {"result": "success"}},
+             ]) as run_cli:
             SERVER.block_update(
                 "doc", "block_replace", content='<h2 seq="auto">Title</h2>',
                 block_id="blk-h2", expected_revision_id=9,
             )
+            self.assertEqual(run_cli.call_args_list[0].args[0][1], "+fetch")
             args = run_cli.call_args.args[0]
             self.assertEqual(args[args.index("--command") + 1], "block_replace")
             self.assertEqual(args[args.index("--block-id") + 1], "blk-h2")
@@ -648,6 +652,28 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(args[args.index("--doc-format") + 1], "xml")
             self.assertTrue(args[args.index("--content") + 1].startswith("@./"))
             self.assertEqual(list(SERVER.WORKDIR.glob(".run-*")), [])
+
+    def test_block_update_rejects_stale_expected_revision_before_writing(self) -> None:
+        current = {"data": {"document": {"revision_id": 5, "content": "x"}}}
+        with patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", return_value=current) as run_cli:
+            with self.assertRaises(SERVER.LarkCLIError) as raised:
+                SERVER.block_update("doc", "block_delete", block_id="blk", expected_revision_id=3)
+        self.assertEqual(raised.exception.details["error"], "revision_conflict")
+        self.assertEqual(raised.exception.details["actual_revision_id"], 5)
+        self.assertEqual(run_cli.call_count, 1)
+        self.assertEqual(run_cli.call_args.args[0][1], "+fetch")
+
+    def test_create_document_reports_callout_emoji_fallback(self) -> None:
+        created = {"ok": True, "data": {"document": {"document_id": "new-doc", "revision_id": 3}}}
+        stored = {"data": {"document": {"revision_id": 3, "content": '<callout emoji="💡"></callout>'}}}
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp, \
+             patch.object(SERVER, "WORKDIR", Path(tmp) / ".lark_publish"), \
+             patch.object(SERVER, "_check_lark_cli"), \
+             patch.object(SERVER, "_run_cli", side_effect=[created, stored]) as run_cli:
+            result = SERVER.create_document('<callout emoji="⚠️"><p>x</p></callout>', doc_format="xml")
+        self.assertIn("⚠️", result["format_warnings"][0])
+        self.assertEqual(run_cli.call_args.args[0][run_cli.call_args.args[0].index("--doc") + 1], "new-doc")
 
     def test_block_update_validates_arguments_before_calling_cli(self) -> None:
         cases = [

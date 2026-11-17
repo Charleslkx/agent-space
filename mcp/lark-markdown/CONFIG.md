@@ -174,10 +174,10 @@ deploy/python/.venv/bin/python scripts/test_live_capabilities.py \
 - `batch_push`：批量覆盖或追加 Markdown/XML；Markdown 写入前按“10.1. 写入约定”规整（代码块中的字面量不转换）。lark-cli 报告写入失败时立即报错，不中继为成功。写入的高亮块 emoji 被飞书替换为 💡 时，结果带 `format_warnings`。
 - `point_update`：仅在旧文本唯一命中时精确替换或删除；`pattern` 或 `replacement` 含块级标签（如 `<h2>`、`<p>`、`<callout>`）时直接拒绝，改用 `block_update`，避免飞书丢弃块属性却报告成功；重复命中时先调用 `find_document_text` 缩小目标。lark-cli 报告写入失败时抛错，并附带失败后的文档状态（revision、替换文本是否已部分写入、原文尾部是否完整），用于区分"未生效"与"部分应用/截断"。
 - `batch_point_update`：单篇文档内先预演全部唯一文本替换，再以 `revision_id` 串行写入；可传 `expected_revision_id` 拒绝过期定位。任一写入被 lark-cli 报告失败时立即停止（不继续写入可能已损坏的文档），并报告失败后的文档状态与已完成项。
-- `block_update`：按 block ID 整块替换、插入、删除、移动或复制（`block_replace`、`block_insert_after`、`block_delete`、`block_move_after`、`block_copy_insert_after`），默认 XML；可传 `expected_revision_id`；写入的高亮块 emoji 被替换时返回 `format_warnings`。`point_update` 只换文字、改不了块属性，修改标题编号、列表类型等结构用本工具。
+- `block_update`：按 block ID 整块替换、插入、删除、移动或复制（`block_replace`、`block_insert_after`、`block_delete`、`block_move_after`、`block_copy_insert_after`），默认 XML；可传 `expected_revision_id`，服务器写入前先读取当前 revision，不一致即以 `revision_conflict` 拒绝（lark-cli 的块命令不按 `--revision-id` 拒绝过期写入，读取与写入之间仍有极短竞争窗口）；写入的高亮块 emoji 被替换时返回 `format_warnings`。`point_update` 只换文字、改不了块属性，修改标题编号、列表类型等结构用本工具。
 
 > **写失败处理**：lark-cli 的写入接口可能以退出码 0 返回 `result:"failed"`（如 `str_replace` 未命中 pattern 时的降级路径），并可能对文档造成部分应用或截断。服务器对所有写操作校验该结果字段：任何显式失败都会以错误返回并附上失败后的文档状态。调用方收到写失败后必须先 `find_document_text` 核实，再决定是否重试——当状态显示写入已部分生效或文档尾部丢失时**不要重试**，否则会叠加损坏。
-- `create_document`：在个人空间或 Drive 文件夹创建普通 Docx。
+- `create_document`：在个人空间或 Drive 文件夹创建普通 Docx；Markdown 按“10.1. 写入约定”规整，高亮块 emoji 被替换时返回 `format_warnings`。
 - `create_wiki_node`：在指定 Wiki 空间根目录或父节点下创建空白 Docx 页面。
 - `create_wiki_space`：创建 Wiki 空间。
 - `scan_document_assets`：在服务器端扫描飞书文档完整 XML，只返回图片和画板元数据、token 与数量。
