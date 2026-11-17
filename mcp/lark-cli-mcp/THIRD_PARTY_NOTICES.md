@@ -1,10 +1,9 @@
 # Third-party notices
 
 The Docker image downloads the unmodified `lark-cli` binary from the official
-[`larksuite/cli`](https://github.com/larksuite/cli) release selected by
-`LARK_CLI_VERSION` in `Dockerfile`.
+[`larksuite/cli`](https://github.com/larksuite/cli) release selected at first installation from the latest stable GitHub release.
 
-- Initial version: `1.0.81`
+- Installed release: recorded locally in `deploy/lark-cli.version`; normal rebuilds retain it. The record is not distributed with source.
 - License: MIT
 - Upstream license: <https://github.com/larksuite/cli/blob/main/LICENSE>
 

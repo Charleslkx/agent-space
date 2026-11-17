@@ -1,49 +1,34 @@
 # Brave Search MCP
 
-把 [Brave Search CLI](https://github.com/brave/brave-search-cli) 的查询命令以一个 OAuth 保护的 Streamable HTTP MCP 工具暴露。服务端不解析、筛选或重写 `bx` 的 stdout/stderr。
+将 Brave Search CLI 的允许查询命令通过 GitHub OAuth 保护的远程 MCP 提供给客户端。
 
-> **域名配置**：本文档所有 `{your-domain}` 需替换为实际部署域名。运行 `scripts/ubuntu.sh` 前必须设置 `DOMAIN` 环境变量：`export DOMAIN=brave.your-domain.com`。
+## 1. 部署入口
 
-端点：`https://{your-domain}/mcp`（将 `{your-domain}` 替换为实际部署域名）。
+Ubuntu／Debian 统一按 [Linux 部署运行手册](../DEPLOYMENT.md)执行。必须复制完整 `mcp/` 目录到 `/opt/mcp/`，保留共享 `scripts/`、隐藏示例文件和锁文件。从 `/opt/mcp/brave-search-mcp` 执行命令。
 
-## 快速部署
+| 项目 | 值 |
+|---|---|
+| 服务名 | `brave-search-mcp` |
+| 公开端点 | `https://实际域名/mcp` |
+| 环境文件 | `/etc/brave-search-mcp.env` |
+| 配置前缀 | `BRAVE_MCP` |
+| 配置详情 | [CONFIGURATION.md](CONFIGURATION.md) |
 
-在 Ubuntu 服务器复制整个目录后，先执行环境检查；脚本不会生成或读取任何业务密钥。
+完整流程包含独立 GitHub OAuth App、服务启动、Nginx 模板渲染、TLS 证书、OAuth 和真实工具调用验收。仅启动进程不能视为部署完成。各服务配置与工具边界见配置详情。
 
-```bash
-cd brave-search-mcp
-scripts/ubuntu.sh check
-sudo scripts/ubuntu.sh install
-sudo install -m 600 .env.example /etc/brave-search-mcp.env
-sudoedit /etc/brave-search-mcp.env
-sudo install -m 600 .redis.env.example /etc/brave-search-mcp.redis.env
-sudoedit /etc/brave-search-mcp.redis.env
-docker compose up -d --build
-sudo install -m 644 deploy/brave-search-mcp.bootstrap.nginx.conf /etc/nginx/sites-available/brave-search-mcp
-sudo ln -s /etc/nginx/sites-available/brave-search-mcp /etc/nginx/sites-enabled/brave-search-mcp
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d {your-domain}
-sudo install -m 644 deploy/brave-search-mcp.nginx.conf /etc/nginx/sites-available/brave-search-mcp
-sudo nginx -t && sudo systemctl reload nginx
-```
+## 2. 运维入口
 
-完成后验证：
+日志、更新、备份和回滚见运行手册第 7 节。修改凭据后重建容器或重启 systemd 服务；保持存储密钥与持久数据配套。升级 CLI 使用本项目已有的管理脚本（若提供），版本与测试通过后再更新生产实例。
+
+首次安装自动选择官方最新稳定 CLI／应用依赖；已有实例沿用本机记录，只有明确升级才重新解析。运行平台保留兼容范围。
+
+## 3. 开发验证
+
+先验证 Python／venv／环境内 pip；准备脚本自行管理隔离 uv，不依赖全局 uv。缺项修复见[统一预检](../DEPLOYMENT.md#21-python-与非默认工具预检)。
 
 ```bash
-curl -i https://{your-domain}/mcp
-curl -fsS https://{your-domain}/.well-known/oauth-protected-resource/mcp
-curl -fsS https://{your-domain}/.well-known/oauth-authorization-server
+bash ../scripts/check-python.sh --setup
+python3 ../scripts/prepare-python.py brave-search-mcp --native
+deploy/python/.venv/bin/python -B -m unittest discover -s tests -p 'test_*.py'
+BRAVE_MCP_ENV_FILE=.env.example BRAVE_MCP_REDIS_ENV_FILE=.redis.env.example docker compose config --quiet
 ```
-
-未授权 `/mcp` 应返回 `401`。详细配置、OAuth、客户端连接、密钥轮换和故障处理见 [CONFIGURATION.md](CONFIGURATION.md)。
-
-## 开发验证
-
-```bash
-uv sync --frozen
-PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s tests
-uv lock --check
-BRAVE_MCP_ENV_FILE=.env.example BRAVE_MCP_REDIS_ENV_FILE=.redis.env.example docker compose config
-```
-
-`bx` 固定为 1.5.0；Docker 构建下载官方 release 二进制并验证其 SHA-256。包装代码使用 MIT，`THIRD_PARTY_NOTICES.md` 记录上游 MPL-2.0 组件。

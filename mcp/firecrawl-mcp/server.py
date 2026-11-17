@@ -60,7 +60,7 @@ MAX_STDIN_BYTES = 1024 * 1024
 MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 TIMEOUT_SECONDS = 180
 
-# ponytail: caps concurrent firecrawl processes, not requests -- the anyio
+# caps concurrent firecrawl processes, not requests -- the anyio
 # worker pool still admits 40 callers, they just queue here. Kept well under the
 # container's mem_limit/pids_limit; raise both together or not at all.
 MAX_CONCURRENT_CALLS = max(1, int(os.environ.get("FIRECRAWL_MCP_MAX_CONCURRENCY", "8")))
@@ -308,7 +308,7 @@ def _installed_version() -> str | None:
     global _INSTALLED_VERSION
     if _INSTALLED_VERSION is not _UNPROBED:
         return _INSTALLED_VERSION
-    # ponytail: the lock serialises a cold start's concurrent callers onto one
+    # the lock serialises a cold start's concurrent callers onto one
     # probe instead of one each. It is held across a subprocess, which is fine
     # because it runs at most once per process.
     with _PROBE_LOCK:

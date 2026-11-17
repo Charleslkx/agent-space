@@ -1,98 +1,45 @@
 #!/usr/bin/env bash
-# Check for (and optionally apply) a newer firecrawl CLI release, with
-# automatic rollback if the new build or its smoke test fails.
-#
-# Usage:
-#   scripts/update-cli.sh              # apply latest release
-#   scripts/update-cli.sh --dry-run    # only report, change nothing
-#   scripts/update-cli.sh 1.19.28      # apply a specific version
+# Explicit upgrade only. Normal code changes/rebuilds retain the local CLI version.
 set -euo pipefail
-
-cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-DOCKERFILE=Dockerfile
-REPO=firecrawl/cli
-DRY_RUN=0
-TARGET_VERSION=""
-
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run) DRY_RUN=1 ;;
-    *) TARGET_VERSION="$arg" ;;
-  esac
-done
-
+cd "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
-need() { command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"; }
-need curl
-need docker
-need sed
-
-current_version() {
-  sed -n 's/^ARG FIRECRAWL_VERSION=\(.*\)$/\1/p' "$DOCKERFILE"
-}
-
-latest_version() {
-  curl -fsSL -H 'Accept: application/vnd.github+json' \
-    "https://api.github.com/repos/${REPO}/releases/latest" \
-    | sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -n1
-}
-
-CURRENT=$(current_version)
-[ -n "$CURRENT" ] || fail "could not read ARG FIRECRAWL_VERSION from $DOCKERFILE"
-
-NEW="${TARGET_VERSION:-$(latest_version)}"
-[ -n "$NEW" ] || fail "could not determine latest firecrawl/cli release"
-
-printf 'current: %s\nlatest:  %s\n' "$CURRENT" "$NEW"
-
-if [ "$CURRENT" = "$NEW" ]; then
-  printf 'already up to date\n'
-  exit 0
-fi
-
-if [ "$DRY_RUN" = 1 ]; then
-  printf 'dry run: would upgrade %s -> %s (no changes made)\n' "$CURRENT" "$NEW"
-  exit 0
-fi
-
-# Confirm the target release actually publishes the assets we need before
-# touching anything.
+bash ../scripts/check-python.sh --setup >&2
+command -v docker >/dev/null || fail 'Docker is required'
+docker info >/dev/null 2>&1 || fail 'cannot access Docker; run with sudo'
+target=${1:-}
+dry_run=0
+[ "$target" != --dry-run ] || { dry_run=1; target=; }
+container=$(docker compose ps --all -q mcp)
+[ -n "$container" ] || fail 'no existing deployment; follow the first-install guide'
+output=$(docker compose exec -T mcp firecrawl --version) || fail 'start the installed service before upgrading'
+current=$(printf '%s' "$output" | python3 -c 'import re,sys; m=re.search(r"\b\d+\.\d+\.\d+\b",sys.stdin.read()); assert m; print(m.group())')
+[ -n "$target" ] || target=$(bash scripts/prepare-cli.sh --latest)
+[[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'target must be a stable numeric version'
+printf 'installed: %s\ntarget:    %s\n' "$current" "$target"
+[ "$dry_run" = 0 ] || { printf 'dry run: nothing changed\n'; exit; }
+[ "$target" != "$current" ] || { printf 'already up to date\n'; exit; }
 for asset in "firecrawl-linux-x64.tar.gz" "firecrawl-linux-arm64.tar.gz" "checksums.txt"; do
-  url="https://github.com/${REPO}/releases/download/v${NEW}/${asset}"
-  curl -fsSL -o /dev/null --head "$url" || fail "release v${NEW} is missing asset: $asset"
+  curl --proto '=https' --tlsv1.2 -fsSL --head -o /dev/null "https://github.com/firecrawl/cli/releases/download/v${target}/${asset}" || fail "release is missing $asset"
 done
-
-BACKUP=$(mktemp)
-cp "$DOCKERFILE" "$BACKUP"
-trap 'rm -f "$BACKUP"' EXIT
-
+old_image=$(docker inspect -f '{{.Image}}' "$container")
+image_ref=$(docker inspect -f '{{.Config.Image}}' "$container")
+backup_tag="firecrawl-mcp-rollback:upgrade-$$"
+docker image tag "$old_image" "$backup_tag"
+# The running version is the authoritative rollback baseline, including legacy installs.
+bash scripts/prepare-cli.sh --use "$current" >/dev/null
 rollback() {
-  printf 'rolling back to %s after failure at: %s\n' "$CURRENT" "$1" >&2
-  cp "$BACKUP" "$DOCKERFILE"
-  docker compose build mcp >&2 || printf 'warning: rollback build also failed; Dockerfile has been restored to %s, apply the fix manually\n' "$CURRENT" >&2
-  docker compose up -d --force-recreate mcp >&2 || true
-  exit 1
+  printf 'upgrade failed; restoring installed CLI %s\n' "$current" >&2
+  bash scripts/prepare-cli.sh --use "$current" >/dev/null
+  docker image tag "$backup_tag" "$image_ref"
+  docker compose up -d --no-build --force-recreate --wait --wait-timeout 180 mcp >&2 || true
 }
-
-sed -i.bak "s/^ARG FIRECRAWL_VERSION=.*/ARG FIRECRAWL_VERSION=${NEW}/" "$DOCKERFILE"
-rm -f "${DOCKERFILE}.bak"
-
-docker compose build mcp || rollback "docker compose build"
-
-docker compose up -d --force-recreate mcp || rollback "docker compose up"
-
-printf 'waiting for container to become healthy...\n'
-deadline=$((SECONDS + 60))
-until [ "$(docker compose ps -q mcp | xargs -r docker inspect -f '{{.State.Health.Status}}' 2>/dev/null)" = "healthy" ]; do
-  [ "$SECONDS" -lt "$deadline" ] || rollback "healthcheck timeout"
-  sleep 2
-done
-
-docker compose exec -T mcp firecrawl --version || rollback "version smoke test"
-docker compose exec -T mcp firecrawl search "firecrawl cli" --limit 1 --json >/dev/null \
-  || printf 'warning: live search smoke test failed (check FIRECRAWL_API_KEY / credits) -- verify manually, this alone does not trigger a rollback\n' >&2
-
-trap - EXIT
-rm -f "$BACKUP"
-printf 'upgraded %s -> %s\n' "$CURRENT" "$NEW"
+trap rollback ERR
+bash scripts/prepare-cli.sh --use "$target" >/dev/null
+python3 ../scripts/prepare-python.py firecrawl-mcp
+docker compose build mcp
+docker compose up -d --no-build --force-recreate --wait --wait-timeout 180 mcp
+output=$(docker compose exec -T mcp firecrawl --version)
+actual=$(printf '%s' "$output" | python3 -c 'import re,sys; m=re.search(r"\b\d+\.\d+\.\d+\b",sys.stdin.read()); assert m; print(m.group())')
+[ "$actual" = "$target" ]
+trap - ERR
+printf 'upgraded %s -> %s; previous image retained as %s\n' "$current" "$target" "$backup_tag"

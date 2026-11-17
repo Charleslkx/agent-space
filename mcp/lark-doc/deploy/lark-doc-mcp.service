@@ -1,0 +1,29 @@
+[Unit]
+Description=Lark Doc MCP
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=lark-doc
+Group=lark-doc
+WorkingDirectory=/opt/mcp/lark-doc
+EnvironmentFile=/etc/lark-doc.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HOME=/var/lib/lark-doc
+Environment=XDG_CONFIG_HOME=/var/lib/lark-doc/config
+Environment=XDG_DATA_HOME=/var/lib/lark-doc/data
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+StateDirectory=lark-doc
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/opt/mcp/lark-doc/deploy/python/.venv/bin/python scripts/mcp_server.py --transport http --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

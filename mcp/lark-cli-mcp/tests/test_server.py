@@ -18,7 +18,7 @@ def load_server():
         "LARK_CLI_MCP_BASE_URL": "https://lark.example.com",
         "LARK_CLI_MCP_GITHUB_CLIENT_ID": "client",
         "LARK_CLI_MCP_GITHUB_CLIENT_SECRET": "secret",
-        "LARK_CLI_MCP_GITHUB_USERS": "Charles, AnotherUser",
+        "LARK_CLI_MCP_GITHUB_USERS": "Your-GitHub-Login, AnotherUser",
         "LARK_CLI_MCP_JWT_SIGNING_KEY": "a" * 64,
         "LARK_CLI_MCP_STORAGE_KEY": FERNET_KEY,
         "LARK_CLI_MCP_REDIS_PASSWORD": "redis-password",
@@ -49,15 +49,61 @@ class ServerTest(unittest.TestCase):
     def test_tools_are_registered(self):
         import asyncio
         tools = asyncio.run(SERVER.mcp.list_tools(run_middleware=False))
-        self.assertEqual({tool.name for tool in tools}, {"lark_cli", "lark_cli_skill"})
+        self.assertEqual(
+            {tool.name for tool in tools},
+            {"lark_cli", "lark_cli_skill", "begin_lark_auth", "complete_lark_auth"},
+        )
+
+    def test_auth_tools_relay_url_qr_and_device_code(self):
+        script = "\n".join((
+            'echo "$@" >> "$HOME/calls"',
+            'case "$2" in',
+            '  login) case "$3" in',
+            '    --device-code=*) printf "authorized" ;;',
+            '    *) printf \'{"data":{"verification_url":"https://example.com/v","device_code":"dc-1"}}\' ;;',
+            '  esac ;;',
+            '  qrcode) printf PNG > "$5" ;;',
+            'esac',
+        ))
+        with tempfile.TemporaryDirectory() as directory:
+            fake = write_fake_cli(directory, script)
+            with patch.dict(os.environ, {
+                SERVER.CLI_ENV: str(fake), SERVER.UPDATE_CHECK_ENV: "0", SERVER.STATE_DIR_ENV: directory,
+            }, clear=False):
+                started = SERVER.begin_lark_auth()
+                completed = SERVER.complete_lark_auth(" dc-1 ")
+                SERVER.begin_lark_auth(["calendar", "im"])
+            calls = (Path(directory) / "calls").read_text().splitlines()
+        self.assertEqual(started["verification_url"], "https://example.com/v")
+        self.assertEqual(started["device_code"], "dc-1")
+        self.assertEqual(started["qr_code_png_base64"], "UE5H")
+        self.assertEqual(completed["stdout"], "authorized")
+        self.assertEqual(calls[0], "auth login --domain all --no-wait --json")
+        self.assertEqual(calls[2], "auth login --device-code=dc-1")
+        self.assertEqual(calls[3], "auth login --domain calendar,im --no-wait --json")
+
+    def test_auth_tools_reject_bad_input_and_surface_cli_failures(self):
+        for domains in (["--scope=x"], ["all,im"], [""]):
+            with self.subTest(domains=domains), self.assertRaises(ValueError):
+                SERVER.begin_lark_auth(domains)
+        with self.assertRaises(ValueError):
+            SERVER.complete_lark_auth("  ")
+        with tempfile.TemporaryDirectory() as directory:
+            fake = write_fake_cli(directory, "printf 'app not configured' >&2\nexit 2")
+            with patch.dict(os.environ, {
+                SERVER.CLI_ENV: str(fake), SERVER.UPDATE_CHECK_ENV: "0", SERVER.STATE_DIR_ENV: directory,
+            }, clear=False):
+                result = SERVER.begin_lark_auth()
+        self.assertEqual(result["exit_code"], 2)
+        self.assertEqual(result["stderr"], "app not configured")
 
     def test_grok_callback_is_allowlisted(self):
         self.assertIn(SERVER.GROK_REDIRECT_URI, SERVER.ALLOWED_CLIENT_REDIRECT_URIS)
 
     def test_github_allowlist_is_case_insensitive(self):
-        token = type("Token", (), {"claims": {"login": "cHaRlEs"}})()
+        token = type("Token", (), {"claims": {"login": "Your-GitHub-Login"}})()
         context = type("Context", (), {"token": token})()
-        with patch.dict(os.environ, {SERVER.GITHUB_USERS_ENV: "Charles, AnotherUser"}):
+        with patch.dict(os.environ, {SERVER.GITHUB_USERS_ENV: "Your-GitHub-Login, AnotherUser"}):
             self.assertTrue(SERVER._authorized_github_user(context))
             token.claims["login"] = "outside"
             self.assertFalse(SERVER._authorized_github_user(context))

@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "OAuth-protected Streamable HTTP MCP wrapper for Brave Search CLI"
 requires-python = ">=3.11"
 dependencies = [
-  "fastmcp==3.2.4",
-  "py-key-value-aio[redis]==0.4.5",
+  "fastmcp",
+  "py-key-value-aio[redis]",
 ]
 
 [tool.uv]

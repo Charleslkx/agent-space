@@ -6,3 +6,7 @@ tests/
 evals/
 .env
 .redis.env
+
+deploy/.python-candidate-*
+deploy/python/.venv/
+deploy/python.backup-*/

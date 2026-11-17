@@ -1,181 +1,73 @@
 ---
 name: cursor-notify-hook
-description: >
-  为 Cursor 搭建任务完成通知 hook：macOS/WSL 同时发送系统通知和飞书；
-  原生 Linux 只发送飞书。
-  支持焦点识别（正盯着 Cursor 窗口时不打扰）、通知 subtitle 显示项目根目录名称、
-  使用飞书自建应用发送通知，webhook 仅作可选降级。
-  当用户提到"完成后通知我""Cursor 通知 hook""任务做完弹个通知"
-  "后台跑任务想被叫一下"、terminal-notifier 或 osascript 通知时，务必使用本 skill。
-  即使用户没明说"hook"，只要意图是"让 Cursor 在任务完成时通知我"，也应触发。
+description: 配置或排查 Cursor 的 stop 完成／异常通知、系统通知和可选飞书卡片。
 ---
 
-# Cursor 完成通知 Hook
+# Cursor 完成通知
 
-为 Cursor 配置 `stop` hook，在 Agent 一轮回答结束时发送通知。
+涉及 Python 的操作先按[安装预检](references/installation.md#11-python-与工具预检)验证环境；运行检查用 `--runtime`，SDK 安装用 `--setup`。未通过时先补齐依赖，不继续写配置。
 
-### 飞书通知协议
+## 1. 范围与系统
 
-五个 agent 使用同一协议：读取各自 `feishu-agent.env` 中的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_HOME_CHANNEL`、`FEISHU_APPROVAL_RECEIVE_ID_TYPE`；自建应用 IM API 为主通道，webhook 为失败回退。卡片无按钮，字段固定为 Agent、Project、Content、时间；完成为蓝色，需注意为橙色。通知链路不调用 `lark-cli`。
+macOS 使用系统通知，WSL 使用 Windows Toast，原生 Linux 只发飞书。缺失焦点信息时继续投递；macOS 焦点识别为应用级。 本方案安装本机用户级 hook，不自动配置 Cloud Agent；云端或 SSH 实例需在其实际环境独立安装。
 
-完成卡片的正文必须使用真实换行来分隔 Agent、Project、Content；不得把 `\n` 作为普通文本发送。时间应作为弱化的说明文字显示。
+原生 Linux 需要完成飞书配置才能产生通知；没有投递通道的 hook 不计为安装验收成功。
 
-## 工作原理
+## 2. 前提与 Skill 安装
 
-```text
-Cursor Agent 结束一轮回答
-  -> stop hook
-  -> notify.sh
-  -> macOS 系统通知 / WSL Windows Toast / 飞书
-```
-
-Cursor 官方 hooks **不提供** Claude Code 的 `Notification` 或 Codex 的 `PermissionRequest`。不要注册这些事件，也不要用 `preToolUse` 冒充授权提醒——它会在每次工具调用前触发，不是"需要用户处理"。
-
-不要注册 `sessionEnd`：关闭会话会再发一次完成通知。只挂 `stop`。
-
-`stop` 的 stdout 若包含非空 `followup_message`，Cursor 会把它当成自动续跑。通知脚本必须把调试打到 stderr，python/外部命令重定向 stdout，结尾恒 `exit 0`，且 `loop_limit` 设为 `0`。
-
-## 安装步骤
-
-### 0. 先检查环境
+首次安装先按 [installation.md](references/installation.md)完成系统依赖和 Skill 发现。需要 Bash 3.2+、Python 3.10+（应用配置／Python 投递）；已有客户端先验证版本，GUI 安装没有命令行入口时在其版本页核对，并确保 hook 子进程能找到 Bash／Python。
 
 ```bash
-case "$(uname -s)" in
-  Darwin) echo 'macOS：系统通知 + 飞书通知' ;;
-  Linux)
-    if [ -n "${WSL_INTEROP:-}" ] || grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
-      echo 'WSL：Windows 系统通知 + 飞书通知'
-    else
-      echo 'Linux：仅飞书通知'
-    fi
-    ;;
-  *) echo '不支持本地通知；仅在已配置时发送飞书通知' ;;
-esac
+cursor --version
+python3 --version
+# 替换为当前实际包含 SKILL.md 的目录，路径含空格时保留双引号。
+export SKILL_DIR="/path/to/installed/cursor-notify-hook"
 ```
 
-原生 Linux 仍需安装 stop hook，用它触发飞书；脚本不会尝试 `terminal-notifier`、`osascript` 或终端响铃。
+## 3. 运行文件与注册
 
-用户级 hook 对 **Cloud Agent 不生效**（云端读不到 `~/.cursor/`）。本 skill 安装用户级配置，覆盖本机 Cursor Desktop / CLI。
-
-### 飞书配置：一键绑定自建应用
-
-通知不调用 `lark-cli`，也不读取其用户登录态。它使用 `feishu-agent.env` 中的应用凭证，先换取 tenant access token，再调用飞书 IM API 向 `FEISHU_HOME_CHANNEL` 发卡片。
-
-每个通知 Skill 都包含完整的 `create_feishu_agent_app.py`，运行期只读取自己的 env，不调用其他 Skill。安装脚本依次使用 Cursor 自己的完整配置、自动复制其他 Agent 的完整配置，或在完全没有配置时扫码创建应用。复用会写入 Cursor 自己的 mode-`600` env，不创建软链接。
+修改前将现有运行文件及相关注册备份到客户端扫描目录之外的私有目录；只替换本 Skill 的文件及注册。
 
 ```bash
-python3 <skill-dir>/scripts/create_feishu_agent_app.py
-python3 -m pip install 'lark-oapi>=1.5.5'
-python3 <skill-dir>/scripts/create_feishu_agent_app.py --live --home-channel oc_xxx --test
+mkdir -p "$HOME/.cursor/hooks"
+cp "$SKILL_DIR/scripts/notify.sh" "$HOME/.cursor/hooks/notify.sh"
+chmod +x "$HOME/.cursor/hooks/notify.sh"
 ```
 
-`--app-id cli_xxx` 选择指定现有应用；`--new` 跳过自动复用并创建独立应用；`--manual` 打印手工创建步骤。新建应用前必须提供目标会话的 `chat_id`，创建后把机器人加入该会话。`--test` 发送一张连接测试卡片。不要在对话中发送密钥。
-
-### 1. 放置脚本
-
-用户级 hook 的工作目录是 `~/.cursor/`，命令路径写成 `./hooks/notify.sh`：
-
-```bash
-mkdir -p ~/.cursor/hooks
-cp <skill-dir>/scripts/notify.sh ~/.cursor/hooks/notify.sh
-chmod +x ~/.cursor/hooks/notify.sh
-```
-
-### 2. 注册 stop hook
-
-**先 Read `~/.cursor/hooks.json`**（可能不存在），合并下面的配置，不要整体覆盖已有 hook：
+读取 `~/.cursor/hooks.json` 后合并：
 
 ```json
 {
   "version": 1,
   "hooks": {
-    "stop": [
-      {
-        "command": "./hooks/notify.sh stop",
-        "timeout": 20,
-        "loop_limit": 0
-      }
-    ]
+    "stop": [{"command":"./hooks/notify.sh stop","timeout":20,"loop_limit":0}]
   }
 }
 ```
 
-这是 Cursor 原生格式（`version` + `hooks.<event>[]`），不是 Claude Code 那种两层 `{ hooks: [ { type, command } ] }`。
+用户级命令相对 `~/.cursor/`；若另行选择项目级注册，`.cursor/hooks.json` 中使用 `.cursor/hooks/notify.sh stop` 并把脚本放到同一路径。`completed` 或缺省状态发完成通知，`error` 发异常通知，`aborted` 静默。stdout 保持为空，避免触发自动续跑。
 
-项目级 hook 放 `.cursor/hooks.json`，命令写成 `.cursor/hooks/notify.sh stop`，且只对该仓库生效。默认安装用户级，让所有项目都能收到完成提醒。
+配置格式依据 [官方文档](https://cursor.com/docs/agent/hooks)。GUI／后台客户端不会自动继承交互终端的 PATH；运行环境缺少 Python／Bash 时，在该处理器的启动环境中加入实际安装目录，或使用这些可执行文件的绝对路径，重新验证加载。
 
-### 3. 校验
+## 4. 飞书应用与通道
 
-```bash
-python3 -m json.tool ~/.cursor/hooks.json >/dev/null
-jq -e '.hooks.stop[].command' ~/.cursor/hooks.json
-bash <skill-dir>/scripts/test_notify.sh
-python3 <skill-dir>/scripts/test_feishu_setup.py
-```
+飞书为可选通道，需要时读取随包的 [feishu-setup.md](references/feishu-setup.md)，先运行只读 `--check` 验证 SDK 与 `lark-cli` 能力，再选择复用、手工配置或 SDK 扫码创建。通知运行不依赖 CLI 或用户登录态；创建应用、改动已有应用与发送测试卡片按用户授权的范围执行。
 
-预期：配置中存在 `stop`，不存在 `sessionEnd`；测试输出 `ok: Cursor stop notification delivered`。
+env、App ID／Secret、chat_id、webhook 和授权 URL 只保存在目标账户的私有运行环境，源码、示例和部署报告使用占位符。卡片只展示通知，不包含审批按钮。
 
-Cursor 会监视 `hooks.json` 并自动重载。若仍未生效，让用户打开 Settings → Hooks，或重启 Cursor。
-
-## 可选：配置飞书 webhook
-
-未配置时自动跳过飞书，不影响本地通知。持久化配置优先使用上方脚本；仅临时测试时可导出：
+## 5. 验收与排障
 
 ```bash
-export LARK_WEBHOOK_URL="https://open.feishu.cn/open-apis/bot/v2/hook/..."
-export LARK_WEBHOOK_SECRET="..."
+bash "$SKILL_DIR/scripts/test_notify.sh"
+python3 "$SKILL_DIR/scripts/test_feishu_setup.py"
 ```
 
-当自建应用发送失败时，hook 才回退到 webhook。
+离线测试使用替身，不发送真实通知。安装后重新加载客户端，触发一次完成事件；支持待处理事件的客户端再触发一次。启用飞书的实例按配置参考单独验证真实卡片投递。
 
-也可直接编辑 `~/.cursor/feishu-agent.env`：
+未投递时依次检查：客户端加载／信任、当前作用域与账户、事件状态、子进程 PATH、焦点过滤、飞书 env／租户权限。`NOTIFY_DEBUG=1` 输出诊断，`NOTIFY_FORCE=1` 可在受控测试时绕过焦点过滤。通知输出和错误不要污染协议 stdout。
 
-```bash
-FEISHU_APP_ID=cli_xxx
-FEISHU_APP_SECRET=xxx
-FEISHU_HOME_CHANNEL=oc_xxx
-# FEISHU_APPROVAL_RECEIVE_ID_TYPE=chat_id
-```
+## 6. 更新、回滚与卸载
 
-`scripts/write_feishu_agent_env.sh` 只作手工兜底。共用应用时，五个 Agent 各自保存一份 env。
+先备份旧 Skill、运行文件和本通知的配置；更新完整 Skill 后重新复制第 3 节的运行文件、合并注册并重复验收。失败时只恢复本通知的备份，保留用户其他设置；Codex 等客户端按提示重新审阅定义。
 
-## 可选：安装 terminal-notifier
-
-安装第三方软件前先征得用户同意：
-
-```bash
-brew install terminal-notifier
-```
-
-脚本自动降级：`terminal-notifier` 失败后使用 `osascript`，再失败则使用终端响铃（打到 stderr，避免污染 hook stdout）。
-
-> macOS 12+ 已限制 `-sender`/`-activate` 伪装其他 app，脚本不传这两个参数。Cursor 的 bundle ID 是 `com.todesktop.230313mzl4w4u92`，焦点识别用 `__CFBundleIdentifier` 动态比对，不必写死。
-
-## 脚本设计要求
-
-- 不使用 `set -e/-u/pipefail`；hook 结尾恒定 `exit 0`，不能中断 Cursor。
-- stdin 只读一次并复用。
-- 焦点识别使用 `lsappinfo`，避免触发自动化权限弹窗。
-- `NOTIFY_DEBUG=1` 输出调试信息到 **stderr**；`NOTIFY_FORCE=1` 跳过焦点检查。
-- 本地通知 title 为 `Cursor`，subtitle 为项目根目录名称（优先 `cwd`，否则 `workspace_roots[0]`）。
-- `status=completed`（或缺省）发蓝色完成卡片，正文 `任务已完成`。
-- `status=error` 发橙色需注意卡片，正文 `任务异常结束`。
-- `status=aborted` 静默（用户自己点了停止）。
-- 不得向 stdout 打印 JSON 或调试文本。
-
-## 验证
-
-```bash
-SH=~/.cursor/hooks/notify.sh
-bash <skill-dir>/scripts/test_notify.sh
-python3 <skill-dir>/scripts/test_feishu_setup.py
-echo '{"hook_event_name":"stop","status":"completed","workspace_roots":["/tmp/demo"]}' \
-  | NOTIFY_DEBUG=1 NOTIFY_FORCE=1 "$SH" stop
-echo '{"status":"aborted"}' | NOTIFY_DEBUG=1 NOTIFY_FORCE=1 "$SH" stop
-```
-
-每条都应 `exit 0`，且 stdout 为空。`NOTIFY_FORCE=1` 用于测试时绕过焦点检查。
-
-## 平台说明
-
-Cursor Desktop / CLI 在 macOS 使用 `terminal-notifier` / `osascript`，WSL 使用 Windows Toast；原生 Linux 不发本地通知，只走飞书。用户正盯着 Cursor 时本地通知和飞书都静默。
+卸载移除本通知的注册、独占运行文件和 Skill 目录。共享机器人和其他 Agent 的私有 env 不随之删除。完整安装与目录约定见 [installation.md](references/installation.md)。

@@ -31,10 +31,12 @@ is_wsl() {
 }
 
 is_claude_desktop() {
-  [ "${CLAUDE_CODE_ENTRYPOINT:-}" = "claude-desktop" ]
+  [ "${CLAUDE_CODE_ENTRYPOINT:-}" = "claude-desktop" ] || \
+    [ "${__CFBundleIdentifier:-}" = "com.anthropic.claudefordesktop" ]
 }
 
 local_notifications_enabled() {
+  is_claude_desktop && return 1
   [ "$(uname -s 2>/dev/null)" = "Darwin" ] || is_wsl
 }
 
@@ -60,9 +62,9 @@ lark_notify() {
 import base64, hashlib, hmac, json, os, sys, time, urllib.request
 agent, project, content, kind = sys.argv[1:5]
 if kind == "approval":
-    title, template = f"⚠️ {agent} · 需要注意", "orange"
+    title, template = f"{agent} · 需要注意", "orange"
 else:
-    title, template = f"🤖 {agent} · 任务完成", "blue"
+    title, template = f"{agent} · 任务完成", "blue"
 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 card = {
     "schema": "2.0",
@@ -148,9 +150,9 @@ if tok.get("code") != 0:
     sys.exit(1)
 
 if kind == "approval":
-    title, template = f"⚠️ {agent} · 需要注意", "orange"
+    title, template = f"{agent} · 需要注意", "orange"
 else:
-    title, template = f"🤖 {agent} · 任务完成", "blue"
+    title, template = f"{agent} · 任务完成", "blue"
 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 card = {
     "schema": "2.0",
@@ -209,7 +211,7 @@ front_bundle_id() {
 
 # 焦点是否在承载本会话的 app（任一信号缺失 -> 返回 1，即“不静默”，宁可多弹）
 is_focused_on_session() {
-  # ponytail: Desktop 下多会话共用一个 bundle id，app 级焦点分不清是哪个会话，直接放弃判断
+  # Desktop 下多会话共用一个 bundle id，app 级焦点分不清是哪个会话，直接放弃判断
   is_claude_desktop && { dbg "Claude Desktop：跳过焦点检查"; return 1; }
   local owner="${__CFBundleIdentifier:-}" front
   [ -n "$owner" ] || { dbg "无 __CFBundleIdentifier，跳过焦点检查"; return 1; }

@@ -1,1 +1,0 @@
-"""OpenRouter discounted model ranking."""

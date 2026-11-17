@@ -1,55 +1,38 @@
 # Lark CLI MCP
 
-把官方 `lark-cli` 的飞书业务命令通过 GitHub OAuth 保护的 Streamable HTTP MCP 提供给远程客户端。服务同时公开 CLI 内嵌、与当前版本一致的完整 Skill 文档体系。
+通过 GitHub OAuth 提供飞书业务命令、内嵌 Skill 与分步用户授权；白名单用户共享服务器飞书身份。
 
-## 工具
+## 1. 部署入口
 
-- `lark_cli(args, stdin?)`：执行允许的 `lark-cli` 命令，返回原始 stdout、stderr、退出码和超时状态。
-- `lark_cli_skill(action, path?)`：逐层列出或读取 CLI 内嵌 Skill。
+Ubuntu／Debian 统一按 [Linux 部署运行手册](../DEPLOYMENT.md)执行。必须复制完整 `mcp/` 目录到 `/opt/mcp/`，保留共享 `scripts/`、隐藏示例文件和锁文件。从 `/opt/mcp/lark-cli-mcp` 执行命令。
 
-服务器保留一份共享飞书应用和用户登录态。GitHub OAuth 白名单中的用户都使用这份飞书身份，因此白名单只能包含互相信任的人。
+| 项目 | 值 |
+|---|---|
+| 服务名 | `lark-cli-mcp` |
+| 公开端点 | `https://实际域名/mcp` |
+| 环境文件 | `/etc/lark-cli-mcp.env` |
+| 配置前缀 | `LARK_CLI_MCP` |
+| 配置详情 | [CONFIGURATION.md](CONFIGURATION.md) |
 
-## 部署入口
+完整流程包含独立 GitHub OAuth App、服务启动、Nginx 模板渲染、TLS 证书、OAuth 和真实工具调用验收。仅启动进程不能视为部署完成。各服务配置与工具边界见配置详情；Agent 工具契约见 [AGENTS.md](AGENTS.md)。
 
-公网域名固定为 `lark.{基础域名}`。基础域名为 `example.com` 时，MCP 地址为：
+首次安装获取官方最新稳定版，执行 `sudo bash scripts/prepare-cli.sh` 保存本机版本记录后构建；已安装后的调试、修改和重建沿用该版本。显式执行 `sudo scripts/update-cli.sh` 才升级。
 
-```text
-https://lark.example.com/mcp
-```
+## 2. 运维入口
 
-完整部署步骤见 [CONFIGURATION.md](CONFIGURATION.md)，人类调用说明见 [USAGE.md](USAGE.md)，Agent 操作契约见 [AGENTS.md](AGENTS.md)。
+日志、更新、备份和回滚见运行手册第 7 节。修改凭据后重建容器或重启 systemd 服务；保持存储密钥与持久数据配套。升级 CLI 使用本项目已有的管理脚本（若提供），版本与测试通过后再更新生产实例。
 
-最短流程：
+首次安装自动选择官方最新稳定 CLI／应用依赖；已有实例沿用本机记录，只有明确升级才重新解析。运行平台保留兼容范围。
 
-```bash
-BASE_DOMAIN=example.com scripts/ubuntu.sh check
-sudo -E BASE_DOMAIN=example.com scripts/ubuntu.sh install
-sudo docker compose build
-sudo docker compose up -d
-```
+## 3. 开发验证
 
-这四条命令不能替代 OAuth、飞书应用和 TLS 配置；继续按 `CONFIGURATION.md` 的编号完成。部署命令统一使用 `sudo`，因为 Compose 需要访问 Docker socket 和权限为 0600 的 `/etc` 环境文件。
-
-仓库还提供一个面向已有 Caddy 实例的辅助脚本：
-
-~~~bash
-sudo ./scripts/deploy-caddy.sh
-~~~
-
-该脚本不会把部署环境写入仓库。运行时必须由操作者在终端手动输入公网 MCP 主机名、GitHub OAuth Client ID、GitHub OAuth Client Secret，以及允许访问的 GitHub login 白名单（多个 login 用逗号分隔）。公网主机名必须已解析到服务器，GitHub OAuth App 的 Homepage 和 callback URL 也必须使用同一个主机名；Client Secret 不要写入脚本或提交到 Git。脚本只将这些运行配置写入权限为 0600 的 /etc/lark-cli-mcp.env，JWT、Fernet 和 Redis 密钥由脚本随机生成。
-
-## 固定边界
-
-服务开放飞书业务命令、`api`、`schema`、`help` 和 `skills`，拒绝服务器认证、配置、profile、自动升级、本地文件、剪贴板、本地 Apps 工程和无界事件监听。高风险写操作保留 `lark-cli` 的退出码 10 门禁，服务不会自动追加 `--yes`。
-
-更新检查在后台执行并缓存 6 小时。发现正式新版本时，工具响应会出现 `update_available`；业务输出和延迟不受检查失败影响，升级只能由管理员运行 `scripts/update-cli.sh`。
-
-## 本地开发
+先验证 Python／venv／环境内 pip；准备脚本自行管理隔离 uv，不依赖全局 uv。缺项修复见[统一预检](../DEPLOYMENT.md#21-python-与非默认工具预检)。
 
 ```bash
-UV_CACHE_DIR=/tmp/lark-cli-mcp-uv-cache uv sync --frozen
-UV_CACHE_DIR=/tmp/lark-cli-mcp-uv-cache uv run python -m unittest discover -s tests -p 'test_*.py'
-UV_CACHE_DIR=/tmp/lark-cli-mcp-uv-cache uv lock --check
+bash ../scripts/check-python.sh --setup
+python3 ../scripts/prepare-python.py lark-cli-mcp --native
+deploy/python/.venv/bin/python -B -m unittest discover -s tests -p 'test_*.py'
+LARK_CLI_MCP_ENV_FILE=.env.example LARK_CLI_MCP_REDIS_ENV_FILE=.redis.env.example docker compose config --quiet
 ```
 
-启动需要完整 OAuth 环境变量和 Redis。普通开发优先运行单元测试；部署级验证按 `CONFIGURATION.md` 操作。
+人类调用说明见 [USAGE.md](USAGE.md)。已有 Caddy 的交互式辅助流程见配置详情，使用该流程时沿用现有 Caddy 入口。

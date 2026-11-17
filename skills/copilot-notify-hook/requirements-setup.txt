@@ -1,0 +1,3 @@
+# First installation selects the latest stable SDK from official PyPI.
+# Existing environments retain their installed version unless explicitly upgraded.
+lark-oapi

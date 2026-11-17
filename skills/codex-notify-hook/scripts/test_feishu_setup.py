@@ -38,7 +38,7 @@ def main() -> None:
             {"FEISHU_REUSE_ENV_PATHS": str(peer)},
         )
         assert reused.returncode == 0, reused.stderr
-        assert "Reused app cli_reused" in reused.stdout
+        assert "Reused application" in reused.stdout
         assert "FEISHU_APP_SECRET=secret" in target.read_text()
         assert "FEISHU_APPROVAL_RECEIVE_ID=oc_reused" in target.read_text()
         assert stat.S_IMODE(target.stat().st_mode) == 0o600

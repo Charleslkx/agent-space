@@ -1,6 +1,5 @@
 services:
   mcp:
-    # FIRECRAWL_VERSION is set once, in the Dockerfile's ARG default.
     # scripts/update-cli.sh edits it there; nothing to override here.
     build: .
     env_file: ${FIRECRAWL_MCP_ENV_FILE:-/etc/firecrawl-mcp.env}

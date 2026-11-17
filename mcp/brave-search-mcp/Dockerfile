@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-ARG BX_VERSION=1.5.0
+COPY deploy/brave-cli.version /tmp/cli.version
 ARG TARGETARCH
 
 RUN apt-get update \
@@ -8,6 +8,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && bx_arch="${TARGETARCH:-$(dpkg --print-architecture)}" \
     && case "$bx_arch" in amd64|arm64) ;; *) exit 1 ;; esac \
+    && BX_VERSION="$(cat /tmp/cli.version)" \
     && bx_name="bx-${BX_VERSION}-linux-${bx_arch}" \
     && bx_url="https://github.com/brave/brave-search-cli/releases/download/v${BX_VERSION}/${bx_name}" \
     && curl --proto '=https' --tlsv1.2 -fsSLo /tmp/bx "$bx_url" \
@@ -20,8 +21,9 @@ RUN apt-get update \
 
 RUN useradd --system --uid 10001 --create-home app
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
-RUN pip install --no-cache-dir uv==0.10.9 \
+COPY deploy/python/pyproject.toml deploy/python/uv.lock ./
+COPY deploy/python/uv-version.txt /tmp/uv-version.txt
+RUN pip install --no-cache-dir --index-url https://pypi.org/simple "uv==$(cat /tmp/uv-version.txt)" \
     && uv sync --frozen --no-dev
 COPY server.py ./
 USER app

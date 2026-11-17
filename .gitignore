@@ -219,3 +219,63 @@ __marimo__/
 
 .DS_Store
 .lark_publish/
+
+# Local environment files; retain distributable examples
+.env.*
+*.env
+.envrc.*
+!*.env.example
+!.env.*.example
+
+# Deployment credentials and private keys
+*.key
+*.pem
+*.p12
+*.pfx
+auth.token
+.apikey.*
+.feishu-env-*
+
+# MCP runtime state
+.firecrawl/
+.fastmcp/
+lark-state/
+redis-data/
+
+# JavaScript dependencies and tool caches
+node_modules/
+.npm/
+.pnpm-store/
+.uv-cache/
+*.tsbuildinfo
+.eslintcache
+
+# Editor, operating-system and temporary files
+._*
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+*.tmp
+*.bak
+*.orig
+
+# uv.lock, package-lock.json, shared editor configs and *.vsix remain trackable.
+
+# Per-deployment CLI version snapshot (created at first install)
+/mcp/lark-cli-mcp/deploy/lark-cli.version
+/mcp/lark-cli-mcp/deploy/.lark-cli-version.*
+
+# Local first-install release records for other MCP CLIs
+/mcp/brave-search-mcp/deploy/brave-cli.version
+/mcp/firecrawl-mcp/deploy/firecrawl-cli.version
+/mcp/*/deploy/.lark-cli-version.*
+
+# Per-host resolved Python application dependencies
+/mcp/*/deploy/python/
+/mcp/*/deploy/python.backup-*/
+/mcp/*/deploy/.python-candidate-*/
+
+# Deployment-managed interpreters are not distributed source
+/mcp/python/

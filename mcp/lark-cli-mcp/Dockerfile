@@ -1,7 +1,6 @@
 FROM python:3.12-slim
 
-ARG LARK_CLI_VERSION=1.0.81
-ENV LARK_CLI_MCP_INSTALLED_VERSION=${LARK_CLI_VERSION}
+COPY deploy/lark-cli.version /tmp/lark-cli.version
 ARG TARGETARCH
 
 RUN apt-get update \
@@ -9,6 +8,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && cli_arch="${TARGETARCH:-$(dpkg --print-architecture)}" \
     && case "$cli_arch" in amd64|arm64) ;; *) echo "unsupported architecture: $cli_arch" >&2; exit 1 ;; esac \
+    && LARK_CLI_VERSION="$(cat /tmp/lark-cli.version)" \
+    && printf '%s' "$LARK_CLI_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
     && asset="lark-cli-${LARK_CLI_VERSION}-linux-${cli_arch}.tar.gz" \
     && base="https://github.com/larksuite/cli/releases/download/v${LARK_CLI_VERSION}" \
     && curl --proto '=https' --tlsv1.2 -fsSLo /tmp/lark.tar.gz "$base/$asset" \
@@ -23,8 +24,9 @@ RUN apt-get update \
 
 RUN useradd --system --uid 10001 --home-dir /var/lib/lark-cli app
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
-RUN pip install --no-cache-dir uv==0.10.9 \
+COPY deploy/python/pyproject.toml deploy/python/uv.lock ./
+COPY deploy/python/uv-version.txt /tmp/uv-version.txt
+RUN pip install --no-cache-dir --index-url https://pypi.org/simple "uv==$(cat /tmp/uv-version.txt)" \
     && uv sync --frozen --no-dev
 COPY server.py ./
 USER app

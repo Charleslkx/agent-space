@@ -5,3 +5,7 @@ __pycache__
 .redis.env
 tests
 PLAN.md
+
+deploy/.python-candidate-*
+deploy/python/.venv/
+deploy/python.backup-*/
