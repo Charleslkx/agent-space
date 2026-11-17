@@ -13,7 +13,7 @@ from pathlib import Path
 def _require_human(action: str) -> None:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise SystemExit("refusing non-interactive use; run this command manually in a terminal")
-    phrase = f"{action.upper()} LARK-MARKDOWN SECRET"
+    phrase = f"{action.upper()} LARK-DOC SECRET"
     if input(f"Type {phrase!r} to continue: ") != phrase:
         raise SystemExit("confirmation did not match")
 

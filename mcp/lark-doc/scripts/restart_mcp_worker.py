@@ -6,7 +6,7 @@ import argparse
 import subprocess
 import time
 
-SERVICE_NAME = "lark-markdown-mcp.service"
+SERVICE_NAME = "lark-doc-mcp.service"
 
 
 def main() -> None:

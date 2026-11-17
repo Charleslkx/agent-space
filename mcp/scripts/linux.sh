@@ -17,7 +17,7 @@ esac
 case "$(uname -m)" in x86_64|aarch64) ;; *) fail 'amd64 or arm64 is required' ;; esac
 [ "$EUID" -eq 0 ] || fail 'run with sudo env DOMAIN=hostname scripts/ubuntu.sh check (or install)'
 command -v systemctl >/dev/null || fail 'systemd is required'
-case "$service:$app_port" in brave-search-mcp:8766|firecrawl-mcp:8767|exa-mcp:8769|lark-cli-mcp:8768|lark-markdown:8765) ;; *) fail 'unknown service or mismatched port' ;; esac
+case "$service:$app_port" in brave-search-mcp:8766|firecrawl-mcp:8767|exa-mcp:8769|lark-cli-mcp:8768|lark-doc:8765) ;; *) fail 'unknown service or mismatched port' ;; esac
 for cmd in curl openssl ss getent; do
   command -v "$cmd" >/dev/null || fail "missing $cmd; install prerequisites from DEPLOYMENT.md first"
 done
@@ -41,7 +41,7 @@ awk '/MemTotal/ { exit ($2 < 1048576) }' /proc/meminfo || fail 'at least 1 GiB R
 if [ "$mode" = install ]; then
   apt-get update
   apt-get install -y ca-certificates curl openssl iproute2 python3 python3-venv nginx certbot python3-certbot-nginx
-  if [ "$service" != lark-markdown ]; then
+  if [ "$service" != lark-doc ]; then
     if ! command -v docker >/dev/null; then
       # Do not remove a host container runtime automatically.
       for pkg in docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc; do
@@ -72,7 +72,7 @@ bash "$(dirname -- "${BASH_SOURCE[0]}")/check-python.sh" --setup
 for cmd in nginx certbot; do
   command -v "$cmd" >/dev/null || fail "missing $cmd; install prerequisites from DEPLOYMENT.md first"
 done
-if [ "$service" != lark-markdown ]; then
+if [ "$service" != lark-doc ]; then
   docker compose version >/dev/null
   docker compose up --help | grep -q -- '--wait-timeout' || fail 'Compose with --wait-timeout support is required; upgrade the plugin'
   docker info >/dev/null

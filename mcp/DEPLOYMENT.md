@@ -2,7 +2,7 @@
 
 版本策略按执行时点生效：未来首次配置时实时查询官方当时的最新稳定版，不以本文编写日期或仓库开发锁文件中的版本作为安装默认值。已有安装保留当前版本，明确升级时才重新查询。
 
-本文件是五个服务的统一部署入口；从任意服务的 README 或配置文档进入后，按本文件顺序执行。配置文档保留各服务的环境变量、工具边界和认证细节。默认架构采用独立域名、Nginx、Let's Encrypt、GitHub OAuth；四个服务采用 Docker Compose，Lark Markdown 采用 systemd。部署工作目录固定为 `/opt/mcp/<服务名>`。所有示例域名、凭据和用户标识均为占位值；真实配置只在目标服务器的私有环境文件中填写，不回写源码或部署记录。
+本文件是五个服务的统一部署入口；从任意服务的 README 或配置文档进入后，按本文件顺序执行。配置文档保留各服务的环境变量、工具边界和认证细节。默认架构采用独立域名、Nginx、Let's Encrypt、GitHub OAuth；四个服务采用 Docker Compose，Lark Doc 采用 systemd。部署工作目录固定为 `/opt/mcp/<服务名>`。所有示例域名、凭据和用户标识均为占位值；真实配置只在目标服务器的私有环境文件中填写，不回写源码或部署记录。
 
 ## 1. 支持范围与部署输入
 
@@ -12,7 +12,7 @@
 | `firecrawl-mcp` | `firecrawl.example.com` | 8767 | `FIRECRAWL_MCP` | `firecrawl_register` | Compose |
 | `exa-mcp` | `exa.example.com` | 8769 | `EXA_MCP` | `exa_register` | Compose |
 | `lark-cli-mcp` | `lark.example.com` | 8768 | `LARK_CLI_MCP` | `lark_cli_register` | Compose |
-| `lark-markdown` | `lark-markdown.example.com` | 8765 | `LARK_MCP` | `lark_markdown_register` | systemd |
+| `lark-doc` | `lark-doc.example.com` | 8765 | `LARK_MCP` | `lark_doc_register` | systemd |
 
 - 系统：Ubuntu 22.04、24.04、26.04、26.10，Debian 12、13；systemd；amd64 或 arm64。每个实例至少预留 1 GiB 内存、2 GiB 磁盘，多个实例需累加并预留构建空间。
 - 必填输入：服务名、小写公开域名、独立 GitHub OAuth App 的 Client ID／Secret、允许访问的 GitHub login，以及 Brave／Firecrawl／Exa 对应的 API Key。飞书服务还需要交互式完成应用绑定和用户授权。
@@ -64,7 +64,7 @@ MCP 应用使用兼容的 Python 3.12；`prepare-python.py` 在隔离工具环�
 | Homepage URL | `https://实际DOMAIN` |
 | Authorization callback URL | `https://实际DOMAIN/auth/callback` |
 
-首次部署复制示例；命令通过 `test` 防止覆盖已有环境文件。Lark Markdown 的环境文件名同样为 `/etc/lark-markdown.env`。
+首次部署复制示例；命令通过 `test` 防止覆盖已有环境文件。Lark Doc 的环境文件名同样为 `/etc/lark-doc.env`。
 
 ```bash
 sudo test -e "/etc/$SERVICE.env" || sudo install -o root -g root -m 600 .env.example "/etc/$SERVICE.env"
@@ -81,7 +81,7 @@ openssl rand -base64 32 | tr '+/' '-_' # STORAGE_KEY：Fernet URL-safe base64，
 openssl rand -hex 32                 # REDIS_PASSWORD
 ```
 
-Lark Markdown 只使用 JWT 项，其余四个服务还需 `STORAGE_KEY`、`REDIS_PASSWORD`，并建立独立 Redis 环境文件：
+Lark Doc 只使用 JWT 项，其余四个服务还需 `STORAGE_KEY`、`REDIS_PASSWORD`，并建立独立 Redis 环境文件：
 
 ```bash
 # 仅四个 Compose 服务执行。
@@ -118,17 +118,17 @@ sudo docker compose exec mcp lark-cli auth status --json --verify
 
 已有应用／登录态时先检查，避免重新创建或替换共享身份。共享身份供所有 GitHub 白名单用户使用。具体权限和应用复用方式见 Lark 配置文档。
 
-### 4.2. Lark Markdown systemd 服务
+### 4.2. Lark Doc systemd 服务
 
 该服务需要固定路径的 Python 环境与 `/usr/local/bin/lark-cli`，不使用部署用户的个人 PATH。使用锁文件安装 Python 依赖，首次安装 CLI 时取官方最新稳定 release 并校验摘要；已安装时使用现有二进制：
 
 ```bash
 set -euo pipefail
 sudo apt-get install -y python3-venv
-id lark-markdown >/dev/null 2>&1 || sudo useradd --system --user-group --home-dir /var/lib/lark-markdown --shell /usr/sbin/nologin lark-markdown
-sudo install -d -o lark-markdown -g lark-markdown -m 700 /var/lib/lark-markdown
-sudo python3 ../scripts/prepare-python.py lark-markdown --native
-sudo install -d -o lark-markdown -g lark-markdown -m 700 .lark_publish
+id lark-doc >/dev/null 2>&1 || sudo useradd --system --user-group --home-dir /var/lib/lark-doc --shell /usr/sbin/nologin lark-doc
+sudo install -d -o lark-doc -g lark-doc -m 700 /var/lib/lark-doc
+sudo python3 ../scripts/prepare-python.py lark-doc --native
+sudo install -d -o lark-doc -g lark-doc -m 700 .lark_publish
 
 if [ ! -x /usr/local/bin/lark-cli ]; then
   CLI_VERSION=$(curl -fsSL https://api.github.com/repos/larksuite/cli/releases/latest | python3 -c 'import json,re,sys; d=json.load(sys.stdin); assert not d.get("draft") and not d.get("prerelease"); v=d["tag_name"].removeprefix("v"); assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+",v); print(v)')
@@ -145,20 +145,19 @@ if [ ! -x /usr/local/bin/lark-cli ]; then
   rm -rf "$CLI_TMP"
 fi
 /usr/local/bin/lark-cli --version
-sudo deploy/python/.venv/bin/python -B -m unittest discover -s scripts -p 'test_*.py'
-sudo -u lark-markdown deploy/python/.venv/bin/python -B -c 'import tempfile; d = tempfile.TemporaryDirectory(dir=".lark_publish"); d.cleanup()'
-sudo install -m 644 deploy/lark-markdown-mcp.service /etc/systemd/system/lark-markdown-mcp.service
+sudo -u lark-doc deploy/python/.venv/bin/python -B -c 'import tempfile; d = tempfile.TemporaryDirectory(dir=".lark_publish"); d.cleanup()'
+sudo install -m 644 deploy/lark-doc-mcp.service /etc/systemd/system/lark-doc-mcp.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now lark-markdown-mcp.service
-sudo systemctl is-active lark-markdown-mcp.service
+sudo systemctl enable --now lark-doc-mcp.service
+sudo systemctl is-active lark-doc-mcp.service
 ```
 
-所有 CLI／SDK／MCP 应用依赖首次安装从官方来源解析最新稳定版；已安装后的调试、代码修改和重建沿用现有版本，只有明确升级才重新解析。Python、Redis、BusyBox 保留本文兼容范围，不随应用升级追新。三种 CLI 的 `scripts/prepare-cli.sh` 首次写入本机 `deploy/*-cli.version`，后续读取它；旧实例没有记录时从现有容器读取版本，无法读取便停止，不擅自升级。该记录不随源码分发，更新和备份时须保留。服务代码、虚拟环境由 root 管理，只有 `.lark_publish` 与 `/var/lib/lark-markdown` 供服务账户写入。systemd 的重启频率限制放在 `[Unit]`，`[Install]` 提供开机启用。
+所有 CLI／SDK／MCP 应用依赖首次安装从官方来源解析最新稳定版；已安装后的调试、代码修改和重建沿用现有版本，只有明确升级才重新解析。Python、Redis、BusyBox 保留本文兼容范围，不随应用升级追新。三种 CLI 的 `scripts/prepare-cli.sh` 首次写入本机 `deploy/*-cli.version`，后续读取它；旧实例没有记录时从现有容器读取版本，无法读取便停止，不擅自升级。该记录不随源码分发，更新和备份时须保留。服务代码、虚拟环境由 root 管理，只有 `.lark_publish` 与 `/var/lib/lark-doc` 供服务账户写入。systemd 的重启频率限制放在 `[Unit]`，`[Install]` 提供开机启用。
 
-应用绑定和用户授权可在第 6 节连接后通过工具分步完成；先征得用户创建应用的同意，调用 `begin_lark_app_setup`，用户完成浏览器操作后调用 `complete_lark_app_setup`，再发起和完成用户授权。已有飞书应用复用方式见 `lark-markdown/CONFIG.md`。在终端执行 CLI 时必须使用相同账户和状态路径：
+应用绑定和用户授权可在第 6 节连接后通过工具分步完成；先征得用户创建应用的同意，调用 `begin_lark_app_setup`，用户完成浏览器操作后调用 `complete_lark_app_setup`，再发起和完成用户授权。已有飞书应用复用方式见 `lark-doc/CONFIG.md`。在终端执行 CLI 时必须使用相同账户和状态路径：
 
 ```bash
-sudo -u lark-markdown env HOME=/var/lib/lark-markdown XDG_CONFIG_HOME=/var/lib/lark-markdown/config XDG_DATA_HOME=/var/lib/lark-markdown/data /usr/local/bin/lark-cli auth status --json --verify
+sudo -u lark-doc env HOME=/var/lib/lark-doc XDG_CONFIG_HOME=/var/lib/lark-doc/config XDG_DATA_HOME=/var/lib/lark-doc/data /usr/local/bin/lark-cli auth status --json --verify
 ```
 
 ## 5. 发布 HTTPS 端点
@@ -178,7 +177,7 @@ sudo systemctl enable --now certbot.timer
 sudo certbot renew --dry-run
 ```
 
-初次发布前可预览：`env DOMAIN="$DOMAIN" bash ../scripts/nginx.sh "$SERVICE" render`。Nginx 代理所有路径，包含 OAuth discovery、注册、回调和 `/mcp`；正式模板关闭代理缓冲并设置服务独立的注册限流区；Lark Markdown 请求体上限为 32 MiB，容纳 20 MiB 媒体的 base64 编码。各服务端口、限流区名不能复用。签证失败时保留 bootstrap，修正公网 DNS／80 端口后重试；不要安装尚无证书的 TLS 模板。
+初次发布前可预览：`env DOMAIN="$DOMAIN" bash ../scripts/nginx.sh "$SERVICE" render`。Nginx 代理所有路径，包含 OAuth discovery、注册、回调和 `/mcp`；正式模板关闭代理缓冲并设置服务独立的注册限流区；Lark Doc 请求体上限为 32 MiB，容纳 20 MiB 媒体的 base64 编码。各服务端口、限流区名不能复用。签证失败时保留 bootstrap，修正公网 DNS／80 端口后重试；不要安装尚无证书的 TLS 模板。
 
 ## 6. 验收与客户端接入
 
@@ -198,7 +197,7 @@ curl -fsS "https://$DOMAIN/.well-known/oauth-authorization-server"
 | Firecrawl | 一次 `search` 查询，检查退出码和结果 |
 | Exa | 一次实际搜索；`tools/list` 不能证明 API Key 有效，可额外运行 `sudo scripts/apikey.sh verify` |
 | Lark CLI | 检查身份后读取一个已授权资源，检查退出码 |
-| Lark Markdown | `check_lark_cli` 后读取一个已授权测试文档 |
+| Lark Doc | `check_lark_cli` 后读取一个已授权测试文档 |
 
 业务调用可能消耗上游额度。读写能力验收使用明确授权的测试文档。CLI 客户端例如：
 
@@ -212,12 +211,12 @@ GUI 客户端添加远程 URL 并完成 OAuth；具体回调兼容范围见各�
 
 ## 7. 运维、备份与回滚
 
-| 操作 | Compose | Lark Markdown |
+| 操作 | Compose | Lark Doc |
 |---|---|---|
-| 查看状态 | `sudo docker compose ps -a` | `sudo systemctl status lark-markdown-mcp` |
-| 最近日志 | `sudo docker compose logs --tail 100 mcp` | `sudo journalctl -u lark-markdown-mcp -n 100 --no-pager` |
-| 配置生效 | `sudo docker compose up -d --force-recreate --wait` | `sudo systemctl restart lark-markdown-mcp` |
-| 停止 | `sudo docker compose stop` | `sudo systemctl stop lark-markdown-mcp` |
+| 查看状态 | `sudo docker compose ps -a` | `sudo systemctl status lark-doc-mcp` |
+| 最近日志 | `sudo docker compose logs --tail 100 mcp` | `sudo journalctl -u lark-doc-mcp -n 100 --no-pager` |
+| 配置生效 | `sudo docker compose up -d --force-recreate --wait` | `sudo systemctl restart lark-doc-mcp` |
+| 停止 | `sudo docker compose stop` | `sudo systemctl stop lark-doc-mcp` |
 
 Compose 升级前在服务目录保存旧镜像：
 
@@ -226,7 +225,7 @@ ROLLBACK_IMAGE="$SERVICE:rollback"
 sudo docker image tag "$(sudo docker compose images -q mcp)" "$ROLLBACK_IMAGE"
 ```
 
-记录代码 commit 和当前镜像 ID，停止服务后备份两个 `/etc` 环境文件和 Compose 命名卷；三种 CLI 服务还备份对应的 `deploy/*-cli.version`；所有 MCP 备份 `deploy/python/`；Lark Markdown 备份 `/etc/lark-markdown.env`、`/var/lib/lark-markdown`。代码、锁文件、CLI 版本与备份一起记录；存储密钥必须与 Redis 数据配套恢复。备份加密存储，复制命名卷时保持 UID／GID，恢复到同一 Compose 项目路径。升级或停止均不执行 `down -v`。
+记录代码 commit 和当前镜像 ID，停止服务后备份两个 `/etc` 环境文件和 Compose 命名卷；三种 CLI 服务还备份对应的 `deploy/*-cli.version`；所有 MCP 备份 `deploy/python/`；Lark Doc 备份 `/etc/lark-doc.env`、`/var/lib/lark-doc`。代码、锁文件、CLI 版本与备份一起记录；存储密钥必须与 Redis 数据配套恢复。备份加密存储，复制命名卷时保持 UID／GID，恢复到同一 Compose 项目路径。升级或停止均不执行 `down -v`。
 
 Compose 升级：更新代码后在服务目录运行测试和 `config --quiet`，构建后 `up -d --wait`，重复第 6 节。失败则恢复旧代码并用旧镜像 tag 的 Compose override 替换 `mcp.image`，执行 `up -d --no-build --wait`；只恢复代码不会自动切回旧镜像。涉及存储格式变化时同时恢复配套卷与环境文件。回滚命令在原服务目录执行：
 
@@ -237,7 +236,7 @@ sudo docker compose -f compose.yaml -f /tmp/mcp-rollback.yaml up -d --no-build -
 
 后续操作继续传同一 override，直到再次部署新版本；保存的 rollback tag 在下一次覆盖前已完成本轮验收。
 
-Lark Markdown 升级：停止服务、记录旧 CLI 和虚拟环境，更新代码后使用现有 `deploy/python/.venv` 测试和运行，不重新解析依赖，运行测试后重启并验收。回滚时恢复旧代码／锁文件及 CLI，再同步旧依赖和重启。OAuth 数据存储位置跟随 FastMCP 的默认实现，`/var/lib/lark-markdown` 整体备份；恢复后仍需验证客户端会话。
+Lark Doc 升级：停止服务、记录旧 CLI 和虚拟环境，更新代码后使用现有 `deploy/python/.venv` 测试和运行，不重新解析依赖，运行测试后重启并验收。回滚时恢复旧代码／锁文件及 CLI，再同步旧依赖和重启。OAuth 数据存储位置跟随 FastMCP 的默认实现，`/var/lib/lark-doc` 整体备份；恢复后仍需验证客户端会话。
 
 ### 7.1. 应用依赖版本规则
 
@@ -247,8 +246,8 @@ Lark Markdown 升级：停止服务、记录旧 CLI 和虚拟环境，更新代�
 
 ```bash
 sudo python3 ../scripts/prepare-python.py "$SERVICE" --upgrade
-# lark-markdown 使用：
-# sudo python3 ../scripts/prepare-python.py lark-markdown --native --upgrade
+# lark-doc 使用：
+# sudo python3 ../scripts/prepare-python.py lark-doc --native --upgrade
 ```
 
 新依赖先在候选环境测试，通过后才切换记录，旧记录保留在 `deploy/python.backup-*`。Compose 随后重新 build／up；原生服务重新启动。回滚恢复原镜像和对应依赖记录；原生记录须恢复到原路径以保持虚拟环境入口有效。CLI 升级使用各服务 `scripts/update-cli.sh`，不会顺带升级 Python 应用依赖。
@@ -266,7 +265,7 @@ sudo python3 ../scripts/prepare-python.py "$SERVICE" --upgrade
 | 证书申请失败 | 公网 A／AAAA、外部 80 可达、webroot 和站点域名 |
 | Nginx 检查失败 | 占位符、证书路径、重复 zone／server_name、`nginx -t` 输出 |
 | 502 或容器启动失败 | 服务日志、依赖、回环端口和必填配置 |
-| systemd 启动被限制 | 修复日志指出的问题后 `sudo systemctl reset-failed lark-markdown-mcp` 并重启 |
+| systemd 启动被限制 | 修复日志指出的问题后 `sudo systemctl reset-failed lark-doc-mcp` 并重启 |
 | OAuth 回调失败 | App callback、BASE_URL、公开域名、全路径反向代理是否一致 |
 | 飞书身份异常 | 是否用相同账户和 HOME／XDG，持久卷是否恢复，scope 是否授权 |
 

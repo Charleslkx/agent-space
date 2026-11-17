@@ -10,7 +10,7 @@
 │   ├── exa-mcp
 │   ├── firecrawl-mcp
 │   ├── lark-cli-mcp
-│   ├── lark-markdown
+│   ├── lark-doc
 │   ├── scripts
 │   └── tests
 ├── skills

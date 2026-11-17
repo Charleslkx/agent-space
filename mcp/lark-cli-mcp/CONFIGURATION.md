@@ -157,7 +157,7 @@ sudo scripts/update-cli.sh "$CLI_VERSION"
 | `server is at capacity` | 并发子进程已满（`LARK_CLI_MCP_MAX_CONCURRENCY`，默认 8）。**本次没有执行任何请求**，直接重试 |
 | 参数被拒且提示 `args[0]` / `args[1]` | 命令和子命令必须分别是 args[0]、args[1]，标志不能前置。保持校验器与 CLI 的命令位置一致 |
 | 首次连接时 `/register` 返回 429 | nginx 对 DCR 注册端点限流（每 IP 10 次/分，可突发 6 次）。正常客户端每次安装只注册一次，等一分钟重试 |
-| `nginx: [emerg] limit_req_zone "..." is already bound` | 同机多个 MCP 用了相同 zone 名。本服务用 `lark_cli_register`，注意不要和 lark-markdown 的 `lark_markdown_register` 重名 |
+| `nginx: [emerg] limit_req_zone "..." is already bound` | 同机多个 MCP 用了相同 zone 名。本服务用 `lark_cli_register`，注意不要和 lark-doc 的 `lark_doc_register` 重名 |
 | `update_available` 长时间不出现 | 检查开关、GitHub 出网和缓存周期；不影响业务调用 |
 
 部署完成后按 [USAGE.md](USAGE.md) 验证 CLI、Skill 浏览和分步授权工具。

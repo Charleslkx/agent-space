@@ -162,7 +162,7 @@ class FeishuSetupTests(unittest.TestCase):
             with self.assertRaises(ValueError): SETUP.write_env(link, {'FEISHU_APP_SECRET':'new-test-value'})
 
     def test_credentials_cannot_be_written_into_distributed_sources(self):
-        for directory in [ROOT/'codex-notify-hook', ROOT.parent/'mcp/lark-markdown']:
+        for directory in [ROOT/'codex-notify-hook', ROOT.parent/'mcp/lark-doc']:
             target = directory/'private-test.env'
             with self.assertRaises(ValueError):
                 SETUP.write_env(target, {'FEISHU_APP_SECRET':'your-test-secret'})

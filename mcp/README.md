@@ -12,6 +12,6 @@
 | [Firecrawl](firecrawl-mcp/README.md) | [配置](firecrawl-mcp/CONFIGURATION.md) |
 | [Exa](exa-mcp/README.md) | [配置](exa-mcp/CONFIGURATION.md) |
 | [Lark CLI](lark-cli-mcp/README.md) | [配置](lark-cli-mcp/CONFIGURATION.md) |
-| [Lark Markdown](lark-markdown/README.md) | [配置](lark-markdown/CONFIG.md) |
+| [Lark Doc](lark-doc/README.md) | [配置](lark-doc/CONFIG.md) |
 
 部署 Agent 按运行手册收集输入、执行安装、完成 OAuth 和业务验收；缺少凭据或浏览器授权时记录未完成项，保留已有配置。客户端 Agent 的工具调用契约继续放在各服务现有 `AGENTS.md` 中。

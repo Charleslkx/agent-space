@@ -6,7 +6,7 @@ mode=${2:-render}
 domain=${DOMAIN:?set DOMAIN to the full public hostname}
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 [[ ${#domain} -le 253 && "$domain" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] || fail 'invalid DOMAIN: use a lowercase hostname without scheme, port or path'
-case "$service" in brave-search-mcp|firecrawl-mcp|exa-mcp|lark-cli-mcp|lark-markdown) ;; *) fail 'unknown service' ;; esac
+case "$service" in brave-search-mcp|firecrawl-mcp|exa-mcp|lark-cli-mcp|lark-doc) ;; *) fail 'unknown service' ;; esac
 case "$mode" in render|bootstrap|tls) ;; *) fail 'mode must be render, bootstrap or tls' ;; esac
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 stem=$service

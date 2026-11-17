@@ -12,7 +12,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVICES = ('brave-search-mcp','firecrawl-mcp','exa-mcp','lark-cli-mcp','lark-markdown')
+SERVICES = ('brave-search-mcp','firecrawl-mcp','exa-mcp','lark-cli-mcp','lark-doc')
 PROBE = '''import importlib.metadata as m,json,sys
 print(json.dumps({"python":str(sys.version_info.major)+"."+str(sys.version_info.minor),"packages":{d.metadata["Name"]:d.version for d in m.distributions() if d.metadata["Name"]}}))'''
 
@@ -81,7 +81,7 @@ def prepare(service: Path, native=False, upgrade=False):
         python=installed['python'] if installed else '3.12'
         run([uv,'lock','--upgrade','--prerelease','disallow','--default-index','https://pypi.org/simple','--python',python,'--project',candidate],env=env)
         run([uv,'sync','--frozen','--no-dev','--python',python,'--project',candidate],env=env)
-        suite='scripts' if service.name=='lark-markdown' else 'tests'
+        suite='scripts' if service.name=='lark-doc' else 'tests'
         run([candidate/'.venv/bin/python','-B','-m','unittest','discover','-s',suite,'-p','test_*.py'],cwd=service,env=env)
         (candidate/'uv-version.txt').write_text(uv_version+'\n')
         (candidate/'installation.json').write_text(json.dumps({'python':python,'adopted_installed_versions':bool(installed),'resolved_at':datetime.now(timezone.utc).isoformat()},indent=2)+'\n')

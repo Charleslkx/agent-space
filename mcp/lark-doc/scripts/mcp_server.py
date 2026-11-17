@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small FastMCP wrapper around lark-cli document and whiteboard operations."""
+"""Authenticated lark-cli tools for Docx, Wiki, Sheets, Base and whiteboards."""
 from __future__ import annotations
 
 import argparse
@@ -21,7 +21,9 @@ import time
 import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import Annotated, Iterator, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 from urllib.parse import urlparse
 
 from fastmcp import FastMCP
@@ -41,7 +43,7 @@ GITHUB_USER_ENV = "LARK_MCP_GITHUB_USER"  # Backward-compatible single-user sett
 GITHUB_JWT_SIGNING_KEY_ENV = "LARK_MCP_JWT_SIGNING_KEY"
 CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 CLAUDE_CODE_REDIRECT_URI_PATTERN = "http://localhost:*"
-WORKBUDDY_REDIRECT_URI = "workbuddy://workbuddy/mcp/custom-mcp%3Alark-markdown/oauth/callback"
+WORKBUDDY_REDIRECT_URI = "workbuddy://workbuddy/mcp/custom-mcp%3Alark-doc/oauth/callback"
 GROK_REDIRECT_URI = "https://grok.com/connectors-oauth-exchange-code/"
 CURSOR_REDIRECT_URI = "https://www.cursor.com/agents/mcp/oauth/callback"
 ALLOWED_CLIENT_REDIRECT_URIS = [
@@ -85,7 +87,7 @@ CALLOUT_EMOJI = re.compile(r'<callout\b[^>]*?\bemoji="([^"]+)"')
 # "## 1. Title", "### 1.2 Title"; a bare "## 2024 年" has no dot and is left alone.
 NUMBERED_HEADING = re.compile(r"(?m)^(#{1,9})[ \t]+\d+\.(?:\d+\.?)*[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RESTART_CONFIRMATION = "RESTART_LARK_MARKDOWN_MCP"
+RESTART_CONFIRMATION = "RESTART_LARK_DOC_MCP"
 RESTART_WORKER = PROJECT_ROOT / "scripts" / "restart_mcp_worker.py"
 APP_SETUP_CONFIRMATION = "CREATE_LARK_APP"
 APP_SETUP_URL_TIMEOUT_SECONDS = 30
@@ -349,7 +351,7 @@ def _auth_provider(mode: str = AUTH_MODE):
     from fastmcp.server.auth import StaticTokenVerifier
 
     return StaticTokenVerifier(tokens={token: {
-        "client_id": "lark-markdown",
+        "client_id": "lark-doc",
         "scopes": ["lark:read", "lark:write"],
     }})
 
@@ -381,8 +383,8 @@ def _security_schemes(mode: str) -> list[dict]:
 TOOL_META = {"securitySchemes": _security_schemes(AUTH_MODE)}
 AUTH_PROVIDER = _auth_provider()
 mcp = FastMCP(
-    name="Lark-Markdown",
-    version="0.17.0",
+    name="lark-doc",
+    version="0.19.0",
     instructions=(
         "For normal document work, use the connected tools and never configure or start a server. "
         "Call check_lark_cli only when connection or user auth is uncertain. If it reports "
@@ -400,12 +402,25 @@ mcp = FastMCP(
         "find_document_text before retrying, and never retry when the state shows the write partially "
         "applied or truncated the document. Use batch_pull only when full-document understanding is "
         "requested, the target cannot be "
-        "narrowed by snippets, or XML/native-block structure is needed. Use batch_push only for an explicit "
-        "whole-document replacement or append. batch_push with mode=append is not idempotent, so after any "
-        "reported write failure verify with find_document_text before retrying rather than retrying blindly. "
+        "narrowed by snippets, or XML/native-block structure is needed; on long documents prefer "
+        "scope=outline, keyword, or section over a full pull. To write a block type whose XML you are "
+        "unsure of (callout, table, columns, ...), read an existing one with batch_pull(doc_format=xml) "
+        "and mirror its tags. Use batch_push only for an explicit "
+        "whole-document replacement or append. "
         "After point_update, verify with find_document_text using the "
-        "replacement (or the removed text for deletion); use batch_pull only after partial_success, an error, "
-        "a format-sensitive operation, or an explicit verification request. Use scan_document_assets to list "
+        "replacement (or the removed text for deletion); use batch_pull only after an error, "
+        "a format-sensitive operation, or an explicit verification request. "
+        "Use sheets_info before sheets_read/sheets_write; these tools handle electronic spreadsheets. "
+        "Use base_inspect for multidimensional Base tables/fields/views, base_query_records to read "
+        "and base_write_records to write records. Do not use Docx tools on sheet/Base resources. "
+        "Preserve select options and full field definitions on Base field updates. "
+        "Use sheets_sheet_info plus nearby cells/formulas/validation before structural edits; "
+        "refetch coordinates afterwards. sheets_sort_range must cover full records. "
+        "Use sheets_search_cells before sheets_replace_cells and verify remaining matches afterwards. "
+        "For value-dependent highlighting use sheets_write_conditional_format, then verify both "
+        "sheets_list_conditional_formats and sheets_get_conditional_format_result. "
+        "After uncertain creates/appends, inspect the remote state before retrying. "
+        "Every doc parameter accepts a document URL or token. Use scan_document_assets to list "
         "images and whiteboards in a Lark document without returning its full XML. "
         "point_update only replaces text and cannot change block attributes; to replace, insert, delete, "
         "or move whole blocks (headings, paragraphs, lists, tables), call find_document_text with "
@@ -418,7 +433,12 @@ mcp = FastMCP(
         "CJK characters. Markdown writes move punctuation out of */** when the outer side touches text "
         "(abc**\"q\"**def becomes abc\"**q**\"def), so that punctuation is not bolded; to bold it, use "
         "XML <b>…</b>. "
-        "batch_push, block_update, and create_document return format_warnings when Lark replaced a callout emoji."
+        "Callout emoji: default to emoji=\"💡\" and use another emoji only when the user asks for it. "
+        "Lark accepts only its own emoji set and silently swaps others (e.g. ⚠️) for 💡. "
+        "batch_push, block_update, and create_document then return format_warnings; the content is "
+        "already written, so fix only that callout with block_update instead of rewriting or recreating. "
+        "create_document and insert_media are not idempotent: after an error or interruption, look for "
+        "the result (search_documents by title, or find_document_text) before calling again."
     ),
     website_url=os.environ.get(BASE_URL_ENV),
     auth=AUTH_PROVIDER,
@@ -731,7 +751,7 @@ def _hidden_run() -> Iterator[Path]:
                 # completed write as a failure and invite a retry that appends
                 # the same content twice. _cleanup_stale_runs reclaims the
                 # directory on the next start.
-                print(f"lark-markdown: {message}", file=sys.stderr)
+                print(f"lark-doc: {message}", file=sys.stderr)
 
 
 def _cleanup_stale_runs() -> None:
@@ -988,7 +1008,7 @@ def complete_lark_app_setup() -> dict:
             if _lark_app_configured():
                 return {
                     "status": "configured",
-                    "next_step": "call begin_lark_auth to authorize Docs, Drive, and Wiki",
+                    "next_step": "call begin_lark_auth to authorize Docs, Drive, Wiki, Sheets, and Base",
                 }
             raise LarkCLIError({
                 "operation": "complete Lark app setup",
@@ -1017,15 +1037,15 @@ def complete_lark_app_setup() -> dict:
         _auth_cache = None
         return {
             "status": "configured",
-            "next_step": "call begin_lark_auth to authorize Docs, Drive, and Wiki",
+            "next_step": "call begin_lark_auth to authorize Docs, Drive, Wiki, Sheets, and Base",
         }
 
 
 @mcp.tool(title="Start Lark user authorization", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 def begin_lark_auth() -> dict:
-    """Create a one-time Lark device authorization URL and QR code for Docs, Drive, and Wiki."""
+    """Create a one-time Lark device authorization URL and QR code for Docs, Drive, Wiki, Sheets, and Base."""
     payload = _run_cli(
-        ["auth", "login", "--domain", "docs", "--domain", "drive", "--domain", "wiki", "--no-wait", "--json"],
+        ["auth", "login", "--domain", "docs", "--domain", "drive", "--domain", "wiki", "--domain", "sheets", "--domain", "base", "--no-wait", "--json"],
         "start lark user authorization",
     )
     verification_url = _find_auth_value(
@@ -1154,10 +1174,15 @@ def batch_pull(
 ) -> list[dict]:
     """Fetch documents concurrently; results remain in input order.
 
-    Scope avoids pulling a whole long document: "outline" lists headings (max_depth caps
-    the level), "keyword" returns blocks matching keyword ("a|b" for OR), "section" expands
+    Scope avoids pulling a whole long document: "outline" lists headings, "keyword" returns
+    blocks matching keyword (case-insensitive substring, "a|b" for OR), "section" expands
     from heading start_block_id, "range" reads start_block_id..end_block_id. section and
-    range need block IDs, so they take exactly one document.
+    range need block IDs, so they take exactly one document. max_depth: for outline the
+    deepest heading level kept (2 = h1..h2); for other scopes the subtree depth
+    (-1 unlimited, 0 block only).
+
+    detail: "simple" plain content, "with-ids" adds block IDs, "full" also adds styles
+    and edit metadata. documents: URLs or tokens, at most 100; concurrency 1-8.
 
     Use Markdown/simple for ordinary text. Use XML/full when the task depends on
     formatting or native structure that Markdown cannot reliably expose, including
@@ -1218,6 +1243,9 @@ def find_document_text(
     """Return bounded context around exact text matches without returning the full document.
 
     Use doc_format="xml" with detail="with-ids" to get the block IDs that block_update needs.
+    query is literal text (not regex) matched against the chosen doc_format rendering.
+    context_chars 0-1000 per side; max_matches 1-10. The returned revision_id can be
+    passed as expected_revision_id to block_update or batch_point_update.
     """
     if not doc.strip():
         raise ValueError("doc must not be empty")
@@ -1284,6 +1312,11 @@ def search_documents(
 
     Use to find which document to target before find_document_text or batch_pull;
     matching is server-side keyword ranking, not semantic/embedding search.
+
+    doc_types: optional comma-separated filter from doc, docx, sheet, bitable, mindnote,
+    file, wiki, folder, catalog, slides, shortcut (e.g. "docx,wiki"); an unknown value
+    raises. count: 1-20. Search can miss existing docs (index lag or ranking), so an
+    empty result is not proof the doc is missing.
     """
     if not query.strip():
         raise ValueError("query must not be empty")
@@ -1324,6 +1357,10 @@ def batch_push(
     documents: list[dict[str, str]], concurrency: int = DEFAULT_BATCH_CONCURRENCY,
 ) -> list[dict]:
     """Write independent documents concurrently; results remain in input order.
+
+    Each item: {"doc": URL or token, "content": str, "mode": "overwrite" (default,
+    replaces the whole document) | "append", "doc_format": "markdown" (default) | "xml"}.
+    At most 100 items, each doc once; concurrency 1-8.
 
     mode="append" is not idempotent: a retry after a reported failure can append
     the same content twice. Verify with find_document_text before retrying.
@@ -1443,6 +1480,10 @@ def point_update(
 ) -> dict:
     """Replace an exact text target only when it occurs once; the full document stays server-side.
 
+    pattern is literal text, not regex, matched against the doc_format rendering
+    (Markdown text or XML source); an empty replacement deletes it. Neither side may
+    contain block-level tags; use block_update for those.
+
     Raises when lark-cli reports the write as failed, including a best-effort
     post-failure document state so the caller can tell a no-op from a partial apply.
     """
@@ -1479,6 +1520,10 @@ def batch_point_update(
     expected_revision_id: int | None = None,
 ) -> list[dict]:
     """Preflight and apply ordered exact replacements with revision guards.
+
+    Each item: {"pattern": literal text that must occur once, "replacement": str}, applied
+    in order. expected_revision_id: revision_id from find_document_text or batch_pull;
+    the batch is rejected if the document changed since.
 
     Stops at the first write that lark-cli reports as failed (never continuing into a
     possibly damaged document) and reports the post-failure document state.
@@ -1627,8 +1672,10 @@ def block_update(
 ) -> dict:
     """Replace, insert, delete, move, or copy whole blocks by block ID.
 
-    Get IDs first with find_document_text(doc_format="xml", detail="with-ids"); IDs go
-    stale after structural edits, so refetch before reusing them. Commands:
+    Get IDs first with find_document_text(doc_format="xml", detail="with-ids"); replaced
+    and inserted blocks get new IDs, so refetch after any structural edit. doc_format
+    defaults to "xml" here, unlike the other write tools. expected_revision_id rejects
+    the write if the document changed since that revision. Commands:
     block_replace (content + block_id, or start/end_block_id sibling range),
     block_insert_after (content + block_id; "0" = document start, "-1" = end),
     block_delete (block_id or start/end range), block_move_after and
@@ -1702,7 +1749,15 @@ def create_document(
     doc_format: DocFormat = "markdown",
     parent_token: str | None = None,
 ) -> dict:
-    """Create one Lark Docx in a Drive folder, Wiki node, or personal space."""
+    """Create one Lark Docx in a Drive folder or the personal space root.
+
+    Title: in Markdown the first line "# Title" becomes the document title; in XML use
+    <title>Title</title>. parent_token is a Drive folder token only; omit it for the
+    personal space root. For a Wiki page use create_wiki_node instead.
+
+    Not idempotent: after an error or interruption, search_documents by the title
+    before calling again, or a duplicate document is created.
+    """
     _check_lark_cli()
     if doc_format not in {"markdown", "xml"}:
         raise ValueError("doc_format must be markdown or xml")
@@ -1731,7 +1786,11 @@ def create_wiki_node(
     parent_node_token: str | None = None,
     space_id: str | None = None,
 ) -> dict:
-    """Create a blank Docx Wiki node in a specified Wiki space or beneath a parent node."""
+    """Create a blank Docx Wiki node in a specified Wiki space or beneath a parent node.
+
+    Pass parent_node_token (Wiki node token) or space_id; one is required. The node is
+    empty: write its body with batch_push using the returned Docx token or URL.
+    """
     if not title.strip():
         raise ValueError("title must not be empty")
     if not (parent_node_token or space_id):
@@ -1798,9 +1857,16 @@ def insert_media(
 ) -> dict:
     """Insert a base64 image or file, then delete its hidden local payload.
 
+    media_type: "image" (default) or "file"; filename is a plain name with extension;
+    decoded size at most 20 MB.
+
     lark-cli always appends media to the document end. Pass after_block_id (from
     find_document_text with doc_format="xml", detail="with-ids"; "0" = document start)
     to move the new block there afterwards.
+
+    Not idempotent: each call uploads a new copy. If the move fails, the error is
+    media_inserted_not_moved with media_block_id; the media is already at the end, so
+    retry only block_update(command="block_move_after", src_block_ids=media_block_id).
     """
     _check_lark_cli()
     if media_type not in {"image", "file"}:
@@ -1853,7 +1919,11 @@ def insert_media(
 def whiteboard_query(
     whiteboard_token: str, output_as: Literal["code", "raw"] = "code",
 ) -> dict:
-    """Read one Lark whiteboard as Mermaid/PlantUML code or raw nodes."""
+    """Read one Lark whiteboard as Mermaid/PlantUML code or raw nodes.
+
+    Get whiteboard_token from scan_document_assets. output_as: "code" (Mermaid/PlantUML
+    source) or "raw" (node JSON).
+    """
     _check_lark_cli()
     if output_as not in {"code", "raw"}:
         raise ValueError("output_as must be code or raw")
@@ -1879,7 +1949,11 @@ def whiteboard_update(
     input_format: Literal["mermaid", "plantuml", "raw"] = "mermaid",
     overwrite: bool = True,
 ) -> dict:
-    """Update one Lark whiteboard from Mermaid, PlantUML, or raw node JSON."""
+    """Update one Lark whiteboard from Mermaid, PlantUML, or raw node JSON.
+
+    Get whiteboard_token from scan_document_assets. overwrite=True (default) deletes all
+    existing whiteboard content first; pass False to add to it instead.
+    """
     _check_lark_cli()
     if input_format not in {"mermaid", "plantuml", "raw"}:
         raise ValueError("input_format must be mermaid, plantuml, or raw")
@@ -1898,7 +1972,405 @@ def whiteboard_update(
         return result
 
 
-@mcp.tool(title="Schedule Lark-Markdown MCP restart", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False})
+class SelectOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+    hue: Literal["Red", "Orange", "Yellow", "Lime", "Green", "Turquoise", "Wathet", "Blue", "Carmine", "Purple", "Gray"] = "Blue"
+    lightness: Literal["Lighter", "Light", "Standard", "Dark", "Darker"] = "Lighter"
+
+
+# Table tools share the Docx authentication, subprocess and error envelope.
+class BaseField(BaseModel):
+    """CLI field definition; extra properties preserve advanced documented settings."""
+    model_config = ConfigDict(extra="allow")
+    name: str = Field(min_length=1)
+    type: Literal[
+        "text", "number", "select", "datetime", "created_at", "updated_at", "user",
+        "group_chat", "created_by", "updated_by", "link", "formula", "lookup",
+        "auto_number", "attachment", "location", "checkbox", "button",
+    ]
+    multiple: bool | None = None
+    options: list[SelectOption] | None = None
+    style: dict | None = None
+    description: str | None = None
+
+
+class SheetStyle(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    background_color: str | None = None
+    font_color: str | None = None
+    font_size: float | None = None
+    font_weight: Literal["normal", "bold"] | None = None
+    font_style: Literal["normal", "italic"] | None = None
+    font_line: Literal["none", "underline", "line-through"] | None = None
+    horizontal_alignment: Literal["left", "center", "right"] | None = None
+    vertical_alignment: Literal["top", "middle", "bottom"] | None = None
+    word_wrap: Literal["overflow", "auto-wrap", "word-clip"] | None = None
+    number_format: str | None = None
+
+
+class SheetCell(BaseModel):
+    """Only provided attributes are changed; use sheets_clear to clear content."""
+    model_config = ConfigDict(extra="allow")
+    value: str | int | float | bool | None = None
+    formula: str | None = None
+    cell_styles: SheetStyle | None = None
+    note: str | None = None
+
+
+# Linux caps one argv string at 128 KiB including NUL; keep room for the `--name=` prefix.
+MAX_TABLE_JSON_BYTES = 120 * 1024
+
+
+def _table_json_default(item: object):
+    dump = getattr(item, "model_dump", None)
+    if dump is None:
+        raise ValueError(f"value of type {type(item).__name__} is not JSON-serializable; use plain strings, numbers, booleans, lists and objects")
+    return dump(exclude_unset=True)
+
+
+def _table_json(value: object) -> str:
+    text = json.dumps(value, ensure_ascii=False, allow_nan=False, default=_table_json_default)
+    if len(text.encode("utf-8")) > MAX_TABLE_JSON_BYTES:
+        raise ValueError("table JSON exceeds 120 KiB; split it into smaller requests")
+    return text
+
+
+def _table_call(domain: str, command: str, options: dict, *, write: bool = False,
+                confirmed: bool = False, dry_run: bool = False) -> dict:
+    _check_lark_cli()
+    args = [domain, "+" + command, "--as", "user", "--format", "json"]
+    for key, value in options.items():
+        if value is None:
+            continue
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            # Equals keeps user values beginning with '-' from becoming CLI flags.
+            args.append(f"--{key}={str(item).lower() if isinstance(item, bool) else item}")
+    if dry_run:
+        args.append("--dry-run")
+    if confirmed:
+        args.append("--yes")
+    result = _run_cli(args, f"{domain}_{command}")
+    # A dry-run envelope is a preview, not a write result; only check the real write.
+    if write and not dry_run:
+        try:
+            _assert_write_succeeded(result, f"{domain}_{command}")
+        except LarkCLIError as error:
+            error.details["next_step"] = (
+                "The write may have partially applied. Inspect with sheets_read/sheets_info "
+                "or base_inspect/base_query_records before retrying; do not blindly repeat creates."
+            )
+            error.details["response"] = result
+            raise
+    elif result.get("ok") is False:
+        raise LarkCLIError({"operation": f"{domain}_{command}", "error": "remote_error", "result": result})
+    return result
+
+
+def _sheet_target(spreadsheet: str, sheet_id: str | None = None,
+                  sheet_name: str | None = None, *, required: bool = True) -> dict:
+    if not spreadsheet.strip():
+        raise ValueError("spreadsheet URL or token is required")
+    if bool(sheet_id) and bool(sheet_name) or required and not (sheet_id or sheet_name):
+        raise ValueError("pass exactly one of sheet_id or sheet_name")
+    return {"url" if "://" in spreadsheet else "spreadsheet-token": spreadsheet,
+            "sheet-id": sheet_id, "sheet-name": sheet_name}
+
+
+def _base_target(base: str, table_id: str | None = None) -> dict:
+    if not base.strip():
+        raise ValueError("base token or URL is required")
+    if "://" in base:
+        resolved = _table_call("base", "url-resolve", {"url": base})
+        data = resolved.get("data", {})
+        token = data.get("base_token")
+        if not token:
+            raise ValueError("URL did not resolve to base_token; pass the resolved Base token")
+        base = token
+    return {"base-token": base, "table-id": table_id}
+
+
+@mcp.tool(title="Inspect a spreadsheet", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+def sheets_info(spreadsheet: str) -> dict:
+    """List all sub-sheets, IDs, names, dimensions and visibility. Accept URL or token.
+
+    Read this before selecting a sheet; select by explicit name/ID, never tab index.
+    """
+    return _table_call("sheets", "workbook-info", _sheet_target(spreadsheet, required=False))
+
+
+@mcp.tool(title="Create a spreadsheet", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+def sheets_create(title: str, values: list[list[str | int | float | bool | None]] | None = None,
+                  folder_token: str | None = None) -> dict:
+    """Create a workbook, optionally with a 2D value array (header is first row).
+
+    For exact formulas/types/styles use sheets_write afterwards. Creation is not
+    idempotent: search_documents(doc_types="sheet") before retrying an uncertain result.
+    """
+    if not title.strip():
+        raise ValueError("title is required")
+    return _table_call("sheets", "workbook-create", {"title": title, "folder-token": folder_token,
+                       "values": _table_json(values) if values is not None else None}, write=True)
+
+
+@mcp.tool(title="Read spreadsheet cells", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+def sheets_read(spreadsheet: str, cell_range: str, sheet_id: str | None = None,
+                sheet_name: str | None = None,
+                include: list[Literal["value", "formula", "style", "comment", "data_validation", "conditional_format", "truncation"]] = ["value"],
+                max_chars: Annotated[int, Field(ge=1, le=500000)] = 25000) -> dict:
+    """Read a bounded A1 range, e.g. A1:F30; select exactly one sheet ID/name.
+
+    include controls returned categories. Inspect truncation/has_more and continue
+    with smaller ranges when needed; a bounded response is not the whole dataset.
+    """
+    if not cell_range.strip() or not include:
+        raise ValueError("cell_range and include must not be empty")
+    return _table_call("sheets", "cells-get", {**_sheet_target(spreadsheet, sheet_id, sheet_name),
+                       "range": cell_range, "include": ",".join(include), "max-chars": max_chars})
+
+
+@mcp.tool(title="Write spreadsheet cells", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
+def sheets_write(spreadsheet: str, cell_range: str, cells: Annotated[list[Annotated[list[SheetCell], Field(min_length=1)]], Field(min_length=1)],
+                 sheet_id: str | None = None, sheet_name: str | None = None,
+                 allow_overwrite: bool = False, copy_to_range: str | None = None,
+                 dry_run: bool = False) -> dict:
+    """Write a 2D array of cells: [[{"value":12},{"formula":"=A1*2"}]].
+
+    cell_range is A1 anchor or bounding rectangle; formulas begin '='. Each cell can
+    include cell_styles or note; omitted attributes remain unchanged. Overwriting
+    nonempty cells requires allow_overwrite=True. copy_to_range fills a template
+    with shifted formula references. Read back values/styles and run
+    sheets_verify_formulas after formula writes. Dry run previews without writing.
+    """
+    if not cell_range.strip() or not cells or not cells[0] or any(len(row) != len(cells[0]) for row in cells):
+        raise ValueError("cell_range and a nonempty rectangular cells array are required")
+    return _table_call("sheets", "cells-set", {**_sheet_target(spreadsheet, sheet_id, sheet_name),
+                       "range": cell_range, "cells": _table_json(cells),
+                       "allow-overwrite": allow_overwrite, "copy-to-range": copy_to_range}, write=True, dry_run=dry_run)
+
+
+@mcp.tool(title="Manage spreadsheet tabs", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+def sheets_manage_sheet(spreadsheet: str, action: Literal["create", "rename", "copy", "delete", "hide", "unhide"],
+                        sheet_id: str | None = None, sheet_name: str | None = None,
+                        title: str | None = None, confirmed: bool = False, dry_run: bool = False) -> dict:
+    """Manage one tab after sheets_info. create/rename require title; other actions target ID/name.
+
+    delete requires confirmed=True after explicit user authorization. dry_run only
+    previews. Existing tabs must only be renamed/deleted/hidden on user request.
+    """
+    if action not in {"create", "rename", "copy", "delete", "hide", "unhide"}:
+        raise ValueError("unsupported sheet action")
+    if action in {"create", "rename"} and not (title and title.strip()):
+        raise ValueError("title is required for create/rename")
+    if title is not None and action not in {"create", "rename", "copy"}:
+        raise ValueError("title only applies to create/rename/copy")
+    if action == "create" and (sheet_id or sheet_name):
+        raise ValueError("create uses title, not a sheet selector")
+    if action == "delete" and not (confirmed or dry_run):
+        raise ValueError("delete requires confirmed=True or dry_run=True")
+    return _table_call("sheets", "sheet-" + action,
+                       {**_sheet_target(spreadsheet, sheet_id, sheet_name, required=action != "create"), "title": title},
+                       write=True, confirmed=confirmed and action == "delete", dry_run=dry_run)
+
+
+@mcp.tool(title="Clear spreadsheet cells", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
+def sheets_clear(spreadsheet: str, cell_range: str, sheet_id: str | None = None,
+                 sheet_name: str | None = None, scope: Literal["content", "formats", "all"] = "content",
+                 confirmed: bool = False, dry_run: bool = False) -> dict:
+    """Clear a bounded range, leaving rows/columns intact. Requires explicit user approval.
+
+    content removes values, formats removes formatting, all removes both.
+    Preview with dry_run=True; execute with confirmed=True.
+    """
+    if not cell_range.strip() or scope not in {"content", "formats", "all"}:
+        raise ValueError("cell_range and a valid scope are required")
+    if not (confirmed or dry_run):
+        raise ValueError("clear requires confirmed=True or dry_run=True")
+    return _table_call("sheets", "cells-clear", {**_sheet_target(spreadsheet, sheet_id, sheet_name),
+                       "range": cell_range, "scope": scope}, write=True, confirmed=confirmed, dry_run=dry_run)
+
+
+@mcp.tool(title="Verify spreadsheet formulas", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+def sheets_verify_formulas(spreadsheet: str, cell_range: str, sheet_id: str | None = None,
+                           sheet_name: str | None = None, ai_only: bool = False) -> dict:
+    """Check all formulas/errors in the written range. partial means narrow and repeat.
+
+    For AI formulas set ai_only=True; inspect failed count and report pending work.
+    """
+    if not cell_range.strip():
+        raise ValueError("cell_range is required")
+    return _table_call("sheets", "formula-verify", {**_sheet_target(spreadsheet, sheet_id, sheet_name),
+                       "range": cell_range, "ai-only": ai_only})
+
+
+@mcp.tool(title="Inspect a multidimensional Base", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+def base_inspect(base: str, resource: Literal["base", "tables", "fields", "views"] = "tables",
+                 table_id: str | None = None) -> dict:
+    """Read Base metadata, tables, fields (including select options), or views.
+
+    base accepts token or URL; Wiki URLs are resolved by CLI. table_id is an ID or
+    exact table name, required for fields/views. Read fields before record writes.
+    """
+    commands = {"base": "base-get", "tables": "table-list", "fields": "field-list", "views": "view-list"}
+    if resource not in commands or resource in {"fields", "views"} and not table_id:
+        raise ValueError("valid resource and table_id for fields/views are required")
+    if resource in {"base", "tables"} and table_id is not None:
+        raise ValueError("table_id only applies to fields/views")
+    return _table_call("base", commands[resource], _base_target(base, table_id))
+
+
+@mcp.tool(title="Create a multidimensional Base", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+def base_create(name: str, folder_token: str | None = None, time_zone: str = "Asia/Shanghai") -> dict:
+    """Create a Base with its platform default first table. Configure fields afterwards.
+
+    Not idempotent: search_documents(doc_types="bitable") before retrying an uncertain result.
+    """
+    if not name.strip():
+        raise ValueError("name is required")
+    return _table_call("base", "base-create", {"name": name, "folder-token": folder_token,
+                       "time-zone": time_zone}, write=True)
+
+
+@mcp.tool(title="Manage Base tables", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+def base_manage_table(base: str, action: Literal["create", "rename", "delete"],
+                      table_id: str | None = None, name: str | None = None,
+                      fields: list[BaseField] | None = None, confirmed: bool = False,
+                      dry_run: bool = False) -> dict:
+    """Create (name+fields), rename (table_id+name), or delete (table_id) a table.
+
+    First field is primary. select fields use options=[{"name":"Todo"}]. Delete
+    requires explicit user approval and confirmed=True. dry_run previews only.
+    """
+    if action not in {"create", "rename", "delete"}:
+        raise ValueError("unsupported table action")
+    if action != "create" and not table_id or action != "delete" and not (name and name.strip()):
+        raise ValueError("table_id/name required for the selected action")
+    if action == "create" and (table_id or not fields):
+        raise ValueError("create requires fields and no table_id")
+    if action != "create" and fields is not None or action == "delete" and name is not None:
+        raise ValueError("fields only applies to create; delete does not take name")
+    if action == "delete" and not (confirmed or dry_run):
+        raise ValueError("delete requires confirmed=True or dry_run=True")
+    return _table_call("base", {"create": "table-create", "rename": "table-update", "delete": "table-delete"}[action],
+                       {**_base_target(base, table_id), "name": name, "fields": _table_json(fields) if fields else None},
+                       write=True, confirmed=confirmed and action == "delete", dry_run=dry_run)
+
+
+@mcp.tool(title="Manage Base fields and options", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+def base_manage_field(base: str, table_id: str, action: Literal["get", "create", "update", "delete"],
+                      field_id: str | None = None, definition: BaseField | None = None,
+                      confirmed: bool = False, dry_run: bool = False) -> dict:
+    """Read/create/update/delete a field. Field types and select option colors have enums.
+
+    get/update/delete require field_id (ID or name). create/update require definition.
+    update is full PUT: read get first and preserve all writable properties, including
+    options/style. update/delete require confirmed=True after user approval, or dry_run.
+    Advanced documented fields (expression, link_table, etc.) are allowed in definition.
+    """
+    if not table_id or action not in {"get", "create", "update", "delete"}:
+        raise ValueError("table_id and a valid action are required")
+    if (action != "create") != bool(field_id):
+        raise ValueError("field_id required except for create")
+    if (action in {"create", "update"}) != (definition is not None):
+        raise ValueError("definition required only for create/update")
+    if action in {"update", "delete"} and not (confirmed or dry_run):
+        raise ValueError("update/delete requires confirmed=True or dry_run=True")
+    return _table_call("base", "field-" + action, {**_base_target(base, table_id), "field-id": field_id,
+                       "json": _table_json(definition) if definition is not None else None},
+                       write=action != "get", confirmed=confirmed and action in {"update", "delete"}, dry_run=dry_run)
+
+
+@mcp.tool(title="Query Base records", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+def base_query_records(base: str, table_id: str, record_ids: list[str] | None = None,
+                       keyword: str | None = None, search_fields: list[str] | None = None,
+                       fields: list[str] | None = None, view_id: str | None = None,
+                       filter_config: dict | None = None, sort: list[dict] | None = None,
+                       offset: Annotated[int, Field(ge=0)] = 0,
+                       limit: Annotated[int, Field(ge=1, le=200)] = 100) -> dict:
+    """Get known record IDs, keyword-search fields, or list/filter/sort records.
+
+    filter_config example: {"logic":"and","conditions":[["Status","==","Todo"]]}.
+    sort example: [{"field":"Updated","desc":true}]. fields projects names/IDs.
+    Inline JSON uses offset/limit pagination: follow has_more and next_offset until
+    complete. record_ids cannot combine with keyword/view/filter/sort/pagination.
+    """
+    if not table_id:
+        raise ValueError("table_id is required")
+    if record_ids is not None and (not record_ids or keyword is not None or search_fields or view_id or filter_config is not None or sort is not None or offset != 0 or limit != 100):
+        raise ValueError("record_ids must be nonempty and cannot combine with query options")
+    if keyword is not None and (not keyword.strip() or not search_fields) or search_fields and keyword is None:
+        raise ValueError("keyword and search_fields must be provided together")
+    options = {**_base_target(base, table_id), "field-id": fields}
+    if record_ids is not None:
+        command = "record-get"
+        options["record-id"] = record_ids
+    else:
+        command = "record-search" if keyword is not None else "record-list"
+        options.update({"keyword": keyword, "search-field": search_fields, "view-id": view_id,
+                        "filter-json": _table_json(filter_config) if filter_config is not None else None,
+                        "sort-json": _table_json(sort) if sort is not None else None, "offset": offset, "limit": limit})
+    return _table_call("base", command, options)
+
+
+@mcp.tool(title="Write Base records", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+def base_write_records(base: str, table_id: str, action: Literal["create", "update", "delete"],
+                       records: list[dict] | None = None, updates: dict[str, dict] | None = None,
+                       record_ids: list[str] | None = None, confirmed: bool = False,
+                       dry_run: bool = False) -> dict:
+    """Batch create field maps, update record-ID -> field-map, or delete record IDs; 1-200.
+
+    create: records=[{"Name":"A","Status":["Todo"]}]. update:
+    updates={"rec_id":{"Status":["Done"]}}. null clears allowed cells. Read fields
+    first; select values are arrays even for single-select. Do not write computed
+    fields. Delete requires confirmed=True after user approval. dry_run previews.
+    Creation is not idempotent; query after uncertain results before retrying.
+    """
+    if not table_id or action not in {"create", "update", "delete"}:
+        raise ValueError("table_id and a valid action are required")
+    selected = {"create": records, "update": updates, "delete": record_ids}[action]
+    if sum(value is not None for value in (records, updates, record_ids)) != 1 or not selected or len(selected) > 200:
+        raise ValueError("provide only the selected action's records/updates/record_ids, 1-200 items")
+    if action == "delete" and not (confirmed or dry_run):
+        raise ValueError("delete requires confirmed=True or dry_run=True")
+    payload = {{"create": "create_records", "update": "update_records", "delete": "record_id_list"}[action]: selected}
+    return _table_call("base", {"create": "record-batch-create", "update": "record-batch-update", "delete": "record-delete"}[action],
+                       {**_base_target(base, table_id), "json": _table_json(payload)}, write=True,
+                       confirmed=confirmed and action == "delete", dry_run=dry_run)
+
+
+@mcp.tool(title="Manage Base views", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+def base_manage_view(base: str, table_id: str,
+                     action: Literal["get", "create", "rename", "delete", "set_filter", "set_sort", "set_group", "set_visible_fields"],
+                     view_id: str | None = None, name: str | None = None,
+                     view_type: Literal["grid", "kanban", "gallery", "calendar", "gantt"] = "grid",
+                     config: dict | None = None, confirmed: bool = False, dry_run: bool = False) -> dict:
+    """Manage views; create uses name+view_type, rename uses name; others need view_id.
+
+    set_* requires config, e.g. set_filter {"logic":"and","conditions":[["Status","==","Todo"]]}.
+    Configuration replaces that view setting; preserve existing desired criteria.
+    Delete requires confirmed=True after explicit user approval, or dry_run to preview.
+    """
+    actions = {"get", "create", "rename", "delete", "set_filter", "set_sort", "set_group", "set_visible_fields"}
+    if not table_id or action not in actions:
+        raise ValueError("table_id and a valid action are required")
+    if (action != "create") != bool(view_id):
+        raise ValueError("view_id required except for create")
+    if (action in {"create", "rename"}) != bool(name and name.strip()):
+        raise ValueError("name required only for create/rename")
+    if action.startswith("set_") != (config is not None):
+        raise ValueError("config required only for set_* actions")
+    if action == "delete" and not (confirmed or dry_run):
+        raise ValueError("delete requires confirmed=True or dry_run=True")
+    payload = {"name": name, "type": view_type} if action == "create" else config
+    return _table_call("base", "view-" + action.replace("_", "-"),
+                       {**_base_target(base, table_id), "view-id": view_id,
+                        "name": name if action == "rename" else None,
+                        "json": _table_json(payload) if payload is not None else None},
+                       write=action != "get", confirmed=confirmed and action == "delete", dry_run=dry_run)
+
+
+@mcp.tool(title="Schedule lark-doc MCP restart", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False})
 def schedule_mcp_restart(
     confirmation: str,
     delay_seconds: int = 10,
@@ -1923,11 +2395,21 @@ def schedule_mcp_restart(
         raise RuntimeError(f"could not schedule MCP restart: {error}") from error
     return {
         "status": "scheduled",
-        "service": "lark-markdown-mcp.service",
+        "service": "lark-doc-mcp.service",
         "delay_seconds": delay_seconds,
         "worker_pid": worker.pid,
         "message": "The service will restart after the delay; the current tool call is complete.",
     }
+
+
+# Late callbacks retain the server's shared authentication and testable CLI runner.
+from sheets_tools import register_sheets_tools
+
+register_sheets_tools(
+    mcp, TOOL_META,
+    lambda command, options, **kwargs: _table_call("sheets", command, options, **kwargs),
+    _sheet_target, _table_json,
+)
 
 
 def main() -> None:
