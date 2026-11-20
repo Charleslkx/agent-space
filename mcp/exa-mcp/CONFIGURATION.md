@@ -96,6 +96,7 @@ sudo scripts/apikey.sh token delete your-github-login # 吊销
 | Grok | `https://grok.com/connectors-oauth-exchange-code/` |
 | Cursor | `https://www.cursor.com/agents/mcp/oauth/callback` |
 | WorkBuddy | `workbuddy://workbuddy/mcp/custom-mcp%3Aexa/oauth/callback` |
+| [Gemini 网页版](../DEPLOYMENT.md#61-gemini-网页版) | `https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*` |
 | Claude Code / VS Code / Zed / Gemini CLI | `http://localhost:*`、`http://127.0.0.1:*` |
 | 静态 token 客户端 | 不使用 OAuth 回调 |
 

@@ -14,6 +14,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient
+from mcp.shared.auth import InvalidRedirectUriError
+from pydantic import AnyUrl
+
 SERVER_PATH = Path(__file__).resolve().parent.parent / "server.py"
 
 BASE_ENV = {
@@ -143,6 +147,7 @@ class RedirectUriTests(unittest.TestCase):
             "https://claude.ai/api/mcp/auth_callback",
             "https://grok.com/connectors-oauth-exchange-code/",
             "https://www.cursor.com/agents/mcp/oauth/callback",
+            "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*",
             "workbuddy://workbuddy/mcp/custom-mcp%3Aexa/oauth/callback",
             # Claude Code, Codex, VS Code, Zed, Gemini CLI all use loopback.
             "http://localhost:*",
@@ -151,6 +156,22 @@ class RedirectUriTests(unittest.TestCase):
         for uri in expected:
             with self.subTest(uri=uri):
                 self.assertIn(uri, allowed)
+
+    def test_gemini_web_redirect_is_limited_to_its_custom_mcp_callback_path(self):
+        origin = "https://oauth-redirect.googleusercontent.com"
+        callback = AnyUrl(f"{origin}/r/user_bound_custom-mcp-example")
+        client = ProxyDCRClient(
+            redirect_uris=[callback],
+            allowed_redirect_uri_patterns=MODULE.ALLOWED_CLIENT_REDIRECT_URIS,
+        )
+        self.assertEqual(client.validate_redirect_uri(callback), callback)
+        for unrelated in (
+            f"{origin}/r/unrelated",
+            f"{origin}/a/user_bound_custom-mcp-example",
+            "https://example.com/r/user_bound_custom-mcp-example",
+        ):
+            with self.subTest(uri=unrelated), self.assertRaises(InvalidRedirectUriError):
+                client.validate_redirect_uri(AnyUrl(unrelated))
 
     def test_workbuddy_callback_is_namespaced_to_this_service(self):
         # A shared namespace across sibling services would let one service's

@@ -1,4 +1,5 @@
 """Offline checks for deployable templates and multi-service coexistence."""
+import ast
 import os
 from pathlib import Path
 import re
@@ -11,6 +12,23 @@ SERVICES = {'brave-search-mcp': 8766, 'firecrawl-mcp': 8767,
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_all_services_allow_the_gemini_web_callback_prefix(self):
+        expected = 'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*'
+        for service in SERVICES:
+            with self.subTest(service=service):
+                server = 'scripts/mcp_server.py' if service == 'lark-doc' else 'server.py'
+                tree = ast.parse((ROOT / service / server).read_text(encoding='utf-8'))
+                allowlist = next(
+                    node.value for node in tree.body if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == 'ALLOWED_CLIENT_REDIRECT_URIS'
+                            for target in node.targets)
+                )
+                google_callbacks = [
+                    pattern.value for pattern in allowlist.elts if isinstance(pattern, ast.Constant)
+                    and 'oauth-redirect' in pattern.value and '.googleusercontent.com' in pattern.value
+                ]
+                self.assertEqual(google_callbacks, [expected])
+
     def test_all_sites_render_for_custom_hosts_without_nginx_variable_expansion(self):
         zones = []
         for service, port in SERVICES.items():

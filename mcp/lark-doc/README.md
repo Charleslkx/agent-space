@@ -1,10 +1,12 @@
 # Lark Doc MCP
 
-通过 GitHub OAuth 提供飞书文档、Markdown、画板、电子表格与多维表格操作；飞书凭据保存在服务账户状态目录。
+通过 GitHub OAuth 提供飞书文档、Markdown、画板、电子表格与多维表格操作。飞书凭据保存在服务账户状态目录。
+
+文档与 Wiki 的评论支持只读查询，可分页读取评论正文、回复和 Docx 定位信息。用法、权限和验收步骤见[配置文档](CONFIG.md#10-mcp-工具)。
 
 ## 1. 部署入口
 
-Ubuntu／Debian 统一按 [Linux 部署运行手册](../DEPLOYMENT.md)执行。必须复制完整 `mcp/` 目录到 `/opt/mcp/`，保留共享 `scripts/`、隐藏示例文件和锁文件。从 `/opt/mcp/lark-doc` 执行命令。
+Ubuntu／Debian 统一按 [Linux 部署运行手册](../DEPLOYMENT.md)执行。从已审核的分发包解出完整 `mcp/` 目录，保留共享脚本、隐藏示例文件和锁文件。从 `/opt/mcp/lark-doc` 执行命令。
 
 | 项目 | 值 |
 |---|---|

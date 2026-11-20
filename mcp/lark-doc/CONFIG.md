@@ -2,7 +2,7 @@
 
 部署入口：[统一 Linux 部署运行手册](../DEPLOYMENT.md)。首次部署与升级以该手册为准；本文保留服务配置、工具边界和客户端参考。
 
-可分发的 uv 项目：支持飞书电子表格、多维表格及把 Markdown 内容写入飞书 Docx，支持并发批量拉取、并发批量推送、定点修改、创建文档、插入媒体及画板读写。公网部署后可由 ChatGPT、Claude.ai、Claude Desktop 和 Claude Code 通过 OAuth 2.1 连接。
+可分发的 uv 项目：支持飞书电子表格、多维表格及把 Markdown 内容写入飞书 Docx，支持并发批量拉取、并发批量推送、定点修改、创建文档、插入媒体及画板读写。公网部署后可由 ChatGPT、Claude.ai、Claude Desktop、Claude Code 和 Gemini 网页版通过 OAuth 2.1 连接。
 
 > **域名配置**：本文档所有 `{your-domain}` 需替换为实际部署域名（如 `lark-doc.example.com`）。
 
@@ -77,7 +77,7 @@ deploy/python/.venv/bin/python scripts/mcp_server.py --transport http --host 127
 
 固定边界：单批 100 项、每项正文 10 MiB、媒体 20 MiB、每次 `lark-cli` 60 秒；Nginx 另有限制单个请求体大小。批量请求还需按请求总大小拆分。
 
-## 6. ChatGPT 与 Claude 远程部署
+## 6. 远程客户端 OAuth
 
 客户端不会从服务器“自动安装”MCP。它们连接公开 HTTPS `/mcp` 端点；OAuth 客户端可通过 CIMD 或 DCR 自动登记。当前实现使用 FastMCP 的 GitHub OAuth 代理提供 OAuth 2.1、PKCE、CIMD/DCR 和 protected-resource discovery，并只放行 `LARK_MCP_GITHUB_USERS`。
 
@@ -99,6 +99,8 @@ Claude.ai、Claude Desktop、移动端和 Cowork 使用 OAuth 回调 `https://cl
 WorkBuddy 的 Custom MCP 使用固定回调 URI `workbuddy://workbuddy/mcp/custom-mcp%3Alark-doc/oauth/callback`；服务已将该精确 URI 加入 OAuth 白名单。添加连接器后按 WorkBuddy 的 GitHub 授权流程完成登录。
 
 Grok 自定义连接器使用固定回调 URI `https://grok.com/connectors-oauth-exchange-code/`；服务已将该精确 URI（包括末尾 `/`）加入 OAuth 白名单。
+
+Gemini 网页版自定义 MCP 同样填写公开 HTTPS `/mcp` 地址，并完成 GitHub 授权。回调范围和排查步骤见[运行手册的 Gemini 接入说明](../DEPLOYMENT.md#61-gemini-网页版)。
 
 Claude Code 直接添加远程 HTTP MCP；它会发现 OAuth 并在 `/mcp` 中引导认证：
 
@@ -146,6 +148,8 @@ codex mcp add lark-doc \
 
 部署验收按运行手册：未认证请求应返回 `401`；已认证的普通浏览器 GET 仍可能因 Accept 头不符合协议而返回 `406`；用已授权客户端列出工具并对测试文档做一次真实读写。
 
+评论功能单独使用已有评论的测试文档做只读验收。调用 `list_document_comments`，传入文档或 Wiki URL、`solved_status=all` 和较小的 `page_size`，检查返回的评论正文、引用与定位字段。若 `has_more=true`，用 `page_token` 读取下一页。选择一条评论的 `comment_id`，用 `list_document_comment_replies` 核对首条消息与原评论是否一致。调用 `batch_pull(include_comments=true)` 检查随文返回的评论内容。
+
 ## 10. MCP 工具
 
 - `check_lark_cli`：检查 CLI、版本和用户登录态。
@@ -154,6 +158,9 @@ codex mcp add lark-doc \
 - `begin_lark_auth`、`complete_lark_auth`：发起和完成飞书用户授权。
 - `batch_pull`：批量读取 Markdown/XML 与 revision。普通正文使用 Markdown `simple`；当任务依赖 Markdown 无法可靠呈现的格式或原生结构时，使用 XML `full`，包括高亮、文字/背景颜色、下划线、Callout、分栏、引用、书签、URL 预览、按钮、提醒、画板，以及 block ID、样式属性和引用元数据。高亮在 XML 中表示为 `<span background-color="...">`，在 Markdown 中会降级为纯文本。长文档用 `scope` 缩小读取范围：`outline` 只列标题（`max_depth` 限制层级），`keyword` 按关键词取块（`a|b` 表示或），`section` 从标题 `start_block_id` 展开，`range` 读取 `start_block_id` 到 `end_block_id`；后两种只接受一篇文档。
 - `search_documents`：按关键词搜索 Docs、Wiki 和 Sheets，返回相关性排序的候选、摘要和资源标识；`count` 为 1–20。目标文档未知时先搜索，再定位正文。
+- `batch_pull(include_comments=true)`：随正文返回 CLI 提取的 `comments`，其中每项的 `data` 包含评论内容，`tips` 在 CLI 截断评论时提供提示。
+- `list_document_comments`：分页读取评论正文、已包含的回复、引用文本和 Docx 定位信息。支持文档或 Wiki URL，传裸 token 时提供 `file_type`。正文在 `items[].reply_list.replies[0].content.elements`。默认查未解决评论，`solved_status=all` 同时查已解决评论。顶层 `has_more=true` 时传 `page_token` 继续。
+- `list_document_comment_replies`：按 `comment_id` 分页读取完整评论线程。第一页首条是原评论，`items[].content.elements` 保留文字、图片等原始元素。指定 Wiki URL 时，两项评论工具需要飞书评论读取权限 `docs:document.comment:read` 和 Wiki 节点读取权限 `wiki:node:retrieve`。
 - `find_document_text`：按精确文本返回有限上下文，不向模型返回全文；用于局部编辑前定位句子。传 `doc_format=xml`、`detail=with-ids` 时片段带 block ID，供 `block_update` 和 `insert_media` 定位。
 - `batch_push`：批量覆盖或追加 Markdown/XML；Markdown 写入前按“10.1. 写入约定”规整（代码块中的字面量不转换）。lark-cli 报告写入失败时立即报错，不中继为成功。写入的高亮块 emoji 被飞书替换为 💡 时，结果带 `format_warnings`。
 - `point_update`：仅在旧文本唯一命中时精确替换或删除；`pattern` 或 `replacement` 含块级标签（如 `<h2>`、`<p>`、`<callout>`）时直接拒绝，改用 `block_update`，避免飞书丢弃块属性却报告成功；重复命中时先调用 `find_document_text` 缩小目标。lark-cli 报告写入失败时抛错，并附带失败后的文档状态（revision、替换文本是否已部分写入、原文尾部是否完整），用于区分"未生效"与"部分应用/截断"。
@@ -193,8 +200,9 @@ Markdown 写入（`batch_push`、`create_document`、`point_update` 的替换文
 
 ## 11. 分发检查
 
+从[已审核的 MCP 分发包](../DEPLOYMENT.md#91-生成并审核分发包)部署。仓库维护者先检查公开源，再检查实际归档。
+
 ```bash
-rg -n '/Users/|\.agents/skills' . --hidden -g '!uv.lock'
 bash ../scripts/check-python.sh --setup
 python3 ../scripts/prepare-python.py lark-doc --native
 ```
