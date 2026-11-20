@@ -24,7 +24,7 @@
 
 以下命令每块逐条执行，任意一步失败即停止并修复；不要把失败后的后续命令继续粘贴执行。
 
-将仓库的**整个 `mcp/` 目录**复制到 `/opt/mcp/`，保留隐藏文件、锁文件和 `scripts/`，排除 `.venv`、缓存、`.env`、运行凭据、`.lark_publish` 以及其他机器的 `deploy/*.version`、`deploy/python/`、`python/` 等本机记录和运行数据。所有示例在同一 Bash 会话中执行。代码升级时只同步代码，不覆盖 `/etc`、`/var/lib` 或本机的 `deploy/*.version`、`deploy/python/`、`python/`。
+使用第 9.1 节生成的已审核分发包。先在目标服务器验证随包提供的 SHA-256 校验文件。首次安装时将整个 `mcp/` 解到 `/opt`，部署路径为 `/opt/mcp/`。已有实例先解到临时目录，再按第 7 节备份并同步代码。保留 `/etc`、`/var/lib`、Compose 持久卷以及本机的 `deploy/*.version`、`deploy/python/` 和 `python/`。部署示例在同一 Bash 会话中执行。
 
 ```bash
 # 用表中当前要部署的服务和实际域名替换这两个值。
@@ -209,6 +209,12 @@ codex mcp login "$SERVICE"
 
 GUI 客户端添加远程 URL 并完成 OAuth；具体回调兼容范围见各服务文档。部署报告记录系统、架构、代码 commit、镜像 ID／CLI 版本、配置文件路径、服务名、MCP URL、验收结果；不记录凭据或 OAuth code。
 
+### 6.1 Gemini 网页版
+
+在 Gemini 网页版添加自定义 MCP，填入 `https://实际域名/mcp`，并在授权页完成 GitHub 登录。五个服务都允许 `https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*`，匹配 Google 生产域名和网页自定义 MCP 的回调前缀。GitHub OAuth App 的回调仍填写服务自己的 `https://实际域名/auth/callback`。Gemini CLI 使用本地回环回调。[Google OAuth 2.1 接入指南](https://developers.google.com/connected-apps/mcp/oauth)
+
+若遇到 `does not match allowed patterns`，先确认运行中的镜像或 systemd 进程已加载包含新规则的代码，再在 Gemini 重试授权。动态注册成功只验证了注册入口，验收还需确认发起授权后能打开同意页。最终在 Gemini 完成 GitHub 登录并执行一次第 6 节的最小业务调用。
+
 ## 7. 运维、备份与回滚
 
 | 操作 | Compose | Lark Doc |
@@ -227,7 +233,15 @@ sudo docker image tag "$(sudo docker compose images -q mcp)" "$ROLLBACK_IMAGE"
 
 记录代码 commit 和当前镜像 ID，停止服务后备份两个 `/etc` 环境文件和 Compose 命名卷；三种 CLI 服务还备份对应的 `deploy/*-cli.version`；所有 MCP 备份 `deploy/python/`；Lark Doc 备份 `/etc/lark-doc.env`、`/var/lib/lark-doc`。代码、锁文件、CLI 版本与备份一起记录；存储密钥必须与 Redis 数据配套恢复。备份加密存储，复制命名卷时保持 UID／GID，恢复到同一 Compose 项目路径。升级或停止均不执行 `down -v`。
 
-Compose 升级：更新代码后在服务目录运行测试和 `config --quiet`，构建后 `up -d --wait`，重复第 6 节。失败则恢复旧代码并用旧镜像 tag 的 Compose override 替换 `mcp.image`，执行 `up -d --no-build --wait`；只恢复代码不会自动切回旧镜像。涉及存储格式变化时同时恢复配套卷与环境文件。回滚命令在原服务目录执行：
+Compose 升级：更新代码后在服务目录运行测试和 `config --quiet`。只有 MCP 代码变化且依赖服务健康时，可以仅构建并更新 `mcp`，沿用镜像缓存和本机版本记录。涉及 Compose 拓扑、依赖服务或存储格式变更时，按第 4 节启动完整项目并验证相关服务。
+
+```bash
+sudo docker compose config --quiet
+sudo docker compose build mcp
+sudo docker compose up -d --no-deps --no-build --pull never --wait --wait-timeout 180 mcp
+```
+
+更新后重做第 6 节验收。失败时恢复旧代码，并用旧镜像 tag 的 Compose override 替换 `mcp.image`。涉及存储格式变化时同时恢复配套卷与环境文件。回滚命令在原服务目录执行。下例针对标准 `compose.yaml`，已有本地 override 时在 `-f compose.yaml` 之后、回滚 override 之前一并传入。
 
 ```bash
 printf 'services:\n  mcp:\n    image: %s:rollback\n' "$SERVICE" > /tmp/mcp-rollback.yaml
@@ -236,7 +250,7 @@ sudo docker compose -f compose.yaml -f /tmp/mcp-rollback.yaml up -d --no-build -
 
 后续操作继续传同一 override，直到再次部署新版本；保存的 rollback tag 在下一次覆盖前已完成本轮验收。
 
-Lark Doc 升级：停止服务、记录旧 CLI 和虚拟环境，更新代码后使用现有 `deploy/python/.venv` 测试和运行，不重新解析依赖，运行测试后重启并验收。回滚时恢复旧代码／锁文件及 CLI，再同步旧依赖和重启。OAuth 数据存储位置跟随 FastMCP 的默认实现，`/var/lib/lark-doc` 整体备份；恢复后仍需验证客户端会话。
+Lark Doc 升级：停止服务、记录旧 CLI 和虚拟环境，更新代码后使用现有 `deploy/python/.venv` 测试和运行，不重新解析依赖。测试后重启，等待本机 `http://127.0.0.1:8765/.well-known/oauth-authorization-server` 返回 200，再进行第 6 节验收。为 Python 导入及启动预留最多 60 秒，超时后查服务日志并按失败处理。回滚时恢复旧代码／锁文件及 CLI，再同步旧依赖和重启。OAuth 数据存储位置跟随 FastMCP 的默认实现，`/var/lib/lark-doc` 整体备份；恢复后仍需验证客户端会话。
 
 ### 7.1. 应用依赖版本规则
 
@@ -266,14 +280,46 @@ sudo python3 ../scripts/prepare-python.py "$SERVICE" --upgrade
 | Nginx 检查失败 | 占位符、证书路径、重复 zone／server_name、`nginx -t` 输出 |
 | 502 或容器启动失败 | 服务日志、依赖、回环端口和必填配置 |
 | systemd 启动被限制 | 修复日志指出的问题后 `sudo systemctl reset-failed lark-doc-mcp` 并重启 |
-| OAuth 回调失败 | App callback、BASE_URL、公开域名、全路径反向代理是否一致 |
+| GitHub OAuth App 回调失败 | App callback、BASE_URL、公开域名、全路径反向代理是否一致 |
+| Gemini 回调提示 `does not match allowed patterns` | 确认已更新运行版本，按第 6.1 节重试并验证同意页 |
 | 飞书身份异常 | 是否用相同账户和 HOME／XDG，持久卷是否恢复，scope 是否授权 |
 
 ## 9. 上游依据与验证边界
 
 安装方法依据 [Docker Ubuntu 文档](https://docs.docker.com/engine/install/ubuntu/)和 [Docker Debian 文档](https://docs.docker.com/engine/install/debian/)，systemd 单元依据 [systemd.unit](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html)，Python 安装路径依据 [uv 环境变量](https://docs.astral.sh/uv/reference/environment/#uv_python_install_dir)，证书使用 [Certbot webroot](https://eff-certbot.readthedocs.io/en/stable/using.html#webroot)。部署 Python 依赖以本机 `deploy/python/uv.lock` 为准，源码 `uv.lock` 是维护时的开发参考；CLI 版本以本机 `deploy/*-cli.version` 为准，容器基础镜像仍使用版本标签；严格逐位复现需在实际构建后记录镜像 digest 并使用 digest 部署。
 
-仓库发布前运行 `python3 -B skills/scripts/check_public_sources.py` 检查 MCP／Skills 分发源，并人工复核凭据、用户标识与最终 diff。单独复制到服务器的 MCP 包不依赖该仓库级脚本。
+### 9.1 生成并审核分发包
+
+在仓库根目录先同步当前分支的远端引用，再开始修改。提交前按 `AGENTS.md` 检查变更范围、执行测试，并复核最终 diff 和公开信息。示例值使用明确的占位符。真实主机名、账户标识、Gemini 连接器 ID 和凭据仅保存在目标环境。
+
+```bash
+bash mcp/scripts/check-python.sh --runtime
+python3 -B skills/scripts/check_public_sources.py
+python3 -B -m unittest discover -s mcp/tests -v
+git diff --check
+git diff --cached --check
+```
+
+从已审核的提交生成 MCP 归档，并检查实际压缩包。归档只取该提交记录的 `mcp/`，包含共享脚本、隐藏示例和锁文件。扫描会检查凭据和标识的常见形态、链接、二进制文件以及本机运行数据或版本记录。审核最终清单和内容后，随包交付校验文件。源检查脚本留在仓库侧。
+
+```bash
+(
+  set -euo pipefail
+  commit=$(git rev-parse --verify 'HEAD^{commit}')
+  package="mcp-${commit:0:12}.tar.gz"
+  mkdir -p dist
+  staging=$(mktemp -d dist/.mcp-release.XXXXXXXX)
+  trap 'rm -rf -- "$staging"' EXIT
+  git archive --format=tar.gz --output="$staging/$package" "$commit" mcp
+  python3 -B skills/scripts/check_public_sources.py --archive "$staging/$package"
+  (cd "$staging" && sha256sum "$package" > "$package.sha256")
+  mv -- "$staging/$package" "$staging/$package.sha256" dist/
+)
+```
+
+将归档及校验文件放在同一目录，在目标服务器运行 `sha256sum -c mcp-<提交标识>.tar.gz.sha256`，将文件名替换为实际交付文件。校验通过后按第 2 节部署。
+
+### 9.2 测试与生产验收
 
 本地验证命令：
 

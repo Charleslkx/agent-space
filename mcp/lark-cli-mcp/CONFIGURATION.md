@@ -125,6 +125,8 @@ OpenCode 的 `opencode.json`：
 
 Grok 自定义连接器使用固定回调 URI `https://grok.com/connectors-oauth-exchange-code/`；服务已将该精确 URI（包括末尾 `/`）加入 OAuth 白名单。
 
+Gemini 网页版自定义 MCP 同样填写公开 HTTPS `/mcp` 地址，并完成 GitHub 授权。回调范围和排查步骤见[运行手册的 Gemini 接入说明](../DEPLOYMENT.md#61-gemini-网页版)。
+
 ## 8. 更新、备份和恢复
 
 工具响应中的 `update_available` 只表示官方发布了较新的稳定版。检查或升级：

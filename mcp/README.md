@@ -4,7 +4,9 @@
 
 首次配置时动态获取官方当时的最新稳定应用版本；已有安装复用当前版本，明确升级时重新查询。运行平台保留兼容范围。
 
-五个远程 MCP 的 Ubuntu／Debian 部署统一从 [DEPLOYMENT.md](DEPLOYMENT.md) 开始。复制完整本目录到 `/opt/mcp/`，共享脚本随服务一起保留。
+五个远程 MCP 的 Ubuntu／Debian 部署统一从 [DEPLOYMENT.md](DEPLOYMENT.md) 开始。安装使用[已审核的分发包](DEPLOYMENT.md#91-生成并审核分发包)，共享脚本、配置示例和锁文件随服务一起保留。
+
+五个服务均支持 [Gemini 网页版自定义 MCP](DEPLOYMENT.md#61-gemini-网页版)，通过公开 HTTPS 地址连接并完成 GitHub 授权。
 
 | 服务 | 配置参考 |
 |---|---|

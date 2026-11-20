@@ -6,7 +6,7 @@
 
 ## 1. 部署入口
 
-Ubuntu／Debian 统一按 [Linux 部署运行手册](../DEPLOYMENT.md)执行。必须复制完整 `mcp/` 目录到 `/opt/mcp/`，保留共享 `scripts/`、隐藏示例文件和锁文件。从 `/opt/mcp/lark-doc` 执行命令。
+Ubuntu／Debian 统一按 [Linux 部署运行手册](../DEPLOYMENT.md)执行。从已审核的分发包解出完整 `mcp/` 目录，保留共享脚本、隐藏示例文件和锁文件。从 `/opt/mcp/lark-doc` 执行命令。
 
 | 项目 | 值 |
 |---|---|

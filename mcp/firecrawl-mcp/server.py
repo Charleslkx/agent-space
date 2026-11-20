@@ -49,6 +49,7 @@ ALLOWED_CLIENT_REDIRECT_URIS = [
     "https://claude.ai/api/mcp/auth_callback",
     GROK_REDIRECT_URI,
     CURSOR_REDIRECT_URI,
+    "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*",
     WORKBUDDY_REDIRECT_URI,
     "http://localhost:*",
     "http://127.0.0.1:*",

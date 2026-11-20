@@ -8,6 +8,7 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import types
 import unittest
@@ -202,6 +203,54 @@ class PublicSourceTests(unittest.TestCase):
         found = PRIVACY.findings('first line\n' + value)
         self.assertEqual(found, [(2, 'Feishu identity')])
         self.assertNotIn(value, str(found))
+
+    def check_mcp_archive(self, entries):
+        required = dict.fromkeys(PRIVACY.MCP_REQUIRED_FILES, b'# Source fixture')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'mcp.tar.gz'
+            with tarfile.open(path, 'w:gz') as archive:
+                for name, content in {**required, **entries}.items():
+                    member = tarfile.TarInfo(name)
+                    if content is None:
+                        member.type = tarfile.SYMTYPE
+                        member.linkname = 'outside'
+                        archive.addfile(member)
+                    else:
+                        member.size = len(content)
+                        archive.addfile(member, io.BytesIO(content))
+            with redirect_stdout(io.StringIO()) as output:
+                checked, found = PRIVACY.scan_mcp_archive(path)
+        return checked, found, output.getvalue()
+
+    def test_mcp_archive_accepts_environment_templates_and_callback_pattern(self):
+        checked, found, _ = self.check_mcp_archive({
+            'mcp/example-service/.env.example': b'API_KEY=your-api-key',
+            'mcp/example-service/.redis.env.example': b'REDIS_PASSWORD=your-password',
+            'mcp/example-service/server.py': b'user_bound_custom-mcp-*',
+        })
+        self.assertEqual((checked, found), (len(PRIVACY.MCP_REQUIRED_FILES) + 3, 0))
+
+    def test_mcp_archive_rejects_local_state_links_and_connector_ids(self):
+        connector = 'user_bound_custom-mcp-' + 'a' * 32
+        checked, found, output = self.check_mcp_archive({
+            'mcp/example-service/.env': b'placeholder',
+            'mcp/example-service/deploy/python/uv.lock': b'placeholder',
+            'mcp/example-service/deploy/example-cli.version': b'1.0.0',
+            'mcp/example-service/.lark_publish/file.md': b'placeholder',
+            'mcp/example-service/link': None,
+            'mcp/example-service/binary': b'\x00',
+            'mcp/example-service/README.md': connector.encode(),
+            'mcp/../outside': b'placeholder',
+        })
+        self.assertEqual((checked, found), (len(PRIVACY.MCP_REQUIRED_FILES) + 1, 8))
+        self.assertIn('Gemini connector ID', output)
+        self.assertNotIn(connector, output)
+
+    def test_mcp_archive_rejects_missing_service_entry_point(self):
+        path = 'mcp/lark-doc/scripts/mcp_server.py'
+        _, found, output = self.check_mcp_archive({path: None})
+        self.assertEqual(found, 2)
+        self.assertIn(f'{path}: missing required distribution file', output)
 
 
 if __name__ == '__main__':
