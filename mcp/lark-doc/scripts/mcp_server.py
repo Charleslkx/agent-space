@@ -95,6 +95,8 @@ APP_SETUP_COMPLETE_TIMEOUT_SECONDS = 5
 APP_SETUP_URL = re.compile(rb"https://[^\s\x1b]+")
 
 DocFormat = Literal["markdown", "xml"]
+CommentFileType = Literal["doc", "docx", "sheet", "file", "slides", "bitable", "base", "apps", "wiki"]
+CommentPageSize = Annotated[int, Field(ge=1, le=100)]
 
 
 def _is_punct(char: str) -> bool:
@@ -410,6 +412,9 @@ mcp = FastMCP(
         "After point_update, verify with find_document_text using the "
         "replacement (or the removed text for deletion); use batch_pull only after an error, "
         "a format-sensitive operation, or an explicit verification request. "
+        "Use list_document_comments to read comment bodies, replies and available anchors. "
+        "Use list_document_comment_replies when a comment card has more replies. "
+        "Use batch_pull(include_comments=true) for compact comment context alongside the document. "
         "Use sheets_info before sheets_read/sheets_write; these tools handle electronic spreadsheets. "
         "Use base_inspect for multidimensional Base tables/fields/views, base_query_records to read "
         "and base_write_records to write records. Do not use Docx tools on sheet/Base resources. "
@@ -1169,6 +1174,7 @@ def batch_pull(
     end_block_id: str | None = None,
     keyword: str | None = None,
     max_depth: int | None = None,
+    include_comments: bool = False,
 ) -> list[dict]:
     """Fetch documents concurrently; results remain in input order.
 
@@ -1188,6 +1194,9 @@ def batch_pull(
     bookmarks, URL previews, buttons, reminders, whiteboards, block IDs, style
     attributes, or reference metadata. Highlights are returned as
     <span background-color="..."> in XML but degrade to plain text in Markdown.
+
+    include_comments returns the compact comment content supplied by document fetch.
+    Use list_document_comments for paginated results or when fetch truncates comments.
     """
     _check_lark_cli()
     if doc_format not in {"markdown", "xml"}:
@@ -1209,11 +1218,15 @@ def batch_pull(
             )
         except RuntimeError as error:
             raise _batch_failure("batch_pull", index, doc, 0, error) from error
-        return {
+        result = {
             "doc": doc,
             "revision_id": document.get("revision_id"),
             "content": document.get("content", ""),
         }
+        if include_comments:
+            reference_map = document.get("reference_map") or {}
+            result["comments"] = reference_map.get("comments") or {}
+        return result
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = [executor.submit(pull_one, index, doc) for index, doc in enumerate(documents)]
@@ -1227,6 +1240,91 @@ def batch_pull(
                 failure.details["other_requests_may_have_completed"] = workers > 1
                 raise failure from error
     return pulled
+
+
+def _read_comment_page(
+    command: str,
+    doc: str,
+    file_type: CommentFileType | None,
+    page_size: int,
+    page_token: str | None,
+    options: list[str],
+) -> dict:
+    doc = doc.strip()
+    if not doc:
+        raise ValueError("doc must not be empty")
+    is_url = doc.startswith(("https://", "http://"))
+    if not is_url and not file_type:
+        raise ValueError("file_type is required for a bare document or Wiki token")
+    args = [
+        "drive", command, "--as", "user", "--format", "json",
+        f"--{'url' if is_url else 'token'}={doc}", f"--page-size={page_size}",
+        *options,
+    ]
+    if file_type:
+        args.append(f"--type={file_type}")
+    if page_token:
+        args.append(f"--page-token={page_token}")
+    _check_lark_cli()
+    result = _run_cli(args, f"drive {command}")
+    if result.get("ok") is False:
+        raise LarkCLIError({"operation": command, "error": "remote_error", "result": result})
+    data = result.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        raise LarkCLIError({
+            "operation": command,
+            "error": "invalid_response",
+            "message": "missing data.items array",
+        })
+    return data
+
+
+@mcp.tool(title="Read Lark document comments", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+def list_document_comments(
+    doc: str,
+    file_type: CommentFileType | None = None,
+    solved_status: Literal["false", "true", "all"] = "false",
+    comment_scope: Literal["all", "whole", "partial"] = "all",
+    page_size: CommentPageSize = 50,
+    page_token: str | None = None,
+) -> dict:
+    """Read one page of comment cards from a document URL (including Wiki) or token.
+
+    For a bare token, supply file_type (wiki for a Wiki node). solved_status defaults
+    to unresolved ("false"); use "true" for resolved or "all" for both. comment_scope
+    selects whole-document comments, selected-content comments ("partial"), or both.
+
+    items[].reply_list.replies[0].content.elements holds the comment body, followed
+    by any included replies. quote is the cited document text. For Docx, available
+    relation fields identify the comment's location. Top-level has_more/page_token
+    paginate cards. When items[].has_more is true, use list_document_comment_replies.
+    """
+    return _read_comment_page(
+        "+list-comments", doc, file_type, page_size, page_token,
+        [f"--solved-status={solved_status}", f"--comment-scope={comment_scope}", "--need-relation"],
+    )
+
+
+@mcp.tool(title="Read Lark document comment replies", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+def list_document_comment_replies(
+    doc: str,
+    comment_id: str,
+    file_type: CommentFileType | None = None,
+    page_size: CommentPageSize = 50,
+    page_token: str | None = None,
+) -> dict:
+    """Read one page of messages for a comment_id from list_document_comments.
+
+    Provide a document URL (including Wiki) or a token with file_type. Message
+    contents are in items[].content.elements. The first item on the first page
+    is the original comment. When has_more is true, pass page_token to continue.
+    """
+    if not comment_id.strip():
+        raise ValueError("comment_id must not be empty")
+    return _read_comment_page(
+        "+list-replies", doc, file_type, page_size, page_token,
+        [f"--comment-id={comment_id.strip()}"],
+    )
 
 
 @mcp.tool(title="Find document text snippets", meta=TOOL_META, annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
