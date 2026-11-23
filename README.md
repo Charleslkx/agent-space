@@ -7,6 +7,7 @@
 │   ├── DEPLOYMENT.md
 │   ├── README.md
 │   ├── brave-search-mcp
+│   ├── colab-cli-mcp
 │   ├── exa-mcp
 │   ├── firecrawl-mcp
 │   ├── lark-cli-mcp

@@ -2,7 +2,7 @@
 
 版本策略按执行时点生效：未来首次配置时实时查询官方当时的最新稳定版，不以本文编写日期或仓库开发锁文件中的版本作为安装默认值。已有安装保留当前版本，明确升级时才重新查询。
 
-本文件是五个服务的统一部署入口；从任意服务的 README 或配置文档进入后，按本文件顺序执行。配置文档保留各服务的环境变量、工具边界和认证细节。默认架构采用独立域名、Nginx、Let's Encrypt、GitHub OAuth；四个服务采用 Docker Compose，Lark Doc 采用 systemd。部署工作目录固定为 `/opt/mcp/<服务名>`。所有示例域名、凭据和用户标识均为占位值；真实配置只在目标服务器的私有环境文件中填写，不回写源码或部署记录。
+本文件是六个服务的统一部署入口；从任意服务的 README 或配置文档进入后，按本文件顺序执行。配置文档保留各服务的环境变量、工具边界和认证细节。默认架构采用独立域名、Nginx、Let's Encrypt、GitHub OAuth；五个服务采用 Docker Compose，Lark Doc 采用 systemd。部署工作目录固定为 `/opt/mcp/<服务名>`。所有示例域名、凭据和用户标识均为占位值；真实配置只在目标服务器的私有环境文件中填写，不回写源码或部署记录。
 
 ## 1. 支持范围与部署输入
 
@@ -12,13 +12,14 @@
 | `firecrawl-mcp` | `firecrawl.example.com` | 8767 | `FIRECRAWL_MCP` | `firecrawl_register` | Compose |
 | `exa-mcp` | `exa.example.com` | 8769 | `EXA_MCP` | `exa_register` | Compose |
 | `lark-cli-mcp` | `lark.example.com` | 8768 | `LARK_CLI_MCP` | `lark_cli_register` | Compose |
+| `colab-cli-mcp` | `colab.example.com` | 8770 | `COLAB_MCP` | `colab_register` | Compose |
 | `lark-doc` | `lark-doc.example.com` | 8765 | `LARK_MCP` | `lark_doc_register` | systemd |
 
 - 系统：Ubuntu 22.04、24.04、26.04、26.10，Debian 12、13；systemd；amd64 或 arm64。每个实例至少预留 1 GiB 内存、2 GiB 磁盘，多个实例需累加并预留构建空间。
-- 必填输入：服务名、小写公开域名、独立 GitHub OAuth App 的 Client ID／Secret、允许访问的 GitHub login，以及 Brave／Firecrawl／Exa 对应的 API Key。飞书服务还需要交互式完成应用绑定和用户授权。
-- DNS：域名的全部 A／AAAA 记录指向当前服务器；没有 IPv6 服务时删除 AAAA。开放入站 TCP 80、443，保留管理员 SSH 入口；不开放 8765–8769 和 Redis。出站需访问软件源、GitHub、容器仓库及上游 API。
+- 必填输入：服务名、小写公开域名、独立 GitHub OAuth App 的 Client ID／Secret、允许访问的 GitHub login，以及 Brave／Firecrawl／Exa 对应的 API Key。飞书服务还需要交互式完成应用绑定和用户授权。Colab 需要在目标服务器准备专用 Google 用户的 ADC 文件。
+- DNS：域名的全部 A／AAAA 记录指向当前服务器；没有 IPv6 服务时删除 AAAA。开放入站 TCP 80、443，保留管理员 SSH 入口；不开放 8765–8770 和 Redis。出站需访问软件源、GitHub、容器仓库及上游 API。
 - 同机服务共用 Nginx；已有 Caddy／Apache 占用 80／443 时，先选择并配置唯一入口。本手册的 Nginx 安装流程不能直接用于该场景。已有 Lark Caddy 辅助脚本属于独立部署方式。
-- Agent 缺少以上输入时报告缺项；已有实例先检查环境文件和运行状态，禁止用示例覆盖实际配置。GitHub 和飞书浏览器授权由用户完成。
+- Agent 缺少以上输入时报告缺项；已有实例先检查环境文件和运行状态，禁止用示例覆盖实际配置。GitHub、飞书和 Google 浏览器授权由用户完成。
 
 ## 2. 准备代码与宿主机
 
@@ -37,7 +38,7 @@ sudo env DOMAIN="$DOMAIN" bash scripts/ubuntu.sh install
 sudo env DOMAIN="$DOMAIN" bash scripts/ubuntu.sh check
 ```
 
-`ubuntu.sh` 是兼容入口，Ubuntu／Debian 共用 `../scripts/linux.sh`；Lark 也接受旧的 `BASE_DOMAIN` 输入，统一流程使用完整 `DOMAIN`。四个 Compose 服务的安装器使用 Docker 官方 apt 源，验证 Compose 插件和 daemon，不自动移除已有容器运行时。已具备依赖的服务器只运行 `check`；它会报告已占用的应用端口，管理员需确认是否属于当前实例。安装模式拒绝占用的应用端口。
+`ubuntu.sh` 是兼容入口，Ubuntu／Debian 共用 `../scripts/linux.sh`；Lark 也接受旧的 `BASE_DOMAIN` 输入，统一流程使用完整 `DOMAIN`。五个 Compose 服务的安装器使用 Docker 官方 apt 源，验证 Compose 插件和 daemon，不自动移除已有容器运行时。已具备依赖的服务器只运行 `check`；它会报告已占用的应用端口，管理员需确认是否属于当前实例。安装模式拒绝占用的应用端口。
 
 DNS 预检只验证有解析结果，公网可达性必须从服务器外验证。`install` 首次会安装并启动所需的 Docker／Nginx；其他站点配置保持各自管理。
 
@@ -81,19 +82,21 @@ openssl rand -base64 32 | tr '+/' '-_' # STORAGE_KEY：Fernet URL-safe base64，
 openssl rand -hex 32                 # REDIS_PASSWORD
 ```
 
-Lark Doc 只使用 JWT 项，其余四个服务还需 `STORAGE_KEY`、`REDIS_PASSWORD`，并建立独立 Redis 环境文件：
+Lark Doc 只使用 JWT 项，其余五个服务还需 `STORAGE_KEY`、`REDIS_PASSWORD`，并建立独立 Redis 环境文件：
 
 ```bash
-# 仅四个 Compose 服务执行。
+# 仅五个 Compose 服务执行。
 sudo test -e "/etc/$SERVICE.redis.env" || sudo install -o root -g root -m 600 .redis.env.example "/etc/$SERVICE.redis.env"
 sudoedit "/etc/$SERVICE.redis.env"
 ```
 
 两个文件中的 `<前缀>_REDIS_PASSWORD` 必须完全一致。Redis 环境文件只存 Redis 密码，不存上游凭据。环境文件每行 `NAME=value`，密钥值不包含 `$`、空格或换行；不把这些文件作为 shell 脚本执行。配置项的完整定义见对应服务的 `CONFIGURATION.md` 或 `CONFIG.md`。
 
+Colab 的 ADC 文件必须在 Compose 启动前准备。授权与文件权限见 [Colab 配置](colab-cli-mcp/CONFIGURATION.md#3-google-授权)。
+
 ## 4. 启动服务
 
-### 4.1. 四个 Compose 服务
+### 4.1. 五个 Compose 服务
 
 ```bash
 sudo docker compose config --quiet
@@ -117,6 +120,8 @@ sudo docker compose exec mcp lark-cli auth status --json --verify
 ```
 
 已有应用／登录态时先检查，避免重新创建或替换共享身份。共享身份供所有 GitHub 白名单用户使用。具体权限和应用复用方式见 Lark 配置文档。
+
+Colab 启动后按配置文档检查 ADC 权限和 `colab usage`。Colab CLI 通过 `deploy/python/uv.lock` 与 Python 依赖一起解析、冻结和升级。
 
 ### 4.2. Lark Doc systemd 服务
 
@@ -184,12 +189,14 @@ sudo certbot renew --dry-run
 从服务器外执行并检查状态码、发现文档中的 origin：
 
 ```bash
-curl -sS -o /dev/null -w '%{http_code}\n' "https://$DOMAIN/mcp"
+curl -sS -o /dev/null -w '%{http_code}\n' "https://$DOMAIN/mcp" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"deployment-check","version":"1"}}}'
 curl -fsS "https://$DOMAIN/.well-known/oauth-protected-resource/mcp"
 curl -fsS "https://$DOMAIN/.well-known/oauth-authorization-server"
 ```
 
-未认证 `/mcp` 应返回 401，两个发现端点应返回 200 和正确的 HTTPS URL。随后用支持 OAuth 的 MCP 客户端添加 `https://实际DOMAIN/mcp`，完成 GitHub 登录，确认白名单用户可登录、非白名单用户无法取得工具权限，执行 `tools/list`，再实际调用一个工具：
+未认证的 MCP 初始化请求应返回 401，两个发现端点应返回 200 和正确的 HTTPS URL。随后用支持 OAuth 的 MCP 客户端添加 `https://实际DOMAIN/mcp`，完成 GitHub 登录，确认白名单用户可登录、非白名单用户无法取得工具权限，执行 `tools/list`，再实际调用一个工具：
 
 | 服务 | 最小业务验收 |
 |---|---|
@@ -197,6 +204,7 @@ curl -fsS "https://$DOMAIN/.well-known/oauth-authorization-server"
 | Firecrawl | 一次 `search` 查询，检查退出码和结果 |
 | Exa | 一次实际搜索；`tools/list` 不能证明 API Key 有效，可额外运行 `sudo scripts/apikey.sh verify` |
 | Lark CLI | 检查身份后读取一个已授权资源，检查退出码 |
+| Colab CLI | `usage` 后创建命名 CPU 会话，执行 `print(2 + 2)`，验证后停止该会话 |
 | Lark Doc | `check_lark_cli` 后读取一个已授权测试文档 |
 
 业务调用可能消耗上游额度。读写能力验收使用明确授权的测试文档。CLI 客户端例如：
@@ -211,7 +219,7 @@ GUI 客户端添加远程 URL 并完成 OAuth；具体回调兼容范围见各�
 
 ### 6.1 Gemini 网页版
 
-在 Gemini 网页版添加自定义 MCP，填入 `https://实际域名/mcp`，并在授权页完成 GitHub 登录。五个服务都允许 `https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*`，匹配 Google 生产域名和网页自定义 MCP 的回调前缀。GitHub OAuth App 的回调仍填写服务自己的 `https://实际域名/auth/callback`。Gemini CLI 使用本地回环回调。[Google OAuth 2.1 接入指南](https://developers.google.com/connected-apps/mcp/oauth)
+在 Gemini 网页版添加自定义 MCP，填入 `https://实际域名/mcp`，并在授权页完成 GitHub 登录。六个服务都允许 `https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*`，匹配 Google 生产域名和网页自定义 MCP 的回调前缀。GitHub OAuth App 的回调仍填写服务自己的 `https://实际域名/auth/callback`。Gemini CLI 使用本地回环回调。[Google OAuth 2.1 接入指南](https://developers.google.com/connected-apps/mcp/oauth)
 
 若遇到 `does not match allowed patterns`，先确认运行中的镜像或 systemd 进程已加载包含新规则的代码，再在 Gemini 重试授权。动态注册成功只验证了注册入口，验收还需确认发起授权后能打开同意页。最终在 Gemini 完成 GitHub 登录并执行一次第 6 节的最小业务调用。
 
@@ -231,7 +239,7 @@ ROLLBACK_IMAGE="$SERVICE:rollback"
 sudo docker image tag "$(sudo docker compose images -q mcp)" "$ROLLBACK_IMAGE"
 ```
 
-记录代码 commit 和当前镜像 ID，停止服务后备份两个 `/etc` 环境文件和 Compose 命名卷；三种 CLI 服务还备份对应的 `deploy/*-cli.version`；所有 MCP 备份 `deploy/python/`；Lark Doc 备份 `/etc/lark-doc.env`、`/var/lib/lark-doc`。代码、锁文件、CLI 版本与备份一起记录；存储密钥必须与 Redis 数据配套恢复。备份加密存储，复制命名卷时保持 UID／GID，恢复到同一 Compose 项目路径。升级或停止均不执行 `down -v`。
+记录代码 commit 和当前镜像 ID，停止服务后备份两个 `/etc` 环境文件和 Compose 命名卷；三种 CLI 服务还备份对应的 `deploy/*-cli.version`；所有 MCP 备份 `deploy/python/`；Colab 还需随卷备份只读挂载的 ADC 文件；Lark Doc 备份 `/etc/lark-doc.env`、`/var/lib/lark-doc`。代码、锁文件、CLI 版本与备份一起记录；存储密钥必须与 Redis 数据配套恢复。备份加密存储，复制命名卷时保持 UID／GID，恢复到同一 Compose 项目路径。升级或停止均不执行 `down -v`。
 
 Compose 升级：更新代码后在服务目录运行测试和 `config --quiet`。只有 MCP 代码变化且依赖服务健康时，可以仅构建并更新 `mcp`，沿用镜像缓存和本机版本记录。涉及 Compose 拓扑、依赖服务或存储格式变更时，按第 4 节启动完整项目并验证相关服务。
 
@@ -329,4 +337,4 @@ python3 -B -m unittest discover -s /opt/mcp/tests -v
 
 各项目的开发测试命令见各自 README。模板测试检查自定义域名、回环端口、Nginx 变量保留和同机限流区唯一性。
 
-本地语法、模板和单元测试不等同于生产部署验收。Ubuntu／Debian 的真实安装、证书签发、GitHub／飞书交互授权和外部客户端业务调用，以目标服务器第 6 节的记录为最终结果。
+本地语法、模板和单元测试不等同于生产部署验收。Ubuntu／Debian 的真实安装、证书签发、GitHub／飞书／Google 交互授权和外部客户端业务调用，以目标服务器第 6 节的记录为最终结果。

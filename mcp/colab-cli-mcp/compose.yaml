@@ -1,0 +1,106 @@
+services:
+  mcp:
+    build: .
+    env_file: ${COLAB_MCP_ENV_FILE:-/etc/colab-cli-mcp.env}
+    environment:
+      COLAB_MCP_REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy
+      state-init:
+        condition: service_completed_successfully
+    volumes:
+      - colab-state:/var/lib/colab-mcp
+      - type: bind
+        source: ${COLAB_MCP_ADC_PATH:-/etc/colab-cli-mcp/adc.json}
+        target: /run/colab/adc.json
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "127.0.0.1:8770:8765"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: 768m
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8765), 2).close()"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7.4-alpine
+    user: "999:1000"
+    env_file: ${COLAB_MCP_REDIS_ENV_FILE:-/etc/colab-cli-mcp.redis.env}
+    depends_on:
+      redis-init:
+        condition: service_completed_successfully
+    command: ["sh", "-ec", "exec redis-server --appendonly yes --requirepass \"$$COLAB_MCP_REDIS_PASSWORD\""]
+    volumes:
+      - redis-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    mem_limit: 256m
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$COLAB_MCP_REDIS_PASSWORD\" ping | grep -qx PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  redis-init:
+    image: redis:7.4-alpine
+    user: "0:0"
+    command: ["sh", "-ec", "chown -R 999:1000 /data"]
+    volumes:
+      - redis-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    restart: "no"
+
+  state-init:
+    image: redis:7.4-alpine
+    user: "0:0"
+    command: ["sh", "-ec", "chown 10001:10001 /state && chmod 700 /state"]
+    volumes:
+      - colab-state:/state
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+    restart: "no"
+
+volumes:
+  colab-state:
+  redis-data:

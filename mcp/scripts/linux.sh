@@ -17,7 +17,7 @@ esac
 case "$(uname -m)" in x86_64|aarch64) ;; *) fail 'amd64 or arm64 is required' ;; esac
 [ "$EUID" -eq 0 ] || fail 'run with sudo env DOMAIN=hostname scripts/ubuntu.sh check (or install)'
 command -v systemctl >/dev/null || fail 'systemd is required'
-case "$service:$app_port" in brave-search-mcp:8766|firecrawl-mcp:8767|exa-mcp:8769|lark-cli-mcp:8768|lark-doc:8765) ;; *) fail 'unknown service or mismatched port' ;; esac
+case "$service:$app_port" in brave-search-mcp:8766|firecrawl-mcp:8767|exa-mcp:8769|lark-cli-mcp:8768|lark-doc:8765|colab-cli-mcp:8770) ;; *) fail 'unknown service or mismatched port' ;; esac
 for cmd in curl openssl ss getent; do
   command -v "$cmd" >/dev/null || fail "missing $cmd; install prerequisites from DEPLOYMENT.md first"
 done
