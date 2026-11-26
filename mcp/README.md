@@ -6,7 +6,7 @@
 
 六个远程 MCP 的 Ubuntu／Debian 部署统一从 [DEPLOYMENT.md](DEPLOYMENT.md) 开始。安装使用[已审核的分发包](DEPLOYMENT.md#91-生成并审核分发包)，共享脚本、配置示例和锁文件随服务一起保留。
 
-六个服务均支持 Claude、ChatGPT／Codex、Gemini、Grok、Cursor 等客户端（[回调白名单](DEPLOYMENT.md#61-客户端回调白名单)），包括 Gemini 网页版自定义 MCP，通过公开 HTTPS 地址连接并完成 GitHub 授权。
+六个服务均支持 Claude、ChatGPT／Codex、Gemini、Antigravity、Grok、Cursor 等客户端（[回调白名单](DEPLOYMENT.md#61-客户端回调白名单)），包括 Gemini 网页版自定义 MCP，通过公开 HTTPS 地址连接并完成 GitHub 授权。
 
 | 服务 | 配置参考 |
 |---|---|

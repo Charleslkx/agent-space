@@ -48,6 +48,7 @@ REQUIRED_CALLBACKS = {
     'Gemini web': [uri.replace('*', 'example') for uri in GEMINI_WEB],
     'Gemini CLI': ['http://localhost:7777/oauth/callback'],
     'Gemini Enterprise': ['https://vertexaisearch.cloud.google.com/oauth-redirect'],
+    'Google Antigravity': ['https://antigravity.google/oauth-callback'],
     'Grok': ['https://grok.com/connectors-oauth-exchange-code/',
              'https://console.x.ai/connectors-oauth-exchange-code/'],
     'Cursor': ['http://localhost:8787/callback', 'https://cursor.com/agents/mcp/oauth/callback',

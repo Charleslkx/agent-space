@@ -85,6 +85,8 @@ ALLOWED_CLIENT_REDIRECT_URIS = [
     "https://oauth-redirect-test.googleusercontent.com/a/user_bound_custom-mcp-*",
     # Gemini Enterprise custom MCP data stores.
     "https://vertexaisearch.cloud.google.com/oauth-redirect",
+    # Google Antigravity, for both its CIMD client and DCR.
+    "https://antigravity.google/oauth-callback",
     # Grok and the xAI console.
     GROK_REDIRECT_URI,
     "https://console.x.ai/connectors-oauth-exchange-code/",

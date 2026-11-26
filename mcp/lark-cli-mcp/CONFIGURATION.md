@@ -123,7 +123,7 @@ OpenCode 的 `opencode.json`：
 
 然后运行 `opencode mcp auth lark-cli`。ChatGPT、Claude.ai 和 Claude Desktop 在远程 Connector 界面添加同一 URL；不要把公网 HTTP MCP 填入只接受本地 stdio 命令的配置项。
 
-Claude、ChatGPT／Codex、Gemini、Grok、Cursor 等客户端的回调由六个服务共用的[客户端回调白名单](../DEPLOYMENT.md#61-客户端回调白名单)统一管理。新增客户端时先在该白名单和 `mcp/tests/test_oauth_clients.py` 中加入它的完整回调集合。
+Claude、ChatGPT／Codex、Gemini、Antigravity、Grok、Cursor 等客户端的回调由六个服务共用的[客户端回调白名单](../DEPLOYMENT.md#61-客户端回调白名单)统一管理。新增客户端时先在该白名单和 `mcp/tests/test_oauth_clients.py` 中加入它的完整回调集合。
 
 ## 8. 更新、备份和恢复
 

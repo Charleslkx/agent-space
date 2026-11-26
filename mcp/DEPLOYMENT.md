@@ -228,6 +228,7 @@ GUI 客户端添加远程 URL 并完成 OAuth；具体回调兼容范围见各�
 | ChatGPT／Codex 托管连接器 | `https://chatgpt.com/connector_platform_oauth_redirect`、`https://chatgpt.com/connector/oauth/*` |
 | Gemini 网页版 | `https://{oauth-redirect,oauth-redirect-sandbox,oauth-redirect-test}.googleusercontent.com/{r,a}/user_bound_custom-mcp-*`，一次注册同时提交这 6 个地址 |
 | Gemini Enterprise | `https://vertexaisearch.cloud.google.com/oauth-redirect` |
+| Google Antigravity（CIMD 与 DCR） | `https://antigravity.google/oauth-callback` |
 | Grok | `https://grok.com/connectors-oauth-exchange-code/`、`https://console.x.ai/connectors-oauth-exchange-code/` |
 | Cursor 网页版／Cloud Agents、旧版桌面端 | `https://cursor.com/agents/mcp/oauth/callback`、`https://www.cursor.com/agents/mcp/oauth/callback`、`cursor://anysphere.cursor-mcp/oauth/callback` |
 | VS Code 网页版 | `https://vscode.dev/redirect` |
