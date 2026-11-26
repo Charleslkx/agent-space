@@ -17,13 +17,13 @@ PATTERNS = {
     'JWT': re.compile(r'\beyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}'),
     'private hostname': re.compile(r'\b[A-Za-z0-9][A-Za-z0-9.-]*\.(?:internal|corp|lan)\b'),
     'webhook credential': re.compile(r'https://open\.(?:feishu\.cn|larksuite\.com)/open-apis/bot/v2/hook/[A-Za-z0-9_-]{16,}'),
-    'Gemini connector ID': re.compile(r'\buser_bound_custom-mcp-[0-9a-fA-F]{32}\b'),
+    'Gemini connector ID': re.compile(r'\buser_bound_custom-mcp-[0-9a-fA-F]{16,}\b'),
 }
 EMAIL = re.compile(r'\b[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b')
 EXAMPLE_DOMAINS = {'example.com', 'example.net', 'example.org', 'example.test'}
 MCP_REQUIRED_FILES = {
     'mcp/DEPLOYMENT.md', 'mcp/README.md', 'mcp/scripts/linux.sh',
-    'mcp/brave-search-mcp/server.py', 'mcp/exa-mcp/server.py',
+    'mcp/brave-search-mcp/server.py', 'mcp/colab-cli-mcp/server.py', 'mcp/exa-mcp/server.py',
     'mcp/firecrawl-mcp/server.py', 'mcp/lark-cli-mcp/server.py',
     'mcp/lark-doc/scripts/mcp_server.py',
 }

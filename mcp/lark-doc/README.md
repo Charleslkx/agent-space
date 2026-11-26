@@ -35,4 +35,7 @@ Ubuntu／Debian 统一按 [Linux 部署运行手册](../DEPLOYMENT.md)执行。�
 ```bash
 bash ../scripts/check-python.sh --setup
 python3 ../scripts/prepare-python.py lark-doc --native
+cd .. && MCP_SERVICE=lark-doc lark-doc/deploy/python/.venv/bin/python -B -m unittest tests.test_oauth_clients
 ```
+
+最后一条在 `mcp/` 目录运行 OAuth 客户端注册契约，覆盖[客户端回调白名单](../DEPLOYMENT.md#61-客户端回调白名单)中的各客户端回调。

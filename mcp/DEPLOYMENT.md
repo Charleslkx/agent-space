@@ -217,11 +217,25 @@ codex mcp login "$SERVICE"
 
 GUI 客户端添加远程 URL 并完成 OAuth；具体回调兼容范围见各服务文档。部署报告记录系统、架构、代码 commit、镜像 ID／CLI 版本、配置文件路径、服务名、MCP URL、验收结果；不记录凭据或 OAuth code。
 
-### 6.1 Gemini 网页版
+### 6.1 客户端回调白名单
 
-在 Gemini 网页版添加自定义 MCP，填入 `https://实际域名/mcp`，并在授权页完成 GitHub 登录。六个服务都允许 `https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*`，匹配 Google 生产域名和网页自定义 MCP 的回调前缀。GitHub OAuth App 的回调仍填写服务自己的 `https://实际域名/auth/callback`。Gemini CLI 使用本地回环回调。[Google OAuth 2.1 接入指南](https://developers.google.com/connected-apps/mcp/oauth)
+六个服务共用同一份 `ALLOWED_CLIENT_REDIRECT_URIS`，只有 WorkBuddy 回调按服务区分。FastMCP 4 在动态注册（DCR）和 CIMD 时逐个校验客户端提交的回调，任意一个不在白名单内整次注册返回 400，客户端通常只提示“重定向网址被拒绝”或要求手填客户端 ID／密钥。GitHub OAuth App 的回调仍填写服务自己的 `https://实际DOMAIN/auth/callback`。
 
-若遇到 `does not match allowed patterns`，先确认运行中的镜像或 systemd 进程已加载包含新规则的代码，再在 Gemini 重试授权。动态注册成功只验证了注册入口，验收还需确认发起授权后能打开同意页。最终在 Gemini 完成 GitHub 登录并执行一次第 6 节的最小业务调用。
+| 客户端 | 回调 |
+|---|---|
+| Claude 网页版、Desktop 连接器、移动端、Cowork | `https://claude.ai/api/mcp/auth_callback`、`https://claude.com/api/mcp/auth_callback` |
+| Claude Desktop 插件 | `claude://claude.ai/mcp-auth-callback/sdk` |
+| ChatGPT／Codex 托管连接器 | `https://chatgpt.com/connector_platform_oauth_redirect`、`https://chatgpt.com/connector/oauth/*` |
+| Gemini 网页版 | `https://{oauth-redirect,oauth-redirect-sandbox,oauth-redirect-test}.googleusercontent.com/{r,a}/user_bound_custom-mcp-*`，一次注册同时提交这 6 个地址 |
+| Gemini Enterprise | `https://vertexaisearch.cloud.google.com/oauth-redirect` |
+| Grok | `https://grok.com/connectors-oauth-exchange-code/`、`https://console.x.ai/connectors-oauth-exchange-code/` |
+| Cursor 网页版／Cloud Agents、旧版桌面端 | `https://cursor.com/agents/mcp/oauth/callback`、`https://www.cursor.com/agents/mcp/oauth/callback`、`cursor://anysphere.cursor-mcp/oauth/callback` |
+| VS Code 网页版 | `https://vscode.dev/redirect` |
+| 本机客户端：Claude Code、Codex CLI、Gemini CLI、Cursor 桌面端、VS Code、MCP Inspector 等 | `http://localhost:*`、`http://127.0.0.1:*`、`http://[::1]:*`，任意端口和路径 |
+
+同一份兼容层还处理 FastMCP 4 的两处行为：以 `client_secret_post`／`client_secret_basic` 注册的客户端会拿到并被校验 `client_secret`（Gemini 网页版需要），授权服务器元数据同时列出这两种方式以及 `none`、`private_key_jwt`。`mcp/tests/test_oauth_clients.py` 覆盖白名单一致性和上表各客户端的注册；新增客户端时先把它的完整回调集合加入该测试和全部服务的白名单。
+
+在 Gemini 网页版添加自定义 MCP，填入 `https://实际域名/mcp`，在授权页完成 GitHub 登录。[Google OAuth 2.1 接入指南](https://developers.google.com/connected-apps/mcp/oauth)。注册仍被拒绝时，先确认运行中的镜像或 systemd 进程已加载新代码；服务关闭了访问日志，需要定位时在反向代理临时记录 `/register` 的状态码，排查后关闭并删除日志。验收需确认发起授权后能打开同意页，最终完成 GitHub 登录并执行一次第 6 节的最小业务调用。
 
 ## 7. 运维、备份与回滚
 
@@ -274,6 +288,8 @@ sudo python3 ../scripts/prepare-python.py "$SERVICE" --upgrade
 
 新依赖先在候选环境测试，通过后才切换记录，旧记录保留在 `deploy/python.backup-*`。Compose 随后重新 build／up；原生服务重新启动。回滚恢复原镜像和对应依赖记录；原生记录须恢复到原路径以保持虚拟环境入口有效。CLI 升级使用各服务 `scripts/update-cli.sh`，不会顺带升级 Python 应用依赖。
 
+只升级单个依赖（例如 FastMCP）时，在候选目录复制 `deploy/python/` 的 `pyproject.toml` 和 `uv.lock`，用 `uv-version.txt` 记录的 uv 版本执行 `uv lock --upgrade-package <包名>`。由运行中实例采纳而来的记录在 `constraint-dependencies` 中固定了全部已安装版本：先删除目标包的约束，解析失败时只删除报错中阻塞的约束并重试，其余保持不变。随后 `uv sync --frozen` 候选环境，用它运行服务测试和 `mcp/tests/test_oauth_clients.py`，通过后备份原记录再替换锁文件与 `pyproject.toml`，Compose 重新 build／up，原生服务在原路径 `uv sync --frozen` 后重启。
+
 版本解析默认不接受预发布版；保持平台范围的前提下由解析器选择兼容的最新稳定依赖。首次解析后使用本机记录进行复现，不把部署记录提交回公开仓库。
 
 ## 8. 故障定位
@@ -289,7 +305,7 @@ sudo python3 ../scripts/prepare-python.py "$SERVICE" --upgrade
 | 502 或容器启动失败 | 服务日志、依赖、回环端口和必填配置 |
 | systemd 启动被限制 | 修复日志指出的问题后 `sudo systemctl reset-failed lark-doc-mcp` 并重启 |
 | GitHub OAuth App 回调失败 | App callback、BASE_URL、公开域名、全路径反向代理是否一致 |
-| Gemini 回调提示 `does not match allowed patterns` | 确认已更新运行版本，按第 6.1 节重试并验证同意页 |
+| 客户端提示“重定向网址被拒绝”或要求手填客户端 ID／密钥 | `/register` 返回 400 `invalid_redirect_uri` 时，把错误中的地址连同该客户端的全部回调加入第 6.1 节白名单；确认运行中的镜像或进程已加载新代码 |
 | 飞书身份异常 | 是否用相同账户和 HOME／XDG，持久卷是否恢复，scope 是否授权 |
 
 ## 9. 上游依据与验证边界
@@ -333,8 +349,13 @@ git diff --cached --check
 
 ```bash
 python3 -B -m unittest discover -s /opt/mcp/tests -v
+# OAuth 注册契约需要服务自身依赖。在 mcp/ 目录（如 /opt/mcp）用该服务的虚拟环境逐个运行；
+# 在仓库根目录运行会与 mcp 依赖包重名而导入失败。虚拟环境由服务 README 开发验证步骤中的
+# prepare-python.py --native 创建。
+cd /opt/mcp
+MCP_SERVICE="$SERVICE" "$SERVICE/deploy/python/.venv/bin/python" -B -m unittest tests.test_oauth_clients
 ```
 
-各项目的开发测试命令见各自 README。模板测试检查自定义域名、回环端口、Nginx 变量保留和同机限流区唯一性。
+第一条在没有服务依赖时跳过注册契约，只做白名单一致性检查。各项目的开发测试命令见各自 README。模板测试检查自定义域名、回环端口、Nginx 变量保留和同机限流区唯一性。
 
 本地语法、模板和单元测试不等同于生产部署验收。Ubuntu／Debian 的真实安装、证书签发、GitHub／飞书／Google 交互授权和外部客户端业务调用，以目标服务器第 6 节的记录为最终结果。

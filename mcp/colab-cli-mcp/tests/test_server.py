@@ -13,6 +13,9 @@ from unittest.mock import AsyncMock, patch
 from colab_cli.cli import app as upstream_app
 from cryptography.fernet import Fernet
 from fastmcp.server.auth import AccessToken
+from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient
+from key_value.aio.adapters.pydantic import PydanticAdapter
+from key_value.aio.stores.memory import MemoryStore
 import httpx2
 from typer.main import get_command
 
@@ -285,6 +288,71 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                 result = payload(await request("tools/call", "allowed", params))["result"]
                 self.assertEqual(result["structuredContent"], {"exit_code": 0})
                 runner.assert_called_once_with(["version"], None, None)
+
+    async def test_confidential_dcr_clients_keep_their_secret(self):
+        with patch.dict(os.environ, _environment(), clear=True):
+            mcp = server.create_server()
+        mcp.auth._client_store = PydanticAdapter[ProxyDCRClient](
+            key_value=MemoryStore(), pydantic_model=ProxyDCRClient,
+            default_collection="mcp-oauth-proxy-clients", raise_on_validation_error=True,
+        )
+        app = mcp.http_app(path="/mcp", stateless_http=True)
+        redirect = "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-abc123"
+        async with app.lifespan(app), httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="https://colab.example.com"
+        ) as client:
+            metadata = (await client.get("/.well-known/oauth-authorization-server")).json()
+            self.assertEqual(metadata["issuer"], "https://colab.example.com/")
+            self.assertEqual(metadata["token_endpoint_auth_methods_supported"],
+                             ["client_secret_post", "client_secret_basic", "none", "private_key_jwt"])
+
+            async def register(method):
+                response = await client.post("/register", json={
+                    "client_name": "gemini", "redirect_uris": [redirect],
+                    "grant_types": ["authorization_code", "refresh_token"],
+                    "response_types": ["code"], "token_endpoint_auth_method": method,
+                })
+                self.assertEqual(response.status_code, 201, response.text)
+                return response.json()
+
+            for method in server.CONFIDENTIAL_AUTH_METHODS:
+                registered = await register(method)
+                self.assertEqual(registered["token_endpoint_auth_method"], method)
+                self.assertTrue(registered["client_secret"])
+                stored = await mcp.auth.get_client(registered["client_id"])
+                self.assertEqual(stored.token_endpoint_auth_method, method)
+                self.assertEqual(stored.client_secret, registered["client_secret"])
+
+            gemini = await client.post("/register", json={
+                "client_name": "Google",
+                "redirect_uris": [
+                    f"https://{host}.googleusercontent.com/{path}/user_bound_custom-mcp-abc123"
+                    for host in ("oauth-redirect-sandbox", "oauth-redirect-test", "oauth-redirect")
+                    for path in ("r", "a")
+                ],
+                "response_types": ["code"],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "token_endpoint_auth_method": "client_secret_post",
+            })
+            self.assertEqual(gemini.status_code, 201, gemini.text)
+            self.assertTrue(gemini.json()["client_secret"])
+            rejected = await client.post("/register", json={
+                "redirect_uris": ["https://oauth-redirect.googleusercontent.com/r/unrelated"],
+            })
+            self.assertEqual(rejected.status_code, 400)
+
+            public = await register("none")
+            self.assertEqual(public["token_endpoint_auth_method"], "none")
+            self.assertNotIn("client_secret", public)
+
+            confidential = await register("client_secret_post")
+            token = await client.post("/token", data={
+                "grant_type": "authorization_code", "code": "unknown",
+                "redirect_uri": redirect, "code_verifier": "x" * 43,
+                "client_id": confidential["client_id"], "client_secret": "wrong",
+            })
+            self.assertEqual(token.status_code, 401)
+            self.assertEqual(token.json()["error"], "invalid_client")
 
     async def test_rejects_incomplete_auth_config(self):
         with patch.dict(os.environ, {}, clear=True):

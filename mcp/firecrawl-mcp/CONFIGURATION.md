@@ -130,9 +130,7 @@ ChatGPT、Claude.ai 或 Claude Desktop 使用其远程 Connector 界面添加相
 
 WorkBuddy Custom MCP 使用固定回调 URI `workbuddy://workbuddy/mcp/custom-mcp%3Afirecrawl/oauth/callback`；服务已将该精确 URI 加入 OAuth 白名单。
 
-Grok 自定义连接器使用固定回调 URI `https://grok.com/connectors-oauth-exchange-code/`；服务已将该精确 URI（包括末尾 `/`）加入 OAuth 白名单。
-
-Gemini 网页版自定义 MCP 同样填写公开 HTTPS `/mcp` 地址，并完成 GitHub 授权。回调范围和排查步骤见[运行手册的 Gemini 接入说明](../DEPLOYMENT.md#61-gemini-网页版)。
+Claude、ChatGPT／Codex、Gemini、Grok、Cursor 等客户端的回调由六个服务共用的[客户端回调白名单](../DEPLOYMENT.md#61-客户端回调白名单)统一管理。新增客户端时先在该白名单和 `mcp/tests/test_oauth_clients.py` 中加入它的完整回调集合。
 
 ## 10. 故障处理
 

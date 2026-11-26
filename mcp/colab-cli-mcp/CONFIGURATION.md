@@ -4,7 +4,7 @@
 
 客户端走 `https://colab.example.com/mcp`，登录 GitHub 后以 `COLAB_MCP_GITHUB_USERS` 校验身份。所有通过白名单的用户使用同一个 Google 账号、Colab 会话、历史和计算额度。只把需要共同操作这个账号的用户加入白名单。不同 Google 账号或独立信任边界各自部署实例并配置独立域名、端口、凭据与卷。
 
-Compose 只监听宿主机回环端口 8770，外部流量由 Nginx 终止 TLS。TLS 模板覆盖 OAuth discovery、客户端注册、回调和 MCP 请求，并沿用现有服务的回调兼容范围。Nginx 与 MCP HTTP 访问日志关闭，以免授权回调参数进入访问日志。
+Compose 只监听宿主机回环端口 8770，外部流量由 Nginx 终止 TLS。TLS 模板覆盖 OAuth discovery、客户端注册、回调和 MCP 请求。客户端回调使用六个服务共用的[客户端回调白名单](../DEPLOYMENT.md#61-客户端回调白名单)。Nginx 与 MCP HTTP 访问日志关闭，以免授权回调参数进入访问日志。
 
 ## 2. 环境变量
 

@@ -148,6 +148,7 @@ class RedirectUriTests(unittest.TestCase):
             "https://grok.com/connectors-oauth-exchange-code/",
             "https://www.cursor.com/agents/mcp/oauth/callback",
             "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*",
+            "https://oauth-redirect.googleusercontent.com/a/user_bound_custom-mcp-*",
             "workbuddy://workbuddy/mcp/custom-mcp%3Aexa/oauth/callback",
             # Claude Code, Codex, VS Code, Zed, Gemini CLI all use loopback.
             "http://localhost:*",
@@ -161,13 +162,15 @@ class RedirectUriTests(unittest.TestCase):
         origin = "https://oauth-redirect.googleusercontent.com"
         callback = AnyUrl(f"{origin}/r/user_bound_custom-mcp-example")
         client = ProxyDCRClient(
+            client_id="gemini",
             redirect_uris=[callback],
             allowed_redirect_uri_patterns=MODULE.ALLOWED_CLIENT_REDIRECT_URIS,
         )
         self.assertEqual(client.validate_redirect_uri(callback), callback)
         for unrelated in (
             f"{origin}/r/unrelated",
-            f"{origin}/a/user_bound_custom-mcp-example",
+            f"{origin}/x/user_bound_custom-mcp-example",
+            "https://oauth-redirect.example.com/r/user_bound_custom-mcp-example",
             "https://example.com/r/user_bound_custom-mcp-example",
         ):
             with self.subTest(uri=unrelated), self.assertRaises(InvalidRedirectUriError):
