@@ -75,7 +75,7 @@ deploy/python/.venv/bin/python scripts/mcp_server.py --transport http --host 127
 | TLS 证书与私钥 | 直接公网模式必需 | 通过 `--tls-cert`、`--tls-key` 传入 |
 | `--allow-unauthenticated` | 仅本地开发 | HTTP 传输未配置认证时默认拒绝启动；该开关是唯一的豁免，不要用于任何被反向代理的实例 |
 
-固定边界：单批 100 项、每项正文 10 MiB、媒体 20 MiB、每次 `lark-cli` 60 秒；Nginx 另有限制单个请求体大小。批量请求还需按请求总大小拆分。
+固定边界：单批 100 项、每项正文 10 MiB、媒体 20 MiB、每次 `lark-cli` 60 秒；`create_media_upload` 每次最多 50 项，上传链接 10 分钟有效且只能使用一次。Nginx 另有限制单个请求体大小（模板为 32 MiB，同时覆盖 20 MiB 原始 `PUT` 与其 base64 编码）；若改用其他反向代理，须设置不低于该值的上限并代理 `/media/upload/` 路径。批量请求还需按请求总大小拆分。
 
 ## 6. 远程客户端 OAuth
 
@@ -145,6 +145,8 @@ codex mcp add lark-doc \
 ## 9. 验证
 
 部署验收按运行手册：未认证请求应返回 `401`；已认证的普通浏览器 GET 仍可能因 Accept 头不符合协议而返回 `406`；用已授权客户端列出工具并对测试文档做一次真实读写。
+
+媒体上传先做无凭据检查：`curl -sS -X PUT --data-binary x https://{your-domain}/media/upload/invalid` 应返回 `404` 与 `invalid_or_expired_upload_token`，说明路由已经过反向代理到达服务。再用已授权客户端调用 `create_media_upload` 申请一个链接，`PUT` 一张测试图片后，以返回的 `upload_id` 调用 `insert_media` 写入测试文档并回读确认；同一链接再次上传应被拒绝。
 
 评论功能单独使用已有评论的测试文档做只读验收。调用 `list_document_comments`，传入文档或 Wiki URL、`solved_status=all` 和较小的 `page_size`，检查返回的评论正文、引用与定位字段。若 `has_more=true`，用 `page_token` 读取下一页。选择一条评论的 `comment_id`，用 `list_document_comment_replies` 核对首条消息与原评论是否一致。调用 `batch_pull(include_comments=true)` 检查随文返回的评论内容。
 

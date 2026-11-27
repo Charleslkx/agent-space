@@ -182,7 +182,7 @@ sudo systemctl enable --now certbot.timer
 sudo certbot renew --dry-run
 ```
 
-初次发布前可预览：`env DOMAIN="$DOMAIN" bash ../scripts/nginx.sh "$SERVICE" render`。Nginx 代理所有路径，包含 OAuth discovery、注册、回调和 `/mcp`；正式模板关闭代理缓冲并设置服务独立的注册限流区；Lark Doc 请求体上限为 32 MiB，容纳 20 MiB 媒体的 base64 编码。各服务端口、限流区名不能复用。签证失败时保留 bootstrap，修正公网 DNS／80 端口后重试；不要安装尚无证书的 TLS 模板。
+初次发布前可预览：`env DOMAIN="$DOMAIN" bash ../scripts/nginx.sh "$SERVICE" render`。Nginx 代理所有路径，包含 OAuth discovery、注册、回调、`/mcp` 和 Lark Doc 的一次性媒体上传路径 `/media/upload/`；正式模板关闭代理缓冲并设置服务独立的注册限流区；Lark Doc 请求体上限为 32 MiB，同时容纳 20 MiB 媒体的原始 `PUT` 上传与 base64 编码。各服务端口、限流区名不能复用。签证失败时保留 bootstrap，修正公网 DNS／80 端口后重试；不要安装尚无证书的 TLS 模板。
 
 ## 6. 验收与客户端接入
 
@@ -273,7 +273,7 @@ sudo docker compose -f compose.yaml -f /tmp/mcp-rollback.yaml up -d --no-build -
 
 后续操作继续传同一 override，直到再次部署新版本；保存的 rollback tag 在下一次覆盖前已完成本轮验收。
 
-Lark Doc 升级：停止服务、记录旧 CLI 和虚拟环境，更新代码后使用现有 `deploy/python/.venv` 测试和运行，不重新解析依赖。测试后重启，等待本机 `http://127.0.0.1:8765/.well-known/oauth-authorization-server` 返回 200，再进行第 6 节验收。为 Python 导入及启动预留最多 60 秒，超时后查服务日志并按失败处理。回滚时恢复旧代码／锁文件及 CLI，再同步旧依赖和重启。OAuth 数据存储位置跟随 FastMCP 的默认实现，`/var/lib/lark-doc` 整体备份；恢复后仍需验证客户端会话。
+Lark Doc 升级：停止服务、记录旧 CLI 和虚拟环境，更新代码后使用现有 `deploy/python/.venv` 运行 `deploy/python/.venv/bin/python -B -m unittest discover -s tests` 并启动服务，不重新解析依赖。服务代码只能导入锁文件中实际存在的包（例如 FastMCP 4.2.6 起 HTTP 客户端为 `httpx2`，不再提供 `httpx`）；新增直接导入时先在现有虚拟环境中确认可导入。测试后重启，等待本机 `http://127.0.0.1:8765/.well-known/oauth-authorization-server` 返回 200，再进行第 6 节验收。为 Python 导入及启动预留最多 60 秒，超时后查服务日志并按失败处理。回滚时恢复旧代码／锁文件及 CLI，再同步旧依赖和重启。OAuth 数据存储位置跟随 FastMCP 的默认实现，`/var/lib/lark-doc` 整体备份；恢复后仍需验证客户端会话。
 
 ### 7.1. 应用依赖版本规则
 

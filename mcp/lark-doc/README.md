@@ -2,7 +2,7 @@
 
 通过 GitHub OAuth 提供飞书文档、Markdown、画板、电子表格与多维表格操作。飞书凭据保存在服务账户状态目录。
 
-文档与 Wiki 的评论支持只读查询，可分页读取评论正文、回复和 Docx 定位信息。用法、权限和验收步骤见[配置文档](CONFIG.md#10-mcp-工具)。
+文档与 Wiki 的评论支持只读查询，可分页读取评论正文、回复和 Docx 定位信息。插入大图或附件时，`create_media_upload` 签发一次性 HTTP `PUT` 上传链接，客户端直传文件后把 `upload_id` 交给 `insert_media`，不再经由模型传 Base64；`insert_media` 也可通过 SSRF 校验从公网 HTTPS 链接拉取。用法、权限和验收步骤见[配置文档](CONFIG.md#10-mcp-工具)。
 
 ## 1. 部署入口
 
@@ -35,7 +35,8 @@ Ubuntu／Debian 统一按 [Linux 部署运行手册](../DEPLOYMENT.md)执行。�
 ```bash
 bash ../scripts/check-python.sh --setup
 python3 ../scripts/prepare-python.py lark-doc --native
+deploy/python/.venv/bin/python -B -m unittest discover -s tests -v
 cd .. && MCP_SERVICE=lark-doc lark-doc/deploy/python/.venv/bin/python -B -m unittest tests.test_oauth_clients
 ```
 
-最后一条在 `mcp/` 目录运行 OAuth 客户端注册契约，覆盖[客户端回调白名单](../DEPLOYMENT.md#61-客户端回调白名单)中的各客户端回调。
+`tests/` 为服务单元测试（含媒体上传与 URL 下载的 SSRF 防护）；`prepare-python.py` 解析或升级依赖时也会在候选环境中运行它。最后一条在 `mcp/` 目录运行 OAuth 客户端注册契约，覆盖[客户端回调白名单](../DEPLOYMENT.md#61-客户端回调白名单)中的各客户端回调。

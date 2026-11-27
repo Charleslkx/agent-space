@@ -81,8 +81,7 @@ def prepare(service: Path, native=False, upgrade=False):
         python=installed['python'] if installed else '3.12'
         run([uv,'lock','--upgrade','--prerelease','disallow','--default-index','https://pypi.org/simple','--python',python,'--project',candidate],env=env)
         run([uv,'sync','--frozen','--no-dev','--python',python,'--project',candidate],env=env)
-        suite='scripts' if service.name=='lark-doc' else 'tests'
-        run([candidate/'.venv/bin/python','-B','-m','unittest','discover','-s',suite,'-p','test_*.py'],cwd=service,env=env)
+        run([candidate/'.venv/bin/python','-B','-m','unittest','discover','-s','tests','-p','test_*.py'],cwd=service,env=env)
         (candidate/'uv-version.txt').write_text(uv_version+'\n')
         (candidate/'installation.json').write_text(json.dumps({'python':python,'adopted_installed_versions':bool(installed),'resolved_at':datetime.now(timezone.utc).isoformat()},indent=2)+'\n')
         # Virtualenv entry points contain absolute paths; create native env at its final path.
