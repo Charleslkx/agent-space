@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from fastmcp.server.auth import AuthContext
 from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient
 from fastmcp.server.auth.providers.github import GitHubProvider
 from fastmcp.server.middleware import AuthMiddleware
+from starlette.routing import Route
 from key_value.aio.stores.redis import RedisStore
 from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
@@ -33,17 +35,49 @@ CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 CLAUDE_CODE_REDIRECT_URI_PATTERN = "http://localhost:*"
 WORKBUDDY_REDIRECT_URI = "workbuddy://workbuddy/mcp/custom-mcp%3Abrave-search/oauth/callback"
 GROK_REDIRECT_URI = "https://grok.com/connectors-oauth-exchange-code/"
-CURSOR_REDIRECT_URI = "https://www.cursor.com/agents/mcp/oauth/callback"
+CURSOR_REDIRECT_URI = "https://cursor.com/agents/mcp/oauth/callback"
+# FastMCP 4 checks every DCR and CIMD redirect URI against this list, and one
+# unknown URI fails the whole registration. Keep each client's full set.
+# Loopback entries match any port (RFC 8252) and cover Claude Code, Codex CLI,
+# Gemini CLI, Cursor desktop, VS Code and other local clients.
 ALLOWED_CLIENT_REDIRECT_URIS = [
-    "https://chatgpt.com/connector/oauth/*",
-    "https://chatgpt.com/connector_platform_oauth_redirect",
+    # Claude web, Desktop connectors, mobile and Cowork; claude.com is the
+    # announced successor domain.
     "https://claude.ai/api/mcp/auth_callback",
+    "https://claude.com/api/mcp/auth_callback",
+    # Claude Desktop plugin servers that register through DCR.
+    "claude://claude.ai/mcp-auth-callback/sdk",
+    # ChatGPT and Codex hosted connectors: stable callback when the server
+    # supports RFC 9207 issuer identification, otherwise per connection.
+    "https://chatgpt.com/connector_platform_oauth_redirect",
+    "https://chatgpt.com/connector/oauth/*",
+    # Gemini web registers all three hosts with both paths in one request.
+    "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*",
+    "https://oauth-redirect.googleusercontent.com/a/user_bound_custom-mcp-*",
+    "https://oauth-redirect-sandbox.googleusercontent.com/r/user_bound_custom-mcp-*",
+    "https://oauth-redirect-sandbox.googleusercontent.com/a/user_bound_custom-mcp-*",
+    "https://oauth-redirect-test.googleusercontent.com/r/user_bound_custom-mcp-*",
+    "https://oauth-redirect-test.googleusercontent.com/a/user_bound_custom-mcp-*",
+    # Gemini Enterprise custom MCP data stores.
+    "https://vertexaisearch.cloud.google.com/oauth-redirect",
+    # Google Antigravity, for both its CIMD client and DCR.
+    "https://antigravity.google/oauth-callback",
+    # Grok and the xAI console.
     GROK_REDIRECT_URI,
+    "https://console.x.ai/connectors-oauth-exchange-code/",
+    # Cursor web and Cloud Agents, and older Cursor desktop releases.
     CURSOR_REDIRECT_URI,
+    "https://www.cursor.com/agents/mcp/oauth/callback",
+    "cursor://anysphere.cursor-mcp/oauth/callback",
+    # VS Code for the web.
+    "https://vscode.dev/redirect",
     WORKBUDDY_REDIRECT_URI,
     "http://localhost:*",
     "http://127.0.0.1:*",
+    "http://[::1]:*",
 ]
+CONFIDENTIAL_AUTH_METHODS = ("client_secret_post", "client_secret_basic")
+AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server"
 MAX_ARGS = 128
 MAX_ARG_BYTES = 16 * 1024
 MAX_STDIN_BYTES = 1024 * 1024
@@ -91,6 +125,85 @@ class _OriginCompatibleGitHubProvider(GitHubProvider):
         await self._client_store.put(key=client_id, value=client)
         return client
 
+    async def register_client(self, client_info) -> None:
+        """Keep the secret the SDK issued to a confidential DCR client.
+
+        FastMCP 4 stores every registered client as public and drops the issued
+        secret. Gemini web registers with client_secret_post and expects a secret
+        back. Store and return it so the token endpoint enforces it, as FastMCP 3
+        did; public clients keep FastMCP's behavior.
+        """
+        method = client_info.token_endpoint_auth_method
+        secret = client_info.client_secret
+        expires_at = client_info.client_secret_expires_at
+        await super().register_client(client_info)
+        if method not in CONFIDENTIAL_AUTH_METHODS or not secret:
+            return
+        client = await self._client_store.get(key=client_info.client_id)
+        if client is None:
+            raise RuntimeError("registered client was not stored")
+        for target in (client, client_info):
+            target.token_endpoint_auth_method = method
+            target.client_secret = secret
+            target.client_secret_expires_at = expires_at
+        await self._client_store.put(key=client_info.client_id, value=client)
+
+    def get_routes(self, mcp_path: str | None = None) -> list[Route]:
+        routes = super().get_routes(mcp_path)
+        for index, route in enumerate(routes):
+            if isinstance(route, Route) and route.path == AUTHORIZATION_SERVER_METADATA_PATH:
+                routes[index] = Route(
+                    route.path,
+                    endpoint=_ConfidentialAuthMethodsMetadata(route.endpoint),
+                    methods=route.methods,
+                    name=route.name,
+                    include_in_schema=route.include_in_schema,
+                )
+        return routes
+
+
+class _ConfidentialAuthMethodsMetadata:
+    """ASGI wrapper that adds the secret-based token endpoint auth methods."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("method") != "GET":
+            await self.app(scope, receive, send)
+            return
+        start = None
+        body = bytearray()
+
+        async def capture(message):
+            nonlocal start
+            if message["type"] == "http.response.start":
+                start = message
+                return
+            if message["type"] != "http.response.body":
+                await send(message)
+                return
+            body.extend(message.get("body", b""))
+            if message.get("more_body"):
+                return
+            payload = bytes(body)
+            if start["status"] == 200:
+                metadata = json.loads(payload)
+                methods = metadata.get("token_endpoint_auth_methods_supported") or []
+                metadata["token_endpoint_auth_methods_supported"] = [
+                    *CONFIDENTIAL_AUTH_METHODS,
+                    *(method for method in methods if method not in CONFIDENTIAL_AUTH_METHODS),
+                ]
+                payload = json.dumps(metadata, separators=(",", ":")).encode()
+            headers = [
+                (name, value) for name, value in start.get("headers", [])
+                if name.lower() != b"content-length"
+            ]
+            headers.append((b"content-length", str(len(payload)).encode()))
+            await send({**start, "headers": headers})
+            await send({"type": "http.response.body", "body": payload})
+
+        await self.app(scope, receive, capture)
 
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()

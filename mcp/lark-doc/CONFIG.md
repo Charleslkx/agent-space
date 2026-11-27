@@ -2,7 +2,7 @@
 
 部署入口：[统一 Linux 部署运行手册](../DEPLOYMENT.md)。首次部署与升级以该手册为准；本文保留服务配置、工具边界和客户端参考。
 
-可分发的 uv 项目：支持飞书电子表格、多维表格及把 Markdown 内容写入飞书 Docx，支持并发批量拉取、并发批量推送、定点修改、创建文档、插入媒体及画板读写。公网部署后可由 ChatGPT、Claude.ai、Claude Desktop 和 Claude Code 通过 OAuth 2.1 连接。
+可分发的 uv 项目：支持飞书电子表格、多维表格及把 Markdown 内容写入飞书 Docx，支持并发批量拉取、并发批量推送、定点修改、创建文档、插入媒体及画板读写。公网部署后可由 ChatGPT、Claude.ai、Claude Desktop、Claude Code 和 Gemini 网页版通过 OAuth 2.1 连接。
 
 > **域名配置**：本文档所有 `{your-domain}` 需替换为实际部署域名（如 `lark-doc.example.com`）。
 
@@ -77,7 +77,7 @@ deploy/python/.venv/bin/python scripts/mcp_server.py --transport http --host 127
 
 固定边界：单批 100 项、每项正文 10 MiB、媒体 20 MiB、每次 `lark-cli` 60 秒；Nginx 另有限制单个请求体大小。批量请求还需按请求总大小拆分。
 
-## 6. ChatGPT 与 Claude 远程部署
+## 6. 远程客户端 OAuth
 
 客户端不会从服务器“自动安装”MCP。它们连接公开 HTTPS `/mcp` 端点；OAuth 客户端可通过 CIMD 或 DCR 自动登记。当前实现使用 FastMCP 的 GitHub OAuth 代理提供 OAuth 2.1、PKCE、CIMD/DCR 和 protected-resource discovery，并只放行 `LARK_MCP_GITHUB_USERS`。
 
@@ -98,7 +98,7 @@ Claude.ai、Claude Desktop、移动端和 Cowork 使用 OAuth 回调 `https://cl
 
 WorkBuddy 的 Custom MCP 使用固定回调 URI `workbuddy://workbuddy/mcp/custom-mcp%3Alark-doc/oauth/callback`；服务已将该精确 URI 加入 OAuth 白名单。添加连接器后按 WorkBuddy 的 GitHub 授权流程完成登录。
 
-Grok 自定义连接器使用固定回调 URI `https://grok.com/connectors-oauth-exchange-code/`；服务已将该精确 URI（包括末尾 `/`）加入 OAuth 白名单。
+Claude、ChatGPT／Codex、Gemini、Antigravity、Grok、Cursor 等客户端的回调由六个服务共用的[客户端回调白名单](../DEPLOYMENT.md#61-客户端回调白名单)统一管理。新增客户端时先在该白名单和 `mcp/tests/test_oauth_clients.py` 中加入它的完整回调集合。
 
 Claude Code 直接添加远程 HTTP MCP；它会发现 OAuth 并在 `/mcp` 中引导认证：
 
@@ -199,8 +199,9 @@ Markdown 写入（`batch_push`、`create_document`、`point_update` 的替换文
 
 ## 11. 分发检查
 
+从[已审核的 MCP 分发包](../DEPLOYMENT.md#91-生成并审核分发包)部署。仓库维护者先检查公开源，再检查实际归档。
+
 ```bash
-rg -n '/Users/|\.agents/skills' . --hidden -g '!uv.lock'
 bash ../scripts/check-python.sh --setup
 python3 ../scripts/prepare-python.py lark-doc --native
 ```

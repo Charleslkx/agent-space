@@ -12,7 +12,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVICES = ('brave-search-mcp','firecrawl-mcp','exa-mcp','lark-cli-mcp','lark-doc')
+SERVICES = ('brave-search-mcp','firecrawl-mcp','exa-mcp','lark-cli-mcp','lark-doc','colab-cli-mcp')
 PROBE = '''import importlib.metadata as m,json,sys
 print(json.dumps({"python":str(sys.version_info.major)+"."+str(sys.version_info.minor),"packages":{d.metadata["Name"]:d.version for d in m.distributions() if d.metadata["Name"]}}))'''
 

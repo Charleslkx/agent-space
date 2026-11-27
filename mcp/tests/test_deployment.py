@@ -1,4 +1,5 @@
 """Offline checks for deployable templates and multi-service coexistence."""
+import ast
 import os
 from pathlib import Path
 import re
@@ -7,7 +8,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVICES = {'brave-search-mcp': 8766, 'firecrawl-mcp': 8767,
-            'exa-mcp': 8769, 'lark-cli-mcp': 8768, 'lark-doc': 8765}
+            'exa-mcp': 8769, 'lark-cli-mcp': 8768, 'lark-doc': 8765, 'colab-cli-mcp': 8770}
 
 
 class DeploymentTests(unittest.TestCase):

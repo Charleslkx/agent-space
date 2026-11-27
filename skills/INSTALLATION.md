@@ -100,4 +100,6 @@ python3 -B skills/scripts/check_public_sources.py
 python3 -B -m unittest discover -s skills/tests -v
 ```
 
+MCP 压缩包另按[部署手册](../mcp/DEPLOYMENT.md#91-生成并审核分发包)从已审核提交生成，并对实际归档运行 `check_public_sources.py --archive`。
+
 格式与发现路径依据 [Agent Skills](https://agentskills.io/specification)、[Codex](https://learn.chatgpt.com/docs/build-skills)、[Claude Code](https://code.claude.com/docs/en/skills)、[Cursor](https://cursor.com/docs/skills)、[Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills) 和 [OpenCode](https://opencode.ai/docs/skills/) 官方文档；客户端更新后以其实际能力和加载结果验收。

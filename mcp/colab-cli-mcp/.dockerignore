@@ -1,0 +1,9 @@
+**
+!server.py
+!cli.py
+!colab_entry.py
+!deploy/
+!deploy/python/
+!deploy/python/pyproject.toml
+!deploy/python/uv.lock
+!deploy/python/uv-version.txt

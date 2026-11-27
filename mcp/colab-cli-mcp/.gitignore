@@ -1,0 +1,7 @@
+/.venv/
+/.colab/
+/adc.json
+/application_default_credentials.json
+/deploy/python/
+/deploy/python.backup-*/
+/deploy/.python-candidate-*/

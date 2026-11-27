@@ -87,16 +87,10 @@ sudo scripts/apikey.sh token list                     # 掩码列出
 sudo scripts/apikey.sh token delete your-github-login # 吊销
 ```
 
-已支持的 OAuth 回调地址（`ALLOWED_CLIENT_REDIRECT_URIS`）：
+OAuth 回调白名单（`ALLOWED_CLIENT_REDIRECT_URIS`）与其他服务共用，完整列表见[客户端回调白名单](../DEPLOYMENT.md#61-客户端回调白名单)。本服务的 WorkBuddy 回调为 `workbuddy://workbuddy/mcp/custom-mcp%3Aexa/oauth/callback`。
 
 | 客户端 | redirect URI |
 |---|---|
-| ChatGPT / Codex | `https://chatgpt.com/connector/oauth/*`、`https://chatgpt.com/connector_platform_oauth_redirect` |
-| Claude Web / Desktop | `https://claude.ai/api/mcp/auth_callback` |
-| Grok | `https://grok.com/connectors-oauth-exchange-code/` |
-| Cursor | `https://www.cursor.com/agents/mcp/oauth/callback` |
-| WorkBuddy | `workbuddy://workbuddy/mcp/custom-mcp%3Aexa/oauth/callback` |
-| Claude Code / VS Code / Zed / Gemini CLI | `http://localhost:*`、`http://127.0.0.1:*` |
 | 静态 token 客户端 | 不使用 OAuth 回调 |
 
 Claude Code 发布的 CIMD 客户端在元数据拉取失败时会走 `_OriginCompatibleGitHubProvider` 的兜底分支注册。
