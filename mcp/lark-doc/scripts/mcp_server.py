@@ -6,12 +6,17 @@ import argparse
 import base64
 import binascii
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+import hashlib
+import hmac
 import html
 import json
 import os
 import re
+import secrets
 import select
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -23,8 +28,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Iterator, Literal
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
-from urllib.parse import urlparse
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from urllib.parse import urljoin, urlparse
 
 from fastmcp import FastMCP
 from fastmcp.server.auth import AuthContext
@@ -63,6 +71,11 @@ MAX_BATCH_CONCURRENCY = 8
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
 MAX_PATTERN_BYTES = 128 * 1024
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
+MEDIA_UPLOAD_TTL_SECONDS = 600
+MAX_PENDING_UPLOADS = 100
+MAX_UPLOAD_BATCH = 50
+MEDIA_DOWNLOAD_TIMEOUT_SECONDS = 30
+MEDIA_DOWNLOAD_MAX_REDIRECTS = 5
 MAX_SNIPPET_CONTEXT_CHARS = 1000
 MAX_SNIPPET_MATCHES = 10
 MAX_SEARCH_RESULTS = 20
@@ -95,6 +108,8 @@ APP_SETUP_COMPLETE_TIMEOUT_SECONDS = 5
 APP_SETUP_URL = re.compile(rb"https://[^\s\x1b]+")
 
 DocFormat = Literal["markdown", "xml"]
+MediaType = Literal["image", "file"]
+MediaAlign = Literal["left", "center", "right"]
 CommentFileType = Literal["doc", "docx", "sheet", "file", "slides", "bitable", "base", "apps", "wiki"]
 CommentPageSize = Annotated[int, Field(ge=1, le=100)]
 
@@ -443,7 +458,12 @@ mcp = FastMCP(
         "batch_push, block_update, and create_document then return format_warnings; the content is "
         "already written, so fix only that callout with block_update instead of rewriting or recreating. "
         "create_document and insert_media are not idempotent: after an error or interruption, look for "
-        "the result (search_documents by title, or find_document_text) before calling again."
+        "the result (search_documents by title, or find_document_text) before calling again. "
+        "For large local images or batch media uploads, never pass large base64 strings through tool "
+        "arguments: call create_media_upload to obtain one-time HTTP PUT URLs, upload the raw local "
+        "files directly (e.g. curl -fsS -X PUT --data-binary @file <upload_url>), then call "
+        "insert_media(doc=..., upload_id=..., after_block_id=...). For images already hosted on public "
+        "HTTPS URLs, pass source_url to insert_media; reserve content_base64 for tiny payloads (< 8 KB)."
     ),
     website_url=os.environ.get(BASE_URL_ENV),
     auth=AUTH_PROVIDER,
@@ -463,6 +483,25 @@ _auth_cache: tuple[float, dict] | None = None
 # one setup flow per MCP process; persist it only if multi-worker setup is needed.
 _app_setup_lock = threading.Lock()
 _app_setup: tuple[subprocess.Popen[bytes], str] | None = None
+
+
+@dataclass
+class _MediaUploadTicket:
+    upload_id: str
+    token: str | None
+    filename: str
+    media_type: str
+    expires_at: float
+    status: str = "pending"
+    payload_dir: Path | None = None
+    payload_path: Path | None = None
+    size_bytes: int = 0
+    sha256: str = ""
+
+
+_media_uploads_lock = threading.Lock()
+_media_uploads: dict[str, _MediaUploadTicket] = {}
+_media_tokens: dict[str, str] = {}
 
 
 class LarkCLIError(RuntimeError):
@@ -767,10 +806,15 @@ def _cleanup_stale_runs() -> None:
     # age heuristic, not a lock. It keeps a second instance sharing
     # PROJECT_ROOT from deleting payloads it is still writing, because no call
     # outlives CLI_TIMEOUT_SECONDS. Use a lockfile only if sharing is by design.
-    cutoff = time.time() - CLI_TIMEOUT_SECONDS * 2
+    now = time.time()
+    cutoff = now - CLI_TIMEOUT_SECONDS * 2
     for path in WORKDIR.glob(".run-*"):
         if path.stat().st_mtime < cutoff:
-            shutil.rmtree(path)
+            shutil.rmtree(path, ignore_errors=True)
+    upload_cutoff = now - MEDIA_UPLOAD_TTL_SECONDS * 2
+    for path in WORKDIR.glob(".upload-*"):
+        if path.stat().st_mtime < upload_cutoff:
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def _payload(path: Path, content: str) -> str:
@@ -1943,18 +1987,304 @@ def scan_document_assets(doc: str) -> dict:
     }
 
 
+class MediaUploadSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str = Field(..., description="Plain file name with extension, e.g. fig01.png.")
+    media_type: MediaType = Field(default="image", description="Media kind: 'image' or 'file'.")
+
+
+def _validate_plain_filename(filename: str) -> str:
+    if (
+        not filename
+        or "\x00" in filename
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+        or Path(filename).name != filename
+    ):
+        raise ValueError("filename must be a plain file name without directories")
+    return filename
+
+
+def _media_upload_base_url() -> str:
+    base_url = os.environ.get(BASE_URL_ENV, "").strip().rstrip("/")
+    if not base_url:
+        raise RuntimeError(f"{BASE_URL_ENV} must be configured to issue media upload URLs")
+    parsed = urlparse(base_url)
+    if not parsed.netloc or parsed.path or parsed.query or parsed.fragment:
+        raise RuntimeError(f"{BASE_URL_ENV} must be an origin without a path")
+    if parsed.scheme == "http":
+        if not parsed.hostname or not _is_loopback(parsed.hostname):
+            raise RuntimeError(f"{BASE_URL_ENV} must use https for non-loopback hosts")
+    elif parsed.scheme != "https":
+        raise RuntimeError(f"{BASE_URL_ENV} must use https")
+    return base_url
+
+
+def _remove_upload_dir(payload_dir: Path | None) -> None:
+    if payload_dir is not None and payload_dir.exists():
+        shutil.rmtree(payload_dir, ignore_errors=True)
+
+
+def _purge_expired_uploads_locked(now: float | None = None) -> None:
+    current = time.time() if now is None else now
+    expired_ids = [
+        uid for uid, ticket in _media_uploads.items()
+        if ticket.status == "consumed"
+        or (ticket.status != "uploading" and ticket.expires_at <= current)
+    ]
+    for uid in expired_ids:
+        ticket = _media_uploads.pop(uid, None)
+        if ticket is None:
+            continue
+        if ticket.token is not None:
+            _media_tokens.pop(ticket.token, None)
+        _remove_upload_dir(ticket.payload_dir)
+
+
+def _claim_upload_token_locked(token: str) -> _MediaUploadTicket | None:
+    now = time.time()
+    _purge_expired_uploads_locked(now)
+    matched_token: str | None = None
+    for candidate in list(_media_tokens):
+        if hmac.compare_digest(candidate, token):
+            matched_token = candidate
+            break
+    if matched_token is None:
+        return None
+    upload_id = _media_tokens.pop(matched_token)
+    ticket = _media_uploads.get(upload_id)
+    if ticket is None or ticket.status != "pending":
+        return None
+    ticket.token = None
+    ticket.status = "uploading"
+    ticket.expires_at = now + MEDIA_UPLOAD_TTL_SECONDS
+    return ticket
+
+
+@mcp.custom_route("/media/upload/{token}", methods=["PUT"])
+async def _handle_media_upload(request: Request) -> JSONResponse:
+    token = request.path_params.get("token", "")
+    if not token:
+        return JSONResponse(
+            {"ok": False, "error": "invalid_or_expired_upload_token"},
+            status_code=404,
+        )
+    with _media_uploads_lock:
+        ticket = _claim_upload_token_locked(token)
+    if ticket is None:
+        return JSONResponse(
+            {"ok": False, "error": "invalid_or_expired_upload_token"},
+            status_code=404,
+        )
+    if WORKDIR.is_symlink():
+        with _media_uploads_lock:
+            _media_uploads.pop(ticket.upload_id, None)
+        return JSONResponse(
+            {"ok": False, "error": "invalid_workdir"},
+            status_code=500,
+        )
+    WORKDIR.mkdir(exist_ok=True)
+    payload_dir = WORKDIR / f".upload-{ticket.upload_id}"
+    payload_dir.mkdir(mode=0o700, exist_ok=True)
+    payload_path = payload_dir / ticket.filename
+    hasher = hashlib.sha256()
+    size_bytes = 0
+    try:
+        with payload_path.open("wb") as handle:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                size_bytes += len(chunk)
+                if size_bytes > MAX_MEDIA_BYTES:
+                    handle.close()
+                    _remove_upload_dir(payload_dir)
+                    with _media_uploads_lock:
+                        _media_uploads.pop(ticket.upload_id, None)
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "error": "media_too_large",
+                            "max_bytes": MAX_MEDIA_BYTES,
+                        },
+                        status_code=413,
+                    )
+                handle.write(chunk)
+                hasher.update(chunk)
+        if size_bytes == 0:
+            _remove_upload_dir(payload_dir)
+            with _media_uploads_lock:
+                _media_uploads.pop(ticket.upload_id, None)
+            return JSONResponse(
+                {"ok": False, "error": "empty_media_payload"},
+                status_code=400,
+            )
+    except Exception:
+        _remove_upload_dir(payload_dir)
+        with _media_uploads_lock:
+            _media_uploads.pop(ticket.upload_id, None)
+        raise
+
+    digest = hasher.hexdigest()
+    with _media_uploads_lock:
+        ticket.status = "uploaded"
+        ticket.payload_dir = payload_dir
+        ticket.payload_path = payload_path
+        ticket.size_bytes = size_bytes
+        ticket.sha256 = digest
+        ticket.expires_at = time.time() + MEDIA_UPLOAD_TTL_SECONDS
+    return JSONResponse({
+        "ok": True,
+        "upload_id": ticket.upload_id,
+        "filename": ticket.filename,
+        "media_type": ticket.media_type,
+        "size_bytes": size_bytes,
+        "sha256": digest,
+    })
+
+
+def _validate_public_https_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("source_url must be a valid https:// URL")
+    if parsed.username or parsed.password:
+        raise ValueError("source_url must not contain embedded credentials")
+    port = parsed.port or 443
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
+    except OSError as error:
+        raise ValueError(f"source_url host could not be resolved: {error}") from error
+    if not infos:
+        raise ValueError("source_url host resolved to no addresses")
+    for info in infos:
+        raw_ip = info[4][0]
+        ip = ipaddress.ip_address(raw_ip)
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if (
+            not ip.is_global
+            or ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            raise ValueError(f"source_url resolves to a non-public IP address: {ip}")
+
+
+def _download_media_from_url(source_url: str, dest: Path) -> None:
+    current_url = source_url.strip()
+    try:
+        with httpx.Client(follow_redirects=False, timeout=MEDIA_DOWNLOAD_TIMEOUT_SECONDS) as client:
+            for _ in range(MEDIA_DOWNLOAD_MAX_REDIRECTS + 1):
+                _validate_public_https_url(current_url)
+                with client.stream("GET", current_url) as response:
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        location = response.headers.get("location")
+                        if not location:
+                            raise ValueError("source_url returned a redirect without a Location header")
+                        current_url = urljoin(current_url, location)
+                        continue
+                    response.raise_for_status()
+                    total = 0
+                    with dest.open("wb") as handle:
+                        for chunk in response.iter_bytes():
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            if total > MAX_MEDIA_BYTES:
+                                raise ValueError(f"downloaded media exceeds {MAX_MEDIA_BYTES} bytes")
+                            handle.write(chunk)
+                    if total == 0:
+                        raise ValueError("downloaded media is empty")
+                    return
+    except httpx.HTTPError as error:
+        raise ValueError(f"failed to download source_url: {error}") from error
+    raise ValueError(f"source_url exceeded {MEDIA_DOWNLOAD_MAX_REDIRECTS} redirects")
+
+
+@mcp.tool(
+    title="Create one-time media upload URLs",
+    meta=TOOL_META,
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+)
+def create_media_upload(items: list[MediaUploadSpec]) -> dict:
+    """Issue one-time HTTP PUT upload URLs for local images or files (up to 20 MiB each).
+
+    Use this instead of passing large base64 strings through insert_media:
+    1. Call create_media_upload with one or more {filename, media_type} items.
+    2. Upload each raw local file directly via HTTP PUT to its upload_url (no MCP bearer token needed).
+    3. Call insert_media(doc=..., upload_id=..., after_block_id=...) to insert and position the media.
+    """
+    if not items:
+        raise ValueError("items must contain at least one upload spec")
+    if len(items) > MAX_UPLOAD_BATCH:
+        raise ValueError(f"items exceeds maximum batch size of {MAX_UPLOAD_BATCH}")
+    base_url = _media_upload_base_url()
+    validated = [
+        (_validate_plain_filename(item.filename), item.media_type)
+        for item in items
+    ]
+    now = time.time()
+    expires_at = now + MEDIA_UPLOAD_TTL_SECONDS
+    issued: list[dict] = []
+    with _media_uploads_lock:
+        _purge_expired_uploads_locked(now)
+        if len(_media_uploads) + len(validated) > MAX_PENDING_UPLOADS:
+            raise RuntimeError(
+                f"too many pending media uploads (limit {MAX_PENDING_UPLOADS}); "
+                "consume existing upload_ids or retry after expiration"
+            )
+        for fname, mtype in validated:
+            upload_id = secrets.token_hex(12)
+            token = secrets.token_urlsafe(32)
+            ticket = _MediaUploadTicket(
+                upload_id=upload_id,
+                token=token,
+                filename=fname,
+                media_type=mtype,
+                expires_at=expires_at,
+            )
+            _media_uploads[upload_id] = ticket
+            _media_tokens[token] = upload_id
+            issued.append({
+                "upload_id": upload_id,
+                "filename": fname,
+                "media_type": mtype,
+                "method": "PUT",
+                "upload_url": f"{base_url}/media/upload/{token}",
+                "expires_in_seconds": MEDIA_UPLOAD_TTL_SECONDS,
+            })
+    return {
+        "uploads": issued,
+        "max_bytes": MAX_MEDIA_BYTES,
+        "usage_hint": "curl -fsS -X PUT --data-binary @<local_file> <upload_url>",
+    }
+
+
 @mcp.tool(title="Insert document media", meta=TOOL_META, annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 def insert_media(
     doc: str,
-    filename: str,
-    content_base64: str,
-    media_type: str = "image",
+    filename: str | None = None,
+    content_base64: str | None = None,
+    media_type: MediaType = "image",
     after_block_id: str | None = None,
+    upload_id: str | None = None,
+    source_url: str | None = None,
+    align: MediaAlign | None = None,
 ) -> dict:
-    """Insert a base64 image or file, then delete its hidden local payload.
+    """Insert an image or file into a Lark document, then delete its hidden local payload.
 
-    media_type: "image" (default) or "file"; filename is a plain name with extension;
-    decoded size at most 20 MB.
+    Provide exactly one media source:
+    - upload_id: from create_media_upload after HTTP PUT (recommended for large local images/files).
+    - source_url: public HTTPS URL downloaded directly by the server (SSRF-checked, <= 20 MiB).
+    - content_base64: inline base64 payload (best for tiny payloads < 8 KB).
+
+    filename is optional when using upload_id (defaults to the ticket filename) and required
+    otherwise. media_type: "image" (default) or "file"; align: "left" | "center" | "right"
+    (applies to images only). Decoded/uploaded size at most 20 MiB.
 
     lark-cli always appends media to the document end. Pass after_block_id (from
     find_document_text with doc_format="xml", detail="with-ids"; "0" = document start)
@@ -1967,24 +2297,68 @@ def insert_media(
     _check_lark_cli()
     if media_type not in {"image", "file"}:
         raise ValueError("media_type must be image or file")
-    if not filename or Path(filename).name != filename:
-        raise ValueError("filename must be a plain file name without directories")
+    if align is not None and align not in {"left", "center", "right"}:
+        raise ValueError("align must be left, center, or right")
+    provided_sources = sum(
+        1 for value in (content_base64, upload_id, source_url) if value is not None
+    )
+    if provided_sources != 1:
+        raise ValueError("provide exactly one of content_base64, upload_id, or source_url")
+
+    if filename is not None:
+        _validate_plain_filename(filename)
+
+    ticket: _MediaUploadTicket | None = None
+    effective_media_type = media_type
+    effective_filename: str
+    decoded_data: bytes | None = None
+
+    if upload_id is not None:
+        with _media_uploads_lock:
+            _purge_expired_uploads_locked()
+            ticket = _media_uploads.get(upload_id)
+            if ticket is None:
+                raise ValueError("upload_id not found or expired")
+            if ticket.status != "uploaded" or ticket.payload_path is None or not ticket.payload_path.is_file():
+                raise ValueError("upload_id has not been uploaded yet")
+            ticket.status = "consumed"
+            _media_uploads.pop(upload_id, None)
+        effective_filename = filename or ticket.filename
+        effective_media_type = ticket.media_type
+    else:
+        if not filename:
+            raise ValueError("filename is required when using content_base64 or source_url")
+        effective_filename = _validate_plain_filename(filename)
+        if content_base64 is not None:
+            try:
+                decoded_data = base64.b64decode(content_base64, validate=True)
+            except (binascii.Error, ValueError) as error:
+                raise ValueError("content_base64 is not valid base64") from error
+            if len(decoded_data) > MAX_MEDIA_BYTES:
+                raise ValueError(f"decoded media exceeds {MAX_MEDIA_BYTES} bytes")
+
     try:
-        data = base64.b64decode(content_base64, validate=True)
-    except (binascii.Error, ValueError) as error:
-        raise ValueError("content_base64 is not valid base64") from error
-    if len(data) > MAX_MEDIA_BYTES:
-        raise ValueError(f"decoded media exceeds {MAX_MEDIA_BYTES} bytes")
-    with _hidden_run() as run:
-        path = run / filename
-        path.write_bytes(data)
-        args = [
-            "docs", "+media-insert", "--as", "user", "--doc", doc,
-            "--file", "./" + path.resolve().relative_to(PROJECT_ROOT).as_posix(),
-            "--type", media_type, "--format", "json",
-        ]
-        result = _run_cli(args, "insert_media")
-        _assert_write_succeeded(result, "insert_media")
+        with _hidden_run() as run:
+            path = run / effective_filename
+            if ticket is not None and ticket.payload_path is not None:
+                shutil.move(str(ticket.payload_path), str(path))
+            elif decoded_data is not None:
+                path.write_bytes(decoded_data)
+            elif source_url is not None:
+                _download_media_from_url(source_url, path)
+            args = [
+                "docs", "+media-insert", "--as", "user", "--doc", doc,
+                "--file", "./" + path.resolve().relative_to(PROJECT_ROOT).as_posix(),
+                "--type", effective_media_type, "--format", "json",
+            ]
+            if align and effective_media_type == "image":
+                args.extend(["--align", align])
+            result = _run_cli(args, "insert_media")
+            _assert_write_succeeded(result, "insert_media")
+    finally:
+        if ticket is not None:
+            _remove_upload_dir(ticket.payload_dir)
+
     if not after_block_id:
         return result
     new_block = result.get("data", {}).get("block_id") if isinstance(result, dict) else None

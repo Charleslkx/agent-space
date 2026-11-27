@@ -62,7 +62,7 @@ deploy/python/.venv/bin/python scripts/mcp_server.py --transport http --host 127
 | 配置 | 必需 | 说明 |
 |-|-|-|
 | `LARK_MCP_AUTH_MODE` | 公网必需 | ChatGPT/Claude 使用 `github`；支持自定义 Bearer 的客户端可使用 `token` |
-| `LARK_MCP_BASE_URL` | OAuth 必需 | MCP 的公开 HTTPS origin，部署前将 `{your-domain}` 替换为实际域名 |
+| `LARK_MCP_BASE_URL` | OAuth 及大图上传必需 | MCP 的公开 HTTPS origin，部署前将 `{your-domain}` 替换为实际域名；`token` 模式如需使用 `create_media_upload` 也须配置 |
 | `LARK_MCP_GITHUB_CLIENT_ID` | OAuth 必需 | GitHub OAuth App Client ID |
 | `LARK_MCP_GITHUB_CLIENT_SECRET` | OAuth 必需 | GitHub OAuth App Client Secret |
 | `LARK_MCP_GITHUB_USERS` | OAuth 必需 | 允许访问的 GitHub 登录名，逗号分隔且不区分大小写 |
@@ -170,7 +170,8 @@ codex mcp add lark-doc \
 - `create_wiki_node`：在指定 Wiki 空间根目录或父节点下创建空白 Docx 页面。
 - `create_wiki_space`：创建 Wiki 空间。
 - `scan_document_assets`：在服务器端扫描飞书文档完整 XML，只返回图片和画板元数据、token 与数量。
-- `insert_media`：从 base64 插入图片或附件并删除本地载荷。lark-cli 只能追加到文末；传 `after_block_id` 时再用 `block_move_after` 移到该块之后（`0` 为文档开头）。移动失败时报 `media_inserted_not_moved`，只重试移动，不要重传。
+- `create_media_upload`：批量申请一次性 HTTP `PUT` 上传链接（每次最多 50 项，单文件上限 20 MiB，10 分钟有效，上传一次即失效，无需暴露 MCP 主凭据）。客户端直接 `PUT --data-binary @<file> <upload_url>` 后，将返回的 `upload_id` 传给 `insert_media` 即可避免大图经由 LLM 传 Base64。
+- `insert_media`：支持三种互斥来源——`upload_id`（推荐，配合 `create_media_upload` 传本地大图）、`source_url`（服务端经 SSRF 校验后直接流式拉取公网 HTTPS 链接）、`content_base64`（适合极小载荷），并在写入后删除本地暂存载荷。支持可选 `align`（`left`/`center`/`right`，仅图片有效）。lark-cli 只能追加到文末；传 `after_block_id` 时再用 `block_move_after` 移到该块之后（`0` 为文档开头）。移动失败时报 `media_inserted_not_moved`，只重试移动，不要重传。
 - `whiteboard_query`、`whiteboard_update`：读取和更新飞书画板。
 
 ### 10.1. 写入约定
