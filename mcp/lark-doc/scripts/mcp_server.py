@@ -28,7 +28,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Iterator, Literal
 
-import httpx
+import httpx2
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -2289,7 +2289,7 @@ def _validate_public_https_url(url: str) -> None:
 def _download_media_from_url(source_url: str, dest: Path) -> None:
     current_url = source_url.strip()
     try:
-        with httpx.Client(follow_redirects=False, timeout=MEDIA_DOWNLOAD_TIMEOUT_SECONDS) as client:
+        with httpx2.Client(follow_redirects=False, timeout=MEDIA_DOWNLOAD_TIMEOUT_SECONDS) as client:
             for _ in range(MEDIA_DOWNLOAD_MAX_REDIRECTS + 1):
                 _validate_public_https_url(current_url)
                 with client.stream("GET", current_url) as response:
@@ -2312,7 +2312,7 @@ def _download_media_from_url(source_url: str, dest: Path) -> None:
                     if total == 0:
                         raise ValueError("downloaded media is empty")
                     return
-    except httpx.HTTPError as error:
+    except httpx2.HTTPError as error:
         raise ValueError(f"failed to download source_url: {error}") from error
     raise ValueError(f"source_url exceeded {MEDIA_DOWNLOAD_MAX_REDIRECTS} redirects")
 

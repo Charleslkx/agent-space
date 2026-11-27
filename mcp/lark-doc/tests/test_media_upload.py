@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import httpx
+import httpx2
 from starlette.testclient import TestClient
 
 os.environ.setdefault("LARK_MCP_AUTH_MODE", "none")
@@ -189,10 +189,10 @@ class MediaUploadTests(unittest.TestCase):
                 return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 443))]
 
-        redirect_transport = httpx.MockTransport(
-            lambda req: httpx.Response(302, headers={"Location": "https://metadata.example.com/latest"})
+        redirect_transport = httpx2.MockTransport(
+            lambda req: httpx2.Response(302, headers={"Location": "https://metadata.example.com/latest"})
         )
-        orig_client = httpx.Client
+        orig_client = httpx2.Client
 
         def patched_client(*args, **kwargs):
             kwargs["transport"] = redirect_transport
@@ -200,7 +200,7 @@ class MediaUploadTests(unittest.TestCase):
 
         with (
             mock.patch.object(socket, "getaddrinfo", side_effect=fake_getaddrinfo),
-            mock.patch.object(httpx, "Client", side_effect=patched_client),
+            mock.patch.object(httpx2, "Client", side_effect=patched_client),
         ):
             with self.assertRaisesRegex(ValueError, "non-public IP"):
                 mcp_server._download_media_from_url(
@@ -209,7 +209,7 @@ class MediaUploadTests(unittest.TestCase):
                 )
 
         # Valid public HTTPS download succeeds.
-        ok_transport = httpx.MockTransport(lambda req: httpx.Response(200, content=b"PNGDATA"))
+        ok_transport = httpx2.MockTransport(lambda req: httpx2.Response(200, content=b"PNGDATA"))
 
         def patched_ok_client(*args, **kwargs):
             kwargs["transport"] = ok_transport
@@ -218,13 +218,13 @@ class MediaUploadTests(unittest.TestCase):
         out_path = Path(self._tmp.name) / "ok.png"
         with (
             mock.patch.object(socket, "getaddrinfo", side_effect=fake_getaddrinfo),
-            mock.patch.object(httpx, "Client", side_effect=patched_ok_client),
+            mock.patch.object(httpx2, "Client", side_effect=patched_ok_client),
         ):
             mcp_server._download_media_from_url("https://public.example.com/ok.png", out_path)
         self.assertEqual(out_path.read_bytes(), b"PNGDATA")
 
         # HTTP 404 from remote host is wrapped into a clean ValueError.
-        err_transport = httpx.MockTransport(lambda req: httpx.Response(404))
+        err_transport = httpx2.MockTransport(lambda req: httpx2.Response(404))
 
         def patched_err_client(*args, **kwargs):
             kwargs["transport"] = err_transport
@@ -232,7 +232,7 @@ class MediaUploadTests(unittest.TestCase):
 
         with (
             mock.patch.object(socket, "getaddrinfo", side_effect=fake_getaddrinfo),
-            mock.patch.object(httpx, "Client", side_effect=patched_err_client),
+            mock.patch.object(httpx2, "Client", side_effect=patched_err_client),
         ):
             with self.assertRaisesRegex(ValueError, "failed to download source_url"):
                 mcp_server._download_media_from_url("https://public.example.com/missing.png", out_path)
